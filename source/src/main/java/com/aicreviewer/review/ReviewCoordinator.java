@@ -95,7 +95,7 @@ public class ReviewCoordinator {
     private ReviewResult reviewContent(GitCommit commit) {
         return switch (commit.coverageType()) {
             case "EMPTY" -> new ReviewResult("AI 본문 검토 없음: Git 저장소에서 파일 변경이 없는 커밋임을 확인했습니다.", List.of());
-            case "METADATA_ONLY" -> new ReviewResult("AI 본문 검토 없음: 동일한 파일 본문의 경로·파일 모드 변경입니다. 경로·권한·파일 유형 변경 수동 확인 필요.", List.of());
+            case "METADATA_ONLY" -> new ReviewResult("AI 본문 검토 없음: 검증된 빈 파일 생성·삭제 또는 본문이 같은 파일의 경로·모드 변경입니다. 파일 존재 여부와 경로·권한·파일 유형 변경 수동 확인 필요.", List.of());
             case "FULL" -> ai.review(commit);
             default -> throw new IllegalArgumentException("Invalid review coverage type");
         };

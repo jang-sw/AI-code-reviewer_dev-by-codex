@@ -1,13 +1,14 @@
 # 검토 범위 확장 설계안 — 부분 구현 / 나머지 PROPOSED
 
-작성: 2026-09-26. 기준: 현재 작업 트리의 `GitRepositoryClient`, `AiReviewClient`, `ReviewCoordinator`, `ReviewRepository`, 내부 이슈 화면 및 V1~V6 스키마.
+작성: 2026-09-26. 기준: 현재 작업 트리의 `GitRepositoryClient`, `AiReviewClient`, `ReviewCoordinator`, `ReviewRepository`, 내부 이슈 화면 및 V1~V9 스키마.
 
-**GitHub 동일 blob rename/mode 검증만 제한된 범위로 구현·검증했고, 나머지는 검토용 제안이다.** 특히 “검증된 미검토 파일을 수동 이슈로 넘기고 다음 커밋으로 진행”하는 정책은 현재 동작을 바꾸므로 별도 결정이 필요하다. 사용자에게 처리 방식을 질문했으며 답변 전에는 실패 정책을 유지한다. 확정 요구사항은 [REQUIREMENTS.md](REQUIREMENTS.md), 현재 구현 계약은 [IMPLEMENTATION-CONTRACT.md](IMPLEMENTATION-CONTRACT.md)를 따른다.
+**GitHub 동일 blob rename/mode와 양쪽 공급자의 정규 빈 파일 생성·삭제 증명을 구현했고, 나머지는 검토용 제안이다.** 특히 “검증된 미검토 파일을 수동 이슈로 넘기고 다음 커밋으로 진행”하는 정책은 현재 동작을 바꾸므로 별도 결정이 필요하다. 사용자에게 처리 방식을 질문했으며 답변 전에는 실패 정책을 유지한다. 확정 요구사항은 [REQUIREMENTS.md](REQUIREMENTS.md), 현재 구현 계약은 [IMPLEMENTATION-CONTRACT.md](IMPLEMENTATION-CONTRACT.md)를 따른다.
 
 ## 1. 현재 확인한 제약
 
 - GitHub는 커밋별 파일 목록·통계·본문 hunk를 검사한다. rename/0행 변경 후보에서 고정 tree와 첫 부모의 모든 변경 경로를 대조해 동일 blob rename/mode를 증명한다. 전용40개 fixture가 통과했다. 일반 본문만 있는 커밋까지 tree 검증을 확대한 것은 아니며, copy/submodule/누락·잘림·예산 초과는 실패한다.
-- GitLab은 고정된 커밋과 첫 부모의 트리를 비교해 변경 경로를 확인한다. 동일 blob의 경로·모드 변경은 `METADATA_ONLY`, 파일 변경이 없는 검증된 커밋은 `EMPTY`다. binary, 누락·잘림, 변경 blob의 빈 patch는 실패한다. 정규 파일과 symlink 사이의 모드 변경도 수동 확인 대상으로 표시한다.
+- GitLab은 고정된 커밋과 첫 부모의 트리를 비교해 변경 경로를 확인한다. 동일 blob의 경로·모드 변경은 `METADATA_ONLY`, 파일 변경이 없는 검증된 커밋은 `EMPTY`다. binary, 누락·잘림, 일반 변경 blob의 빈 patch는 실패한다. 정규 파일과 symlink 사이의 모드 변경도 수동 확인 대상으로 표시한다.
+- 양쪽 공급자의 정규 빈 파일 생성·삭제는 canonical Git 빈 blob hash와 고정 tree의 생성·삭제 형태까지 맞으면 `METADATA_ONLY`다. 빈 symlink/submodule은 제외한다. GitHub의 파일 목록이 아예 비어 있는 기존 EMPTY 경로나 일반 본문-only 경로 전체의 tree 증명으로 확대하지는 않았다.
 - `FULL`은 현재 지원하는 diff를 AI에 전달했다는 범위 분류다. 보안성 또는 결함 없음의 보증은 아니다. 본문과 메타데이터가 섞이면 본문과 경로·모드를 함께 전달한다.
 - 현재 Git/AI diff 기본 상한은 각각 262,144 UTF-8 bytes다. AI는 JSON 입력·시스템 프롬프트·스키마·여유분을 포함한 보수적 byte 기준과 출력 예산을 context 한도와 비교한다. 따라서 diff 크기 상한 이하여도 context 한도로 실패할 수 있다. 임의 자르기는 하지 않는다.
 - V5 범위는 `FULL/EMPTY/METADATA_ONLY`뿐이다. `METADATA_ONLY`는 명시적 안내만 남기며 자동 수동 이슈를 만들지 않는다. 이슈는 현재 AI 수정 권고이고 `severity`와 `file_path`가 필수다. 상태는 `OPEN/RESOLVED/DISMISSED`다.

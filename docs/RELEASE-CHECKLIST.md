@@ -18,10 +18,13 @@
 - [x] 복수 비공개 호스트 credential 구성·격리 fixture·회전 절차
 - [x] 큰 merge 그룹의 여러 배치 처리·저장 SHA 재사용·명시적 안전 checkpoint 회귀 검증
 - [x] GitHub 동일 blob rename/mode/type 후보의 고정 tree·전체 변경 경로 검증,40개 반례/정상 fixture
+- [x] GitHub/GitLab 정규 빈 파일 생성·삭제의 canonical blob·tree 증명,38개 fixture
+- [x] 관리자 이력 복구: PAUSED·현재 SHA·정확 URL, 기존 리뷰/이슈 보존·감사 원자 저장·실제 PG/HTTP 및 화면 확인
 - [x] 실행/커밋 기록 페이지 처리·안전한 원본 커밋 링크·실제 HTTP 권한 검증
 - [x] 프로젝트/사용자 검색·페이지, 이슈25건 요약/권한 상세, 필터 유지·예약 SQL 조회 상한
 - [ ] 바이너리/rename/mode-only·큰 소스 변경 처리와 검토 제외 범위 표시
-- [ ] 대형 저장소 이력 부하·API 예산 검증, force-push 복구 절차/UI
+- [x] 오프라인10,000커밋 이력의 배치/저장 SHA 재사용/호출 수 예산 선택 검증
+- [ ] 실제 대형 저장소 이력 부하·API 할당량·여러 프로젝트 동시 실행 검증
 - [ ] 운영에 맞는 queue 지속성·일정 지연/복구 정책·공정성
 
 ## 검증

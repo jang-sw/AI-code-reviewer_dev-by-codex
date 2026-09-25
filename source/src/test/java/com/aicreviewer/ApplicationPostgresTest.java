@@ -386,6 +386,85 @@ class ApplicationPostgresTest {
         verifyNoInteractions(ai);
     }
 
+    @Test
+    void adminRecoversPausedHistoryThroughHttpWithoutDeletingReviewsOrIssues() throws Exception {
+        projects.transition("pgadmin", projectId, "approve");
+        GitCommit original = new GitCommit("6".repeat(40), writer, "before rewrite",
+                "diff --git a/A.java b/A.java\n@@ -0,0 +1 @@\n+bad();");
+        stubBatch(List.of(original), original.sha());
+        when(ai.review(original)).thenReturn(finding("A.java"));
+        assertThat(reviews.reviewProject(projectId, writer)).isEqualTo(ReviewCoordinator.Outcome.SUCCEEDED);
+        long issueId = jdbc.queryForObject("select id from review_issue where project_id=?", Long.class, projectId);
+        jdbc.update("update review_issue set status='RESOLVED' where id=?", issueId);
+        String repositoryUrl = jdbc.queryForObject("select repository_url from project where id=?", String.class, projectId);
+        String path = "/admin/projects/" + projectId + "/review-progress/reset";
+        HttpClient admin = login("pgadmin");
+        HttpClient owner = login(writer);
+        Map<String, String> fields = new java.util.HashMap<>(Map.of("repositoryUrl", repositoryUrl,
+                "expectedCursor", original.sha(), "reason", "이력 재작성 확인 후 복구"));
+        assertThat(post(admin, path, fields).statusCode()).isEqualTo(403);
+        fields.put("_csrf", csrf(get(owner, "/projects/" + projectId).body()));
+        assertThat(post(owner, path, fields).statusCode()).isEqualTo(403);
+        fields.put("_csrf", csrf(get(admin, "/projects/" + projectId).body()));
+        assertThat(post(admin, path, fields).statusCode()).isEqualTo(409);
+        projects.transition("pgadmin", projectId, "pause");
+        var paused = get(admin, "/projects/" + projectId);
+        assertThat(paused.statusCode()).isEqualTo(200);
+        assertThat(paused.body()).contains(path, "name=\"expectedCursor\"", "name=\"reason\"", "name=\"repositoryUrl\"");
+        assertThat(get(owner, "/projects/" + projectId).body()).doesNotContain(path);
+        fields.put("repositoryUrl", repositoryUrl + "-wrong");
+        var wrongRepository = post(admin, path, fields);
+        assertThat(wrongRepository.statusCode()).isEqualTo(400);
+        assertThat(wrongRepository.body()).contains("프로젝트 주소와 일치하지 않습니다", "프로젝트로 돌아가기")
+                .doesNotContain(repositoryUrl + "-wrong", "이력 재작성 확인 후 복구");
+        fields.put("repositoryUrl", repositoryUrl);
+        fields.put("expectedCursor", "7".repeat(40));
+        assertThat(post(admin, path, fields).statusCode()).isEqualTo(409);
+        fields.put("expectedCursor", original.sha());
+        try (var lease = locks.tryAcquire(projectId).orElseThrow()) {
+            var busy = post(admin, path, fields);
+            assertThat(busy.statusCode()).isEqualTo(409);
+            assertThat(busy.body()).contains("리뷰가 실행 중이어서", "새로고침", "프로젝트로 돌아가기")
+                    .doesNotContain("이력 재작성 확인 후 복구");
+            assertThat(cursor()).isEqualTo(original.sha());
+        }
+        assertThat(jdbc.queryForObject("select count(*) from audit_event where action='PROJECT_REVIEW_PROGRESS_RESET' and target_id=?",
+                Integer.class, projectId)).isZero();
+        jdbc.execute("alter table audit_event add constraint it_recovery_audit_failure check (action <> 'PROJECT_REVIEW_PROGRESS_RESET' OR target_id <> " + projectId + ")");
+        try {
+            assertThat(post(admin, path, fields).statusCode()).isEqualTo(500);
+            assertThat(cursor()).isEqualTo(original.sha());
+            assertThat(count("reviewed_commit")).isEqualTo(1);
+            assertThat(count("review_issue")).isEqualTo(1);
+        } finally {
+            jdbc.execute("alter table audit_event drop constraint it_recovery_audit_failure");
+        }
+        var reset = post(admin, path, fields);
+        assertThat(reset.statusCode()).isEqualTo(302);
+        assertThat(reset.headers().firstValue("location").orElse("")).endsWith("/projects/" + projectId);
+        assertThat(cursor()).isNull();
+        assertThat(jdbc.queryForObject("select status from project where id=?", String.class, projectId)).isEqualTo("PAUSED");
+        assertThat(count("reviewed_commit")).isEqualTo(1);
+        assertThat(count("review_issue")).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select status from review_issue where id=?", String.class, issueId)).isEqualTo("RESOLVED");
+        assertThat(jdbc.queryForObject("select detail from audit_event where action='PROJECT_REVIEW_PROGRESS_RESET' and target_id=?",
+                String.class, projectId)).contains(original.sha(), "이력 재작성 확인 후 복구");
+        assertThat(post(admin, path, fields).statusCode()).isEqualTo(409);
+        projects.transition("pgadmin", projectId, "approve");
+        GitCommit replacement = new GitCommit("8".repeat(40), writer, "rewritten branch",
+                "diff --git a/B.java b/B.java\n@@ -0,0 +1 @@\n+bad();");
+        stubBatch(List.of(original, replacement), replacement.sha());
+        when(ai.review(replacement)).thenReturn(finding("B.java"));
+        assertThat(reviews.reviewProject(projectId, writer)).isEqualTo(ReviewCoordinator.Outcome.SUCCEEDED);
+        verify(git).batch(any(), any(), isNull(), eq(Set.of(original.sha())), anyInt());
+        verify(ai, times(1)).review(original);
+        verify(ai, times(1)).review(replacement);
+        assertThat(cursor()).isEqualTo(replacement.sha());
+        assertThat(count("reviewed_commit")).isEqualTo(2);
+        assertThat(count("review_issue")).isEqualTo(2);
+        assertThat(jdbc.queryForObject("select status from review_issue where id=?", String.class, issueId)).isEqualTo("RESOLVED");
+    }
+
     private void stubBatch(List<GitCommit> commits, String checkpoint) {
         when(git.batch(any(), any(), any(), anySet(), anyInt())).thenAnswer(invocation -> {
             Set<String> completed = invocation.getArgument(3);

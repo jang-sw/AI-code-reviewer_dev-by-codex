@@ -25,6 +25,9 @@ import tools.jackson.databind.json.JsonMapper;
 @Service
 public class GitRepositoryClient {
     private static final int PAGE_SIZE = 100;
+    // Git hashes the object header plus bytes; these hash the seven bytes "blob 0\0", not an empty byte array.
+    private static final String EMPTY_BLOB_SHA1 = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391";
+    private static final String EMPTY_BLOB_SHA256 = "473a0f4c3be8a93681a267e3b1e9a7dcda1185436fe141f7749120a303721813";
     /** Bounded durable progress input; repositories must stop reading before exceeding this count. */
     public static final int MAX_REVIEWED_SHAS = 131072;
     private final Set<String> allowedHosts;
@@ -215,9 +218,11 @@ public class GitRepositoryClient {
                 int adds = nonnegative(file, "additions"), deletes = nonnegative(file, "deletions");
                 String oldPath = file.hasNonNull("previous_filename") ? filePath(file, "previous_filename") : path;
                 String status = file.hasNonNull("status") ? field(file, "status", 20) : "";
-                // Missing binary/new-empty-file patches are not evidence of a metadata change.
+                String blob = file.hasNonNull("sha") ? field(file, "sha", 64) : "";
+                // A canonical empty blob is only a candidate; immutable trees must still prove create/delete shape.
                 boolean metadataCandidate = !oldPath.equals(path) || status.equals("renamed")
-                        || ((long) adds + deletes == 0 && Set.of("modified", "changed").contains(status));
+                        || ((long) adds + deletes == 0 && Set.of("modified", "changed").contains(status))
+                        || (Set.of("added", "removed").contains(status) && emptyBlobId(blob, meta.sha().length()));
                 String patch = metadataCandidate && !file.hasNonNull("patch") ? "" : field(file, "patch", maxDiffBytes);
                 if (!metadataCandidate) verifyPatchCounts(patch, adds, deletes);
                 needsManifest |= metadataCandidate;
@@ -226,7 +231,6 @@ public class GitRepositoryClient {
                 collectedBytes += oldPath.getBytes(StandardCharsets.UTF_8).length + path.getBytes(StandardCharsets.UTF_8).length
                         + patch.getBytes(StandardCharsets.UTF_8).length + 18L; // Exact canonical file header and two newlines.
                 if (collectedBytes > maxDiffBytes) throw new IntegrationException("Commit diff exceeds configured size limit");
-                String blob = file.hasNonNull("sha") ? field(file, "sha", 64) : "";
                 collected.add(new GithubFile(oldPath, path, status, blob, patch, adds, deletes));
             }
             if (!response.next() && files.size() < PAGE_SIZE) break;
@@ -283,15 +287,17 @@ public class GitRepositoryClient {
             boolean metadataChange = before != null && after != null
                     && (!file.oldPath().equals(file.path()) || !mode(before).equals(mode(after)));
             boolean unchangedBlob = metadataChange && blob(before).equals(blob(after));
+            boolean emptyFileChange = emptyFileChange(before, after, file.oldPath(), file.path(), meta.sha().length());
+            boolean bodyless = unchangedBlob || emptyFileChange;
             String patch = file.patch();
             if (patch.lines().anyMatch(line -> line.equals("GIT binary patch") || (line.startsWith("Binary files ") && line.endsWith(" differ")))) {
                 throw new IntegrationException("GitHub returned an unavailable or non-text file diff");
             }
-            if (unchangedBlob) {
+            if (bodyless) {
                 if (file.additions() != 0 || file.deletions() != 0 || patch.lines().anyMatch(line ->
                         line.startsWith("@@") || (line.startsWith("+") && !line.startsWith("+++ "))
                                 || (line.startsWith("-") && !line.startsWith("--- ")))) {
-                    throw new IntegrationException("GitHub diff contradicts unchanged blob identifiers");
+                    throw new IntegrationException("GitHub diff contradicts unchanged blob or empty-file proof");
                 }
             } else {
                 verifyPatchCounts(patch, file.additions(), file.deletions());
@@ -305,7 +311,8 @@ public class GitRepositoryClient {
                 if (!file.oldPath().equals(file.path())) append(diff, "rename from " + file.oldPath() + "\nrename to " + file.path() + "\n");
                 append(diff, "old mode " + mode(before) + "\nnew mode " + mode(after) + "\n");
             }
-            append(diff, (unchangedBlob ? "" : patch) + "\n");
+            if (emptyFileChange) appendEmptyFileCoverage(diff, metadataDetails, file.path(), before, after);
+            append(diff, (bodyless ? "" : patch) + "\n");
         }
         if (!covered.equals(expected)) throw new IntegrationException("GitHub diff is incomplete compared with commit trees");
         return new GitCommit(meta.sha(), meta.author(), meta.authorEmail(), meta.message(), diff.toString(),
@@ -397,18 +404,25 @@ public class GitRepositoryClient {
                 boolean unchangedBlob = metadataChange && blob(before).equals(blob(after))
                         && blobMode(mode(before)) && blobMode(mode(after))
                         && (oldPath.equals(newPath) || (!current.containsKey(oldPath) && !parent.containsKey(newPath)));
-                String patch = unchangedBlob && !file.hasNonNull("diff") ? "" : field(file, "diff", maxDiffBytes);
+                boolean emptyFileChange = emptyFileChange(before, after, oldPath, newPath, meta.sha().length());
+                if (emptyFileChange && (!file.path("new_file").isBoolean() || !file.path("deleted_file").isBoolean()
+                        || file.path("new_file").asBoolean() != (before == null) || file.path("deleted_file").asBoolean() != (after == null)
+                        || (file.hasNonNull("renamed_file") && (!file.path("renamed_file").isBoolean() || file.path("renamed_file").asBoolean())))) {
+                    throw new IntegrationException("GitLab empty-file change flags disagree with immutable trees");
+                }
+                boolean bodyless = unchangedBlob || emptyFileChange;
+                String patch = bodyless && !file.hasNonNull("diff") ? "" : field(file, "diff", maxDiffBytes);
                 if (patch.lines().anyMatch(line -> line.equals("GIT binary patch")
                         || (line.startsWith("Binary files ") && line.endsWith(" differ")))) {
                     throw new IntegrationException("GitLab returned an unavailable or non-text file diff");
                 }
                 long fileAdds = lineCount(patch, '+'), fileDeletes = lineCount(patch, '-');
-                if (unchangedBlob && (fileAdds != 0 || fileDeletes != 0 || patch.lines().anyMatch(line ->
+                if (bodyless && (fileAdds != 0 || fileDeletes != 0 || patch.lines().anyMatch(line ->
                         line.startsWith("@@") || (line.startsWith("+") && !line.startsWith("+++ "))
                                 || (line.startsWith("-") && !line.startsWith("--- "))))) {
-                    throw new IntegrationException("GitLab diff contradicts unchanged blob identifiers");
+                    throw new IntegrationException("GitLab diff contradicts unchanged blob or empty-file proof");
                 }
-                if (!unchangedBlob && (patch.isBlank() || fileAdds + fileDeletes == 0)) {
+                if (!bodyless && (patch.isBlank() || fileAdds + fileDeletes == 0)) {
                     throw new IntegrationException("GitLab returned an unavailable or non-text file diff");
                 }
                 actualAdds += fileAdds;
@@ -421,8 +435,9 @@ public class GitRepositoryClient {
                     if (!oldPath.equals(newPath)) append(diff, "rename from " + oldPath + "\nrename to " + newPath + "\n");
                     append(diff, "old mode " + mode(before) + "\nnew mode " + mode(after) + "\n");
                 }
-                if (!unchangedBlob) bodyFiles++;
-                append(diff, (unchangedBlob ? "" : patch) + "\n");
+                if (emptyFileChange) appendEmptyFileCoverage(diff, metadataDetails, newPath, before, after);
+                if (!bodyless) bodyFiles++;
+                append(diff, (bodyless ? "" : patch) + "\n");
             }
             if (!response.next() && response.body().size() < PAGE_SIZE) break;
         }
@@ -556,6 +571,24 @@ public class GitRepositoryClient {
     private static String blob(String entry) { return entry.substring(0, entry.indexOf(':')); }
     private static String mode(String entry) { return entry.substring(entry.indexOf(':') + 1); }
     private static boolean blobMode(String mode) { return Set.of("100644", "100755", "120000").contains(mode); }
+
+    private static boolean emptyBlobId(String sha, int objectIdLength) {
+        return objectIdLength == 40 ? EMPTY_BLOB_SHA1.equals(sha) : objectIdLength == 64 && EMPTY_BLOB_SHA256.equals(sha);
+    }
+
+    private static boolean emptyFileChange(String before, String after, String oldPath, String newPath, int objectIdLength) {
+        if (!oldPath.equals(newPath) || (before == null) == (after == null)) return false;
+        String entry = before == null ? after : before;
+        return Set.of("100644", "100755").contains(mode(entry)) && emptyBlobId(blob(entry), objectIdLength);
+    }
+
+    private void appendEmptyFileCoverage(StringBuilder diff, StringBuilder details, String path, String before, String after) {
+        boolean created = before == null;
+        String entry = created ? after : before;
+        appendCoverage(details, "빈 파일 " + (created ? "생성" : "삭제") + ": " + path + ", 모드: " + mode(entry)
+                + " (Git 빈 blob 확인; 본문 없음; 경로·권한 수동 확인 필요)\n");
+        append(diff, (created ? "new file mode " : "deleted file mode ") + mode(entry) + "\n");
+    }
 
     private static void appendCoverage(StringBuilder target, String value) {
         if (target.length() + value.length() > 16000) throw new IntegrationException("Commit coverage details exceed the size limit");

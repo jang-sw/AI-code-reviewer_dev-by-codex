@@ -13,5 +13,25 @@
   <c:if test="${project.status == 'PENDING'}"><c:url var="rejectAction" value="/admin/projects/${project.id}/reject"/><form method="post" action="<c:out value='${rejectAction}'/>"><input type="hidden" name="<c:out value='${_csrf.parameterName}'/>" value="<c:out value='${_csrf.token}'/>"><button type="submit" class="button-secondary">등록 반려</button></form></c:if>
   <c:if test="${project.approved}"><c:url var="pauseAction" value="/admin/projects/${project.id}/pause"/><form method="post" action="<c:out value='${pauseAction}'/>"><input type="hidden" name="<c:out value='${_csrf.parameterName}'/>" value="<c:out value='${_csrf.token}'/>"><button type="submit" class="button-secondary">리뷰 일시 중지</button></form></c:if>
 </div></section></c:if>
+<c:if test="${isAdmin and project.status == 'PAUSED' and not empty project.lastReviewedSha}">
+<section class="card"><details><summary>Git 이력 변경 후 리뷰 진행 기준 복구</summary>
+  <p>강제 푸시 등으로 저장된 기준 커밋이 현재 브랜치 이력에 없을 때 사용하세요. 기존 커밋 리뷰와 이슈는 보존하고 진행 기준만 초기화합니다.</p>
+  <p>프로젝트는 일시 중지 상태를 유지합니다. 관리자가 리뷰를 재개한 뒤 <c:choose><c:when test="${scheduledReviewEnabled}">예약 실행 또는 직접 리뷰 요청으로</c:when><c:otherwise>직접 리뷰 요청으로 (현재 자동 리뷰 꺼짐)</c:otherwise></c:choose> 현재 브랜치 전체 이력에서 아직 리뷰하지 않은 커밋을 순서대로 처리합니다. 현재 이력에서 사라진 커밋의 리뷰와 이슈도 기록에 남습니다.</p>
+  <p class="hint">실행 중인 리뷰가 있으면 복구할 수 없습니다. 종료 후 새로고침하여 다시 시도하세요.</p>
+  <p>현재 진행 기준: <code class="commit-sha"><c:out value="${project.lastReviewedSha}"/></code></p>
+  <c:url var="recoveryAction" value="/admin/projects/${project.id}/review-progress/reset"/>
+  <form method="post" action="<c:out value='${recoveryAction}'/>" class="form-stack">
+    <input type="hidden" name="<c:out value='${_csrf.parameterName}'/>" value="<c:out value='${_csrf.token}'/>">
+    <input type="hidden" name="expectedCursor" value="<c:out value='${project.lastReviewedSha}'/>">
+    <label for="recovery-repository">확인을 위해 저장소 주소를 그대로 입력하세요</label>
+    <p id="recovery-repository-help" class="hint"><c:out value="${project.repositoryUrl}"/></p>
+    <input id="recovery-repository" name="repositoryUrl" type="url" required maxlength="2048" autocomplete="off" aria-describedby="recovery-repository-help">
+    <label for="recovery-reason">복구 사유</label>
+    <input id="recovery-reason" name="reason" required minlength="5" maxlength="500" autocomplete="off" aria-describedby="recovery-reason-help">
+    <p id="recovery-reason-help" class="hint">5~500자, 줄바꿈 없이 입력하세요. 사유와 이전 기준 커밋은 감사 기록에 저장됩니다. 비밀번호·토큰·소스코드 등 비밀정보를 입력하지 마세요.</p>
+    <button type="submit" class="button-secondary">기존 기록을 보존하고 진행 기준 초기화</button>
+  </form>
+</details></section>
+</c:if>
 <section class="card"><h2>프로젝트 정보</h2><dl><dt>등록자</dt><dd><c:out value="${project.ownerUsername}"/></dd><dt>저장소</dt><dd><c:out value="${project.provider}"/> · <c:out value="${project.repositoryPath}"/></dd><dt>리뷰 브랜치</dt><dd><c:out value="${project.reviewBranch}" default="저장소 기본 브랜치"/></dd><dt>리뷰 실행</dt><dd><c:choose><c:when test="${scheduledReviewEnabled}">예약 일정 또는 직접 요청</c:when><c:otherwise>직접 요청 (자동 리뷰 꺼짐)</c:otherwise></c:choose></dd><dt>등록 시각 (UTC)</dt><dd><c:out value="${project.createdAt}"/></dd></dl><p class="muted">수정 권고는 작성자와 연결된 계정의 이슈함으로 전달합니다. 연결된 계정이 없으면 프로젝트 등록자에게 전달합니다.</p></section>
 <%@ include file="/WEB-INF/jsp/fragments/footer.jspf" %>

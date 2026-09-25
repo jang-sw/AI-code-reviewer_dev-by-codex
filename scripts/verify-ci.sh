@@ -19,8 +19,8 @@ if (( 10#$test_port < 1 || 10#$test_port > 65535 )) ||
   exit 1
 fi
 
-# External smoke/evaluation tests are deliberate opt-ins outside this CI entrypoint.
-export RUN_GITHUB_SMOKE=false RUN_OLLAMA_SMOKE=false RUN_AI_EVALUATION=false
+# External smoke/evaluation and larger offline load tests are deliberate opt-ins outside this CI entrypoint.
+export RUN_GITHUB_SMOKE=false RUN_GITLAB_SMOKE=false RUN_OLLAMA_SMOKE=false RUN_AI_EVALUATION=false RUN_GIT_LOAD_SMOKE=false
 workspace="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd -- "$workspace/source"
 ./mvnw -B -ntp clean verify

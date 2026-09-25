@@ -52,6 +52,8 @@ V7 `app_user.approval_status` PENDING/APPROVED/REJECTED(default APPROVED), appro
 
 ### review/issues (agent)
 - package `review`: scheduled execution default every hour conditional app.review.enabled, manual POST `/projects/{id}/review` restricted owner/admin approved only. PostgreSQL advisory lock on dedicated connection covers full run across instances, unlock in finally. JDBC transactions persist commit+issues atomically; only checkpoint cursor when whole batch succeeds. On failure retain previous safe batch cursor and deduplicate saved commits on retry. Use GitRepositoryClient and AiReviewClient contracts.
+- 관리자 복구 POST `/admin/projects/{id}/review-progress/reset`: PAUSED 프로젝트의 정확한 repositoryUrl/expectedCursor와 reason5..500자를 확인한다. 서비스는 외부 트랜잭션 없이 advisory lease를 획득한 뒤 새 트랜잭션에서 권한/row lock/상태를 재검사한다. last_reviewed_sha=NULL + 감사 기록 commit/rollback 후 lease를 닫는다. 기존 runs/commits/issues와 PAUSED는 보존한다.
+- `METADATA_ONLY`에는 같은 blob의 경로·모드 변경과, 고정 tree 및 canonical Git 빈 blob으로 증명한 정규 빈 파일 생성·삭제가 포함된다. AI 본문 검토 및 자동 이슈 생성은 없으며 수동 확인 범위를 표시한다. 본문 diff와 섞이면 FULL로 전달한다.
 - unique reviewed_commit prevents duplicates. github.com의 authorLogin과 활성 사용자 Git 계정이 맞으면 우선 배정한다. 그 외에는 정확한 origin/email 관리자 매핑의 활성 사용자, 없으면 프로젝트 소유자 순서다. GitLab 사용자명으로 GitHub 계정 namespace를 매칭하지 않는다.
 - package `issue`: GET `/issues` visibility assignee or admin, POST `/issues/{id}/status` bound status/ownership. `/` dashboard and project detail review data can be separate `/reviews?projectId=...` route. JSP owned by this agent for dashboard/issues/reviews.
 - All record fields for JSP need JavaBean getters or map view models; ensure escaping and CSRF inputs.

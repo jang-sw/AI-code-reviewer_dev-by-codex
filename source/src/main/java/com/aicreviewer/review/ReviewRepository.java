@@ -209,7 +209,7 @@ public class ReviewRepository {
 
     public List<Map<String, Object>> recentProjects(ReviewActor actor) {
         return jdbc.queryForList("select p.id, p.name, p.status, p.last_reviewed_sha, (select r.status from review_run r where r.project_id = p.id order by r.id desc limit 1) as review_status from project p" +
-                (actor.admin() ? "" : " where p.owner_id = " + actor.id()) + " order by p.updated_at desc limit 12");
+                (actor.admin() ? "" : " where p.owner_id = " + actor.id()) + " order by p.updated_at desc, p.id desc limit 12");
     }
 
     private long count(String sql) { return Objects.requireNonNull(jdbc.queryForObject(sql, Long.class)); }
