@@ -38,6 +38,7 @@ jobs:
       RUN_OLLAMA_SMOKE: 'false'
       RUN_AI_EVALUATION: 'false'
       RUN_GIT_LOAD_SMOKE: 'false'
+      RUN_REVIEW_LOAD_SMOKE: 'false'
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -68,3 +69,18 @@ jobs:
           TEST_DATABASE_URL: jdbc:postgresql://127.0.0.1:${{ job.services.postgres.ports['5432'] }}/reviewer_integration
           TEST_IDENTITY_DATABASE_URL: jdbc:postgresql://127.0.0.1:${{ job.services.postgres.ports['5432'] }}/identity_security
         run: bash scripts/verify-ci.sh
+      - name: Verify Linux deployment artifacts without installing services
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v sha256sum >/dev/null
+          command -v unzip >/dev/null
+          BASH_BIN="$(command -v bash)"
+          export BASH_BIN
+          bash -n deploy/linux/verify-artifact.sh
+          python3 deploy/linux/test-verify-artifact.py
+          artifact="${GITHUB_WORKSPACE}/source/target/ai-code-reviewer.war"
+          artifact_digest="$(sha256sum -- "$artifact")"
+          artifact_digest="${artifact_digest%% *}"
+          # Check the just-built WAR structure here; deployment uses an independently approved digest.
+          bash deploy/linux/verify-artifact.sh "$artifact" "$artifact_digest"

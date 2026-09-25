@@ -185,17 +185,22 @@ class GitHubMetadataCoverageTest {
         assertThatThrownBy(this::review).hasMessageContaining("change kind");
     }
 
-    @Test void aChangedBlobWithNoBodyAndAnUnchangedPathWithNoRealChangeRemainFailures() {
+    @Test void aChangedBlobWithNoBodyRequiresManualWorkWhileNoRealChangeRemainsInvalid() {
         configure(List.of(entry("script.sh", OLD, "100644")), List.of(entry("script.sh", NEW, "100755")),
                 List.of(file("script.sh", null, "modified", NEW, null, 0, 0)));
-        assertThatThrownBy(this::review).hasMessageContaining("missing or truncated");
+        GitCommit manual = review();
+        assertThat(manual.coverageType()).isEqualTo("MANUAL_ONLY");
+        assertThat(manual.manualFiles()).containsExactly(new ManualReviewFile("script.sh", OLD, NEW, "100644", "100755", "SOURCE_DIFF_UNAVAILABLE"));
         configure(List.of(entry("script.sh", OLD, "100644")), List.of(entry("script.sh", OLD, "100644")), List.of(modeFile("script.sh")));
         assertThatThrownBy(this::review).hasMessageContaining("complete commit trees");
     }
 
     @Test void newEmptyFilesAreNotReclassifiedAsUnchangedMetadata() {
         configure(List.of(), List.of(entry("empty", OLD, "100644")), List.of(file("empty", null, "added", OLD, null, 0, 0)));
-        assertThatThrownBy(this::review).hasMessageContaining("patch");
+        GitCommit manual = review();
+        assertThat(manual.coverageType()).isEqualTo("MANUAL_ONLY");
+        assertThat(manual.manualFiles()).containsExactly(new ManualReviewFile("empty", null, OLD, null, "100644", "SOURCE_DIFF_UNAVAILABLE"));
+        assertThat(manual.diff()).isEmpty();
     }
 
     @ParameterizedTest @ValueSource(strings = {"GIT binary patch", "Binary files a/old.java and b/new.java differ",
@@ -340,8 +345,10 @@ class GitHubMetadataCoverageTest {
             files.add(modeFile(path));
         }
         configure(before, after, files);
-        assertThatThrownBy(() -> client(1024, 262144, 300).batch(REPOSITORY, null, ROOT, Set.of(), 1))
-                .hasMessageContaining("diff exceeds configured size");
+        GitCommit result = client(1024, 262144, 300).batch(REPOSITORY, null, ROOT, Set.of(), 1).commits().getFirst();
+        assertThat(result.coverageType()).isEqualTo("MANUAL_ONLY");
+        assertThat(result.diff()).isEmpty();
+        assertThat(result.manualFiles()).hasSize(20).allSatisfy(file -> assertThat(file.reasonCode()).isEqualTo("GIT_DIFF_BUDGET"));
     }
 
     @Test void treeHttpErrorsAndOversizedResponsesCannotProduceMetadataSuccess() {

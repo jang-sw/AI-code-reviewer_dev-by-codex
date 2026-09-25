@@ -75,7 +75,7 @@ class GitEmptyFileCoverageTest {
             details.put("parents", rootCommit ? List.of() : List.of(Map.of("sha", root)));
             details.put("commit", Map.of("tree", Map.of("sha", afterTreeSha)));
             details.put("files", files);
-        }
+        } else details.put("parent_ids", rootCommit ? List.of() : List.of(root));
         server.handler = request -> {
             if (request.path().endsWith("/commits")) return ok(rootCommit ? List.of(commit(head)) : List.of(commit(head, root), commit(root)));
             if (request.path().endsWith("/git/commits/" + root)) return ok(Map.of("sha", root, "tree", Map.of("sha", beforeTreeSha)));
@@ -161,7 +161,15 @@ class GitEmptyFileCoverageTest {
             configure(provider, 40, true, false, "100644", blob, "");
             after.set(0, new HashMap<>(after.getFirst()));
             after.getFirst().put("size", 0);
-            assertThatThrownBy(this::review).isInstanceOf(IntegrationException.class);
+            if (blob.length() != 40) {
+                assertThatThrownBy(this::review).hasMessageContaining("object format");
+            } else {
+                GitCommit result = review();
+                assertThat(result.coverageType()).isEqualTo("MANUAL_ONLY");
+                assertThat(result.diff()).isEmpty();
+                assertThat(result.manualFiles()).containsExactly(new ManualReviewFile("empty.flag", null, blob, null, "100644", "SOURCE_DIFF_UNAVAILABLE"));
+                assertThat(result.coverageDetails()).doesNotContain("Git 빈 blob 확인");
+            }
         }
     }
 
@@ -217,7 +225,7 @@ class GitEmptyFileCoverageTest {
         for (String flag : List.of("collapsed", "too_large")) {
             configure("gitlab", 40, true, false, "100644", emptyBlob(40), "");
             files.getFirst().put(flag, true);
-            assertThatThrownBy(this::review).hasMessageContaining("collapsed or oversized");
+            assertThatThrownBy(this::review).hasMessageContaining("contradicts unchanged blob or empty-file proof");
         }
     }
 
@@ -236,6 +244,10 @@ class GitEmptyFileCoverageTest {
         String binary = "e".repeat(40);
         after.add(entry("image.bin", binary, "100644"));
         files.add(file("image.bin", binary, true, null, 0, 0));
-        assertThatThrownBy(this::review).isInstanceOf(IntegrationException.class);
+        GitCommit result = review();
+        assertThat(result.coverageType()).isEqualTo("MANUAL_ONLY");
+        assertThat(result.diff()).isEmpty();
+        assertThat(result.manualFiles()).extracting(ManualReviewFile::filePath).containsExactly("empty.flag", "image.bin");
+        assertThat(result.manualFiles()).allSatisfy(file -> assertThat(file.reasonCode()).isEqualTo("SOURCE_DIFF_UNAVAILABLE"));
     }
 }

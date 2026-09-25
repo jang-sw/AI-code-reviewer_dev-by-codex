@@ -28,6 +28,7 @@ public class GitRepositoryClient {
     // Git hashes the object header plus bytes; these hash the seven bytes "blob 0\0", not an empty byte array.
     private static final String EMPTY_BLOB_SHA1 = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391";
     private static final String EMPTY_BLOB_SHA256 = "473a0f4c3be8a93681a267e3b1e9a7dcda1185436fe141f7749120a303721813";
+    private static final java.util.regex.Pattern COMPLETE_TEXT_HUNK = java.util.regex.Pattern.compile("^@@ -([0-9]+)(?:,([0-9]+))? \\+([0-9]+)(?:,([0-9]+))? @@.*$");
     /** Bounded durable progress input; repositories must stop reading before exceeding this count. */
     public static final int MAX_REVIEWED_SHAS = 131072;
     private final Set<String> allowedHosts;
@@ -87,6 +88,311 @@ public class GitRepositoryClient {
         }
         return collectWithDeadline(repository, branch, lastReviewedSha, Set.copyOf(reviewedShas), limit, false);
     }
+
+    /** Re-proves the entire pinned change before converting an AI preflight limit into manual work. */
+    public GitCommit manualFallback(RepositoryUrl repository, GitCommit original) {
+        if (original == null || original.sha() == null || !validSha(original.sha()) || !"FULL".equals(original.coverageType())) {
+            throw new IllegalArgumentException("Manual AI fallback requires a complete pinned commit");
+        }
+        RepositoryUrl checked = RepositoryUrl.parse(repository.normalizedUrl(), allowedHosts);
+        if (!checked.equals(repository)) throw new IllegalArgumentException("Repository metadata does not match its URL");
+        credentials.tokenFor(repository);
+        operationDeadline.set(System.nanoTime() + Duration.ofSeconds(operationTimeoutSeconds).toNanos());
+        try {
+            String base = api(repository);
+            JsonNode details = get(repository, base + (github(repository) ? "/commits/" : "/repository/commits/")
+                    + original.sha() + (github(repository) ? "?per_page=100&page=1" : "?stats=true")).body();
+            CommitMeta meta = metadata(details, github(repository));
+            if (!meta.sha().equals(original.sha()) || !meta.message().equals(original.message())) {
+                throw new IntegrationException("Git returned inconsistent pinned commit metadata");
+            }
+            return manualCommit(repository, base, new CommitMeta(meta.sha(), original.authorLogin(), original.authorEmail(),
+                    original.message(), meta.parents()), "AI_INPUT_LIMIT");
+        } finally {
+            operationDeadline.remove();
+        }
+    }
+
+    private GitCommit manualCommit(RepositoryUrl repository, String base, CommitMeta meta, String reason) {
+        return github(repository) ? githubManualCommit(repository, base, meta, reason) : gitlabManualCommit(repository, base, meta, reason);
+    }
+
+    private GitCommit githubManualCommit(RepositoryUrl repository, String base, CommitMeta meta, String reason) {
+        Set<String> filenames = new HashSet<>(), covered = new HashSet<>();
+        ManualTrees manifest = null;
+        JsonNode first = null;
+        long actualAdds = 0, actualDeletes = 0;
+        int additions = -1, deletions = -1;
+        for (int page = 1; ; page++) {
+            if (page > Math.min(maxPages, 30)) throw new IntegrationException("GitHub commit diff exceeds pagination limit");
+            Page response = get(repository, base + "/commits/" + meta.sha() + "?per_page=100&page=" + page);
+            JsonNode details = response.body();
+            if (!sha(details, "sha").equals(meta.sha())) throw new IntegrationException("Git returned an unexpected commit");
+            int pageAdds = nonnegative(details.path("stats"), "additions"), pageDeletes = nonnegative(details.path("stats"), "deletions");
+            if (first == null) {
+                first = details;
+                additions = pageAdds;
+                deletions = pageDeletes;
+                manifest = githubManualTrees(repository, base, meta, details);
+            } else if (additions != pageAdds || deletions != pageDeletes
+                    || !first.path("commit").path("tree").equals(details.path("commit").path("tree"))
+                    || !first.path("parents").equals(details.path("parents"))) {
+                throw new IntegrationException("GitHub returned inconsistent paginated commit metadata");
+            }
+            JsonNode files = details.path("files");
+            requireArray(files);
+            for (JsonNode file : files) {
+                String path = filePath(file, "filename");
+                if (!filenames.add(path)) throw new IntegrationException("GitHub returned duplicate diff files");
+                String oldPath = file.hasNonNull("previous_filename") ? filePath(file, "previous_filename") : path;
+                String status = field(file, "status", 20);
+                int adds = nonnegative(file, "additions"), deletes = nonnegative(file, "deletions");
+                actualAdds += adds;
+                actualDeletes += deletes;
+                String before = manifest.parent().get(oldPath), after = manifest.current().get(path);
+                validateManualChange(oldPath, path, status, before, after, manifest);
+                if ((status.equals("added") && deletes != 0) || (status.equals("removed") && adds != 0)) {
+                    throw new IntegrationException("GitHub file statistics contradict its create or delete shape");
+                }
+                rejectInvalidEmptyObject(before, after, meta.sha().length());
+                coverManualPaths(oldPath, path, covered, manifest.changed());
+                if (!sha(file, "sha").equals(blob(after == null ? before : after))) {
+                    throw new IntegrationException("GitHub diff blob disagrees with immutable commit tree");
+                }
+                String patch = optionalManualPatch(file, "patch");
+                boolean bodyless = manualBodyless(before, after, oldPath, path, meta.sha().length());
+                if (bodyless) validateBodylessPatch(patch, adds, deletes);
+                else if (patch != null && !patch.isBlank() && !binaryPatch(patch)) {
+                    // A large complete patch may be unsuitable for AI, but its reported statistics must still agree.
+                    verifyManualPatch(patch, adds, deletes);
+                }
+            }
+            if (!response.next() && files.size() < PAGE_SIZE) break;
+            if (filenames.size() >= 3000) throw new IntegrationException("GitHub commit file limit reached; complete diff cannot be verified");
+        }
+        if (actualAdds != additions || actualDeletes != deletions || !covered.equals(manifest.changed())) {
+            throw new IntegrationException("GitHub manual file evidence is incomplete compared with commit trees or statistics");
+        }
+        return manualResult(meta, manifest, reason, false);
+    }
+
+    private ManualTrees githubManualTrees(RepositoryUrl repository, String base, CommitMeta meta, JsonNode details) {
+        requireParents(details, "parents", true, meta.parents());
+        Map<String, String> current = githubTree(repository, base, sha(details.path("commit").path("tree"), "sha"));
+        Map<String, String> parent = Map.of();
+        if (!meta.parents().isEmpty()) {
+            String parentSha = meta.parents().getFirst();
+            JsonNode parentDetails = get(repository, base + "/git/commits/" + parentSha).body();
+            if (!sha(parentDetails, "sha").equals(parentSha)) throw new IntegrationException("GitHub returned an unexpected parent commit");
+            parent = githubTree(repository, base, sha(parentDetails.path("tree"), "sha"));
+        }
+        return manualTrees(parent, current);
+    }
+
+    private GitCommit gitlabManualCommit(RepositoryUrl repository, String base, CommitMeta meta, String reason) {
+        JsonNode details = get(repository, base + "/repository/commits/" + meta.sha() + "?stats=true").body();
+        if (!sha(details, "id").equals(meta.sha())) throw new IntegrationException("Git returned an unexpected commit");
+        requireParents(details, "parent_ids", false, meta.parents());
+        int additions = nonnegative(details.path("stats"), "additions"), deletions = nonnegative(details.path("stats"), "deletions");
+        Map<String, String> current = gitlabTree(repository, base, meta.sha());
+        Map<String, String> parent = meta.parents().isEmpty() ? Map.of() : gitlabTree(repository, base, meta.parents().getFirst());
+        ManualTrees manifest = manualTrees(parent, current);
+        Set<String> covered = new HashSet<>(), seen = new HashSet<>();
+        long knownAdds = 0, knownDeletes = 0;
+        boolean unknownCounts = false;
+        for (int page = 1; ; page++) {
+            if (page > maxPages) throw new IntegrationException("GitLab diff exceeds configured pagination budget");
+            Page response = get(repository, base + "/repository/commits/" + meta.sha() + "/diff?unidiff=true&per_page=100&page=" + page);
+            requireArray(response.body());
+            for (JsonNode file : response.body()) {
+                String oldPath = filePath(file, "old_path"), path = filePath(file, "new_path");
+                if (!seen.add(oldPath + "\n" + path)) throw new IntegrationException("GitLab returned duplicate diff files");
+                boolean created = requiredBoolean(file, "new_file"), deleted = requiredBoolean(file, "deleted_file"), renamed = requiredBoolean(file, "renamed_file");
+                String status = created ? "added" : deleted ? "removed" : renamed ? "renamed" : "modified";
+                if ((created && deleted) || (renamed && (created || deleted))) throw new IntegrationException("GitLab returned inconsistent file change flags");
+                String before = parent.get(oldPath), after = current.get(path);
+                validateManualChange(oldPath, path, status, before, after, manifest);
+                rejectInvalidEmptyObject(before, after, meta.sha().length());
+                coverManualPaths(oldPath, path, covered, manifest.changed());
+                validateOptionalMode(file, "a_mode", before);
+                validateOptionalMode(file, "b_mode", after);
+                boolean collapsed = optionalBoolean(file, "collapsed"), tooLarge = optionalBoolean(file, "too_large");
+                boolean unavailable = collapsed || tooLarge;
+                String patch = optionalManualPatch(file, "diff");
+                boolean bodyless = manualBodyless(before, after, oldPath, path, meta.sha().length());
+                if (bodyless) {
+                    if (unavailable) throw new IntegrationException("GitLab unavailable diff contradicts unchanged blob or empty-file proof");
+                    validateBodylessPatch(patch, 0, 0);
+                } else if (patch == null || patch.isBlank() || binaryPatch(patch)) {
+                    // GitLab omits per-file line statistics for unavailable diffs. Keep this gap explicit.
+                    unknownCounts = true;
+                } else {
+                    validateCompleteTextPatch(patch);
+                    long adds = lineCount(patch, '+'), deletes = lineCount(patch, '-');
+                    if (adds + deletes == 0) throw new IntegrationException("Git returned a missing or truncated text patch");
+                    if ((created && deletes != 0) || (deleted && adds != 0)) {
+                        throw new IntegrationException("GitLab patch statistics contradict its create or delete shape");
+                    }
+                    knownAdds += adds;
+                    knownDeletes += deletes;
+                    unknownCounts |= unavailable;
+                }
+            }
+            if (!response.next() && response.body().size() < PAGE_SIZE) break;
+        }
+        if (!covered.equals(manifest.changed()) || knownAdds > additions || knownDeletes > deletions
+                || (!unknownCounts && (knownAdds != additions || knownDeletes != deletions))) {
+            throw new IntegrationException("GitLab manual file evidence is incomplete compared with commit trees or statistics");
+        }
+        return manualResult(meta, manifest, reason, unknownCounts);
+    }
+
+    private static ManualTrees manualTrees(Map<String, String> parent, Map<String, String> current) {
+        Set<String> changed = new HashSet<>(parent.keySet());
+        changed.addAll(current.keySet());
+        changed.removeIf(path -> java.util.Objects.equals(parent.get(path), current.get(path)));
+        if (changed.isEmpty() || changed.size() > ManualReviewFile.MAX_FILES) {
+            throw new IntegrationException("Manual review changed-file evidence is empty or exceeds its safety limit");
+        }
+        return new ManualTrees(parent, current, Set.copyOf(changed));
+    }
+
+    private static void validateManualChange(String oldPath, String path, String status, String before, String after, ManualTrees trees) {
+        boolean samePath = oldPath.equals(path);
+        boolean shape = switch (status) {
+            case "added" -> samePath && before == null && after != null;
+            case "removed" -> samePath && before != null && after == null;
+            case "modified", "changed" -> samePath && before != null && after != null && !before.equals(after);
+            case "renamed" -> !samePath && before != null && after != null
+                    && !trees.current().containsKey(oldPath) && !trees.parent().containsKey(path);
+            default -> false;
+        };
+        if (!shape) throw new IntegrationException("Git manual file change does not match immutable trees");
+    }
+
+    private static void coverManualPaths(String oldPath, String path, Set<String> covered, Set<String> expected) {
+        for (String value : oldPath.equals(path) ? Set.of(path) : Set.of(oldPath, path)) {
+            if (!expected.contains(value) || !covered.add(value)) throw new IntegrationException("Git manual file paths do not match complete commit trees");
+        }
+    }
+
+    private static boolean manualBodyless(String before, String after, String oldPath, String path, int shaLength) {
+        return (before != null && after != null && blob(before).equals(blob(after)) && blobMode(mode(before)) && blobMode(mode(after)))
+                || emptyFileChange(before, after, oldPath, path, shaLength);
+    }
+
+    private static void rejectInvalidEmptyObject(String before, String after, int shaLength) {
+        for (String entry : new String[] { before, after }) {
+            if (entry != null && emptyBlobId(blob(entry), shaLength) && !Set.of("100644", "100755").contains(mode(entry))) {
+                throw new IntegrationException("Canonical empty blob cannot prove a symlink or submodule object");
+            }
+        }
+    }
+
+    private static String optionalManualPatch(JsonNode file, String name) {
+        if (!file.hasNonNull(name)) return null;
+        if (!file.path(name).isString()) throw new IntegrationException("Git returned an invalid patch field");
+        return file.path(name).asText();
+    }
+
+    private static void validateBodylessPatch(String patch, int adds, int deletes) {
+        if (adds != 0 || deletes != 0 || (patch != null && (binaryPatch(patch) || patch.lines().anyMatch(line -> line.startsWith("@@")
+                || (line.startsWith("+") && !line.startsWith("+++ ")) || (line.startsWith("-") && !line.startsWith("--- ")))))) {
+            throw new IntegrationException("Git diff contradicts unchanged blob or empty-file proof");
+        }
+    }
+
+    private void verifyManualPatch(String patch, int adds, int deletes) {
+        validateCompleteTextPatch(patch);
+        if ((long) adds + deletes == 0 || lineCount(patch, '+') != adds || lineCount(patch, '-') != deletes) {
+            throw new IntegrationException("Git returned a missing or truncated text patch");
+        }
+    }
+
+    private void validateCompleteTextPatch(String patch) {
+        long oldRemaining = 0, newRemaining = 0;
+        boolean seenHunk = false;
+        for (String rawLine : patch.split("\n", -1)) {
+            if (System.nanoTime() >= operationDeadline.get()) throw new IntegrationException("Git operation exceeded its time budget");
+            String line = rawLine.endsWith("\r") ? rawLine.substring(0, rawLine.length() - 1) : rawLine;
+            if (line.startsWith("@@")) {
+                if (oldRemaining != 0 || newRemaining != 0) throw incompleteTextPatch();
+                var match = COMPLETE_TEXT_HUNK.matcher(line);
+                if (!match.matches()) throw incompleteTextPatch();
+                try {
+                    long oldStart = Long.parseLong(match.group(1)), newStart = Long.parseLong(match.group(3));
+                    oldRemaining = match.group(2) == null ? 1 : Long.parseLong(match.group(2));
+                    newRemaining = match.group(4) == null ? 1 : Long.parseLong(match.group(4));
+                    if (oldStart > Integer.MAX_VALUE || oldRemaining > Integer.MAX_VALUE - oldStart
+                            || newStart > Integer.MAX_VALUE || newRemaining > Integer.MAX_VALUE - newStart) throw incompleteTextPatch();
+                } catch (NumberFormatException ex) { throw incompleteTextPatch(); }
+                seenHunk = true;
+            } else if (seenHunk && line.equals("\\ No newline at end of file")) {
+                // No old/new lines are added by this marker.
+            } else if (oldRemaining != 0 || newRemaining != 0) {
+                if (line.startsWith(" ")) { oldRemaining--; newRemaining--; }
+                else if (line.startsWith("-")) oldRemaining--;
+                else if (line.startsWith("+")) newRemaining--;
+                else throw incompleteTextPatch();
+                if (oldRemaining < 0 || newRemaining < 0) throw incompleteTextPatch();
+            } else if (!line.isEmpty() && (seenHunk || !(line.startsWith("diff --git ") || line.startsWith("index ")
+                    || line.startsWith("--- ") || line.startsWith("+++ ") || line.startsWith("old mode ") || line.startsWith("new mode ")
+                    || line.startsWith("new file mode ") || line.startsWith("deleted file mode ") || line.startsWith("similarity index ")
+                    || line.startsWith("dissimilarity index ") || line.startsWith("rename from ") || line.startsWith("rename to ")))) {
+                throw incompleteTextPatch();
+            }
+        }
+        if (!seenHunk || oldRemaining != 0 || newRemaining != 0) throw incompleteTextPatch();
+    }
+
+    private static IntegrationException incompleteTextPatch() {
+        return new IntegrationException("Git returned a missing or truncated text patch with incomplete hunks");
+    }
+
+    private static boolean requiredBoolean(JsonNode node, String name) {
+        if (!node.path(name).isBoolean()) throw new IntegrationException("Git returned an invalid file change flag");
+        return node.path(name).asBoolean();
+    }
+
+    private static boolean optionalBoolean(JsonNode node, String name) {
+        return node.has(name) && requiredBoolean(node, name);
+    }
+
+    private static void validateOptionalMode(JsonNode file, String field, String entry) {
+        if (!file.hasNonNull(field)) return;
+        String expected = entry == null ? "0" : mode(entry);
+        String actual = field(file, field, 10);
+        if (!actual.equals(expected) && !(entry == null && actual.equals("000000"))) {
+            throw new IntegrationException("GitLab diff mode disagrees with immutable commit tree");
+        }
+    }
+
+    private static void requireParents(JsonNode details, String field, boolean github, List<String> expected) {
+        JsonNode parents = details.path(field);
+        if (!parents.isArray()) throw new IntegrationException("Git commit parent metadata is missing or invalid");
+        List<String> actual = new ArrayList<>();
+        for (JsonNode parent : parents) actual.add(github ? sha(parent, "sha") : parent.asText(""));
+        if (!actual.equals(expected)) throw new IntegrationException("Git commit parents disagree with pinned history");
+    }
+
+    private GitCommit manualResult(CommitMeta meta, ManualTrees trees, String reason, boolean unknownLineCounts) {
+        List<ManualReviewFile> files = trees.changed().stream().sorted().map(path -> {
+            String before = trees.parent().get(path), after = trees.current().get(path);
+            if ((before != null && blob(before).length() != meta.sha().length())
+                    || (after != null && blob(after).length() != meta.sha().length())) {
+                throw new IntegrationException("Git manual tree object format disagrees with the pinned commit");
+            }
+            return new ManualReviewFile(path, before == null ? null : blob(before), after == null ? null : blob(after),
+                    before == null ? null : mode(before), after == null ? null : mode(after), reason);
+        }).toList();
+        String details = "AI 본문 검토 없음. 고정 커밋과 첫 부모의 전체 트리로 변경 경로 " + files.size()
+                + "개를 확인했습니다. 일부 파일의 본문 또는 입력 한도 때문에 지원 가능한 파일도 포함하여 커밋 전체를 수동 확인해야 합니다."
+                + (unknownLineCounts ? " GitLab이 제공하지 않은 본문의 추가·삭제 행수는 검증할 수 없습니다. 제공된 본문의 통계 모순은 검사했습니다." : "");
+        if (System.nanoTime() >= operationDeadline.get()) throw new IntegrationException("Git operation exceeded its time budget");
+        return new GitCommit(meta.sha(), meta.author(), meta.authorEmail(), meta.message(), "", "MANUAL_ONLY", details, files);
+    }
+
+    private record ManualTrees(Map<String, String> parent, Map<String, String> current, Set<String> changed) { }
 
     private GitReviewBatch collectWithDeadline(RepositoryUrl repository, String branch, String lastReviewedSha,
             Set<String> reviewedShas, int limit, boolean requireClosedBatch) {
@@ -181,7 +487,12 @@ public class GitRepositoryClient {
         };
         List<GitCommit> result = new ArrayList<>();
         for (CommitMeta meta : selected) {
-            result.add(github ? githubCommit(repository, base, meta, trees) : gitlabCommit(repository, base, meta, trees));
+            try {
+                result.add(github ? githubCommit(repository, base, meta, trees) : gitlabCommit(repository, base, meta, trees));
+            } catch (ManualCandidate candidate) {
+                // Re-read and validate the entire listing; an early unsupported file never hides later corruption.
+                result.add(manualCommit(repository, base, meta, candidate.reason));
+            }
         }
         return new GitReviewBatch(List.copyOf(result), checkpoint);
     }
@@ -223,14 +534,15 @@ public class GitRepositoryClient {
                 boolean metadataCandidate = !oldPath.equals(path) || status.equals("renamed")
                         || ((long) adds + deletes == 0 && Set.of("modified", "changed").contains(status))
                         || (Set.of("added", "removed").contains(status) && emptyBlobId(blob, meta.sha().length()));
-                String patch = metadataCandidate && !file.hasNonNull("patch") ? "" : field(file, "patch", maxDiffBytes);
+                String patch = patchField(file, "patch", metadataCandidate);
+                if (!metadataCandidate && binaryPatch(patch)) throw new ManualCandidate("SOURCE_DIFF_UNAVAILABLE");
                 if (!metadataCandidate) verifyPatchCounts(patch, adds, deletes);
                 needsManifest |= metadataCandidate;
                 additions += adds;
                 deletions += deletes;
                 collectedBytes += oldPath.getBytes(StandardCharsets.UTF_8).length + path.getBytes(StandardCharsets.UTF_8).length
                         + patch.getBytes(StandardCharsets.UTF_8).length + 18L; // Exact canonical file header and two newlines.
-                if (collectedBytes > maxDiffBytes) throw new IntegrationException("Commit diff exceeds configured size limit");
+                if (collectedBytes > maxDiffBytes) throw new ManualCandidate("GIT_DIFF_BUDGET");
                 collected.add(new GithubFile(oldPath, path, status, blob, patch, adds, deletes));
             }
             if (!response.next() && files.size() < PAGE_SIZE) break;
@@ -290,8 +602,9 @@ public class GitRepositoryClient {
             boolean emptyFileChange = emptyFileChange(before, after, file.oldPath(), file.path(), meta.sha().length());
             boolean bodyless = unchangedBlob || emptyFileChange;
             String patch = file.patch();
-            if (patch.lines().anyMatch(line -> line.equals("GIT binary patch") || (line.startsWith("Binary files ") && line.endsWith(" differ")))) {
-                throw new IntegrationException("GitHub returned an unavailable or non-text file diff");
+            if (binaryPatch(patch)) {
+                if (bodyless) throw new IntegrationException("GitHub diff contradicts unchanged blob or empty-file proof");
+                throw new ManualCandidate("SOURCE_DIFF_UNAVAILABLE");
             }
             if (bodyless) {
                 if (file.additions() != 0 || file.deletions() != 0 || patch.lines().anyMatch(line ->
@@ -391,7 +704,7 @@ public class GitRepositoryClient {
             requireArray(response.body());
             for (JsonNode file : response.body()) {
                 if (file.path("collapsed").asBoolean(false) || file.path("too_large").asBoolean(false)) {
-                    throw new IntegrationException("GitLab omitted a collapsed or oversized file diff");
+                    throw new ManualCandidate(file.path("too_large").asBoolean(false) ? "GIT_DIFF_BUDGET" : "SOURCE_DIFF_UNAVAILABLE");
                 }
                 String oldPath = filePath(file, "old_path"), newPath = filePath(file, "new_path");
                 if (!seenFiles.add(oldPath + "\n" + newPath)) throw new IntegrationException("GitLab returned duplicate diff files");
@@ -411,10 +724,10 @@ public class GitRepositoryClient {
                     throw new IntegrationException("GitLab empty-file change flags disagree with immutable trees");
                 }
                 boolean bodyless = unchangedBlob || emptyFileChange;
-                String patch = bodyless && !file.hasNonNull("diff") ? "" : field(file, "diff", maxDiffBytes);
-                if (patch.lines().anyMatch(line -> line.equals("GIT binary patch")
-                        || (line.startsWith("Binary files ") && line.endsWith(" differ")))) {
-                    throw new IntegrationException("GitLab returned an unavailable or non-text file diff");
+                String patch = patchField(file, "diff", bodyless);
+                if (binaryPatch(patch)) {
+                    if (bodyless) throw new IntegrationException("GitLab diff contradicts unchanged blob or empty-file proof");
+                    throw new ManualCandidate("SOURCE_DIFF_UNAVAILABLE");
                 }
                 long fileAdds = lineCount(patch, '+'), fileDeletes = lineCount(patch, '-');
                 if (bodyless && (fileAdds != 0 || fileDeletes != 0 || patch.lines().anyMatch(line ->
@@ -422,7 +735,8 @@ public class GitRepositoryClient {
                                 || (line.startsWith("-") && !line.startsWith("--- "))))) {
                     throw new IntegrationException("GitLab diff contradicts unchanged blob or empty-file proof");
                 }
-                if (!bodyless && (patch.isBlank() || fileAdds + fileDeletes == 0)) {
+                if (!bodyless && patch.isBlank()) throw new ManualCandidate("SOURCE_DIFF_UNAVAILABLE");
+                if (!bodyless && fileAdds + fileDeletes == 0) {
                     throw new IntegrationException("GitLab returned an unavailable or non-text file diff");
                 }
                 actualAdds += fileAdds;
@@ -472,7 +786,10 @@ public class GitRepositoryClient {
                 String type = field(entry, "type", 20);
                 String mode = field(entry, "mode", 10);
                 if (!mode.matches("[0-7]{6}")) throw new IntegrationException("GitLab returned an invalid tree mode");
-                if (!type.equals("tree")) {
+                if (type.equals("tree")) {
+                    if (!mode.equals("040000")) throw new IntegrationException("GitLab returned inconsistent tree metadata");
+                    sha(entry, "id");
+                } else {
                     if (!type.equals("blob") && !type.equals("commit")) throw new IntegrationException("GitLab returned an invalid tree type");
                     if ((type.equals("blob") && !blobMode(mode)) || (type.equals("commit") && !mode.equals("160000"))) {
                         throw new IntegrationException("GitLab returned inconsistent tree metadata");
@@ -564,7 +881,7 @@ public class GitRepositoryClient {
     private void append(StringBuilder target, String value) {
         target.append(value);
         if (target.length() > maxDiffBytes || target.toString().getBytes(StandardCharsets.UTF_8).length > maxDiffBytes) {
-            throw new IntegrationException("Commit diff exceeds configured size limit");
+            throw new ManualCandidate("GIT_DIFF_BUDGET");
         }
     }
 
@@ -603,10 +920,39 @@ public class GitRepositoryClient {
     }
 
     private static void verifyPatchCounts(String patch, int additions, int deletions) {
-        if (patch.isBlank() || (long) additions + deletions == 0
+        if (patch.isBlank()) throw new ManualCandidate("SOURCE_DIFF_UNAVAILABLE");
+        if ((long) additions + deletions == 0
                 || lineCount(patch, '+') != additions || lineCount(patch, '-') != deletions) {
             throw new IntegrationException("Git returned a missing or truncated text patch");
         }
+    }
+
+    private String patchField(JsonNode file, String name, boolean allowMissing) {
+        if (!file.hasNonNull(name)) {
+            if (allowMissing) return "";
+            throw new ManualCandidate("SOURCE_DIFF_UNAVAILABLE");
+        }
+        if (!file.path(name).isString()) throw new IntegrationException("Git returned an invalid patch field");
+        String patch = file.path(name).asText();
+        if (patch.length() > maxDiffBytes || patch.getBytes(StandardCharsets.UTF_8).length > maxDiffBytes) {
+            throw new ManualCandidate("GIT_DIFF_BUDGET");
+        }
+        return patch;
+    }
+
+    private static boolean binaryPatch(String patch) {
+        boolean binary = patch.lines().anyMatch(line -> line.equals("GIT binary patch")
+                || (line.startsWith("Binary files ") && line.endsWith(" differ")));
+        if (binary && patch.lines().anyMatch(line -> line.startsWith("@@")
+                || (line.startsWith("+") && !line.startsWith("+++ ")) || (line.startsWith("-") && !line.startsWith("--- ")))) {
+            throw new IntegrationException("Git returned contradictory binary and text patch content");
+        }
+        return binary;
+    }
+
+    private static final class ManualCandidate extends IntegrationException {
+        private final String reason;
+        private ManualCandidate(String reason) { super("Git source diff requires complete manual-review evidence"); this.reason = reason; }
     }
 
     private static long lineCount(String patch, char prefix) {

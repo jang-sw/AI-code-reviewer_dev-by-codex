@@ -6,6 +6,8 @@ import com.aicreviewer.ai.ReviewResult;
 import com.aicreviewer.git.GitCommit;
 import com.aicreviewer.git.GitRepositoryClient;
 import com.aicreviewer.git.GitReviewBatch;
+import com.aicreviewer.git.ManualReviewFile;
+import com.aicreviewer.ai.AiInputLimitException;
 import com.aicreviewer.identity.UserAccountService;
 import com.aicreviewer.project.ProjectService;
 import com.aicreviewer.review.ProjectReviewLock;
@@ -133,7 +135,7 @@ class ApplicationPostgresTest {
         HttpClient ownerSession = login(writer);
         HttpResponse<String> ownerIssues = get(ownerSession, "/issues");
         assertThat(ownerIssues.statusCode()).isEqualTo(200);
-        assertThat(ownerIssues.body()).contains("테스트 권고", "&lt;script&gt;", "상태 저장", "처리 상태").doesNotContain("<script>bad</script>");
+        assertThat(ownerIssues.body()).contains("테스트 권고", "&lt;script&gt;", "상태와 기록 저장", "처리 상태").doesNotContain("<script>bad</script>");
         String repositoryUrl = jdbc.queryForObject("select repository_url from project where id=?", String.class, projectId);
         assertThat(ownerIssues.body()).contains(repositoryUrl + "/commit/" + firstSha, "rel=\"noopener noreferrer\"");
         HttpClient unrelatedSession = login(outsider);
@@ -463,6 +465,64 @@ class ApplicationPostgresTest {
         assertThat(count("reviewed_commit")).isEqualTo(2);
         assertThat(count("review_issue")).isEqualTo(2);
         assertThat(jdbc.queryForObject("select status from review_issue where id=?", String.class, issueId)).isEqualTo("RESOLVED");
+    }
+
+    @Test
+    void manualEvidenceSurvivesAiLimitContinuesHistoryAndRequiresAuthorizedHumanReason() throws Exception {
+        projects.transition("pgadmin", projectId, "approve");
+        GitCommit original = new GitCommit("1".repeat(40), writer, "large commit", "large diff");
+        GitCommit manual = new GitCommit(original.sha(), writer, null, original.message(), "", "MANUAL_ONLY", "전체 파일 목록 대조; AI 본문 검토 없음",
+                List.of(new ManualReviewFile("asset.bin", null, "2".repeat(40), null, "100644", "AI_INPUT_LIMIT"),
+                        new ManualReviewFile("code.java", "3".repeat(40), "4".repeat(40), "100644", "100644", "AI_INPUT_LIMIT")));
+        GitCommit next = new GitCommit("5".repeat(40), writer, "next commit", "next diff");
+        stubBatch(List.of(original, next), next.sha());
+        when(ai.review(original)).thenThrow(new AiInputLimitException(AiInputLimitException.Reason.FILE_CONTEXT_BUDGET));
+        when(git.manualFallback(any(), eq(original))).thenReturn(manual);
+        when(ai.review(next)).thenReturn(finding("next.java"));
+        assertThat(reviews.reviewProject(projectId, writer)).isEqualTo(ReviewCoordinator.Outcome.SUCCEEDED);
+        assertThat(cursor()).isEqualTo(next.sha());
+        assertThat(count("manual_review_file")).isEqualTo(2);
+        assertThat(count("review_issue")).isEqualTo(3);
+        long issueId = jdbc.queryForObject("select min(id) from review_issue where project_id=? and issue_kind='MANUAL_REVIEW'", Long.class, projectId);
+        var owner = login(writer);
+        var unrelated = login(outsider);
+        String issuePath = "/issues/" + issueId;
+        var detail = get(owner, issuePath);
+        assertThat(detail.statusCode()).isEqualTo(200);
+        assertThat(detail.body()).contains("수동 확인", "asset.bin", "name=\"reason\"", "2".repeat(40));
+        assertThat(get(owner, "/reviews?projectId=" + projectId).body()).contains("수동 확인 이슈 배정", "AI 본문 검토 없음");
+        assertThat(get(unrelated, issuePath).statusCode()).isEqualTo(404);
+        assertThat(post(unrelated, issuePath + "/status", Map.of("status", "RESOLVED", "reason", "확인했습니다", "_csrf", csrf(get(unrelated, "/issues").body()))).statusCode()).isEqualTo(404);
+        String token = csrf(detail.body());
+        assertThat(post(owner, issuePath + "/status", Map.of("status", "RESOLVED", "_csrf", token)).statusCode()).isEqualTo(400);
+        assertThat(post(owner, issuePath + "/status", Map.of("status", "RESOLVED", "reason", "확인했습니다")).statusCode()).isEqualTo(403);
+        String reason = "수동 검토 결과 <script>안전한 확인 기록</script>";
+        assertThat(post(owner, issuePath + "/status", Map.of("status", "RESOLVED", "reason", reason, "_csrf", token)).statusCode()).isEqualTo(302);
+        assertThat(jdbc.queryForMap("select status, resolution_note, severity, line_number from review_issue where id=?", issueId))
+                .containsEntry("status", "RESOLVED").containsEntry("resolution_note", reason).containsEntry("severity", null).containsEntry("line_number", null);
+        assertThat(get(owner, issuePath).body()).contains("&lt;script&gt;안전한 확인 기록&lt;/script&gt;").doesNotContain("<script>안전한 확인 기록</script>");
+        assertThat(jdbc.queryForObject("select count(*) from audit_event where target_type='REVIEW_ISSUE' and target_id=? and detail like ?", Long.class, issueId, "%" + reason + "%")).isEqualTo(1);
+        assertThat(reviews.reviewProject(projectId, writer)).isEqualTo(ReviewCoordinator.Outcome.SUCCEEDED);
+        assertThat(count("manual_review_file")).isEqualTo(2);
+        assertThat(count("review_issue")).isEqualTo(3);
+        verify(ai, times(1)).review(original);
+        verify(ai, times(1)).review(next);
+    }
+
+    @Test
+    void operationsRendersOnlyLatestFailureAndRestrictsAccess() throws Exception {
+        projects.transition("pgadmin", projectId, "approve");
+        jdbc.update("insert into review_run(project_id,status,started_at,error_message) values (?,'FAILED',TIMESTAMP '2000-01-01 00:00:00','operation-secret-fixture')", projectId);
+        var admin = login("pgadmin");
+        var failed = get(admin, "/admin/operations?filter=FAILED");
+        assertThat(failed.statusCode()).isEqualTo(200);
+        assertThat(failed.body()).contains("운영 현황", "최근 실행 실패", "/projects/" + projectId, "자동 리뷰가 꺼져")
+                .doesNotContain("operation-secret-fixture", "<script>alert(1)</script>");
+        assertThat(get(login(writer), "/admin/operations").statusCode()).isEqualTo(403);
+        assertThat(get(client(), "/admin/operations").statusCode()).isEqualTo(302);
+        assertThat(get(admin, "/admin/operations?page=-1").statusCode()).isEqualTo(400);
+        jdbc.update("insert into review_run(project_id,status,started_at,finished_at) values (?,'SUCCEEDED',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)", projectId);
+        assertThat(get(admin, "/admin/operations?filter=FAILED").body()).doesNotContain("/projects/" + projectId + "\"");
     }
 
     private void stubBatch(List<GitCommit> commits, String checkpoint) {

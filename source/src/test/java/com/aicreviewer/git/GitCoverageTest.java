@@ -3,6 +3,7 @@ package com.aicreviewer.git;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -27,7 +28,8 @@ class GitCoverageTest {
         github(List.of(), 1);
         assertThatThrownBy(this::githubReview).hasMessageContaining("incomplete");
         github(List.of(Map.of("filename", "image.png", "additions", 0, "deletions", 0)), 0);
-        assertThatThrownBy(this::githubReview).hasMessageContaining("patch");
+        // A missing diff cannot become manual work without pinned parent/tree metadata.
+        assertThatThrownBy(this::githubReview).hasMessageContaining("parent metadata");
     }
 
     @Test void gitlabEmptyCommitRequiresIdenticalTreesNoFilesAndZeroStatistics() {
@@ -102,9 +104,13 @@ class GitCoverageTest {
     @Test void blankPatchWithChangedBlobOrNewEmptyFileCannotClaimMetadataCoverage() {
         gitlab(List.of(blob("script.sh", OLD, "100644")), List.of(blob("script.sh", NEW, "100755")),
                 List.of(file("script.sh", "script.sh", "")), 0);
-        assertThatThrownBy(this::gitlabReview).hasMessageContaining("unavailable");
+        GitCommit changed = gitlabReview();
+        assertThat(changed.coverageType()).isEqualTo("MANUAL_ONLY");
+        assertThat(changed.manualFiles()).containsExactly(new ManualReviewFile("script.sh", OLD, NEW, "100644", "100755", "SOURCE_DIFF_UNAVAILABLE"));
         gitlab(List.of(), List.of(blob("empty.java", NEW, "100644")), List.of(file("empty.java", "empty.java", "")), 0);
-        assertThatThrownBy(this::gitlabReview).hasMessageContaining("unavailable");
+        GitCommit created = gitlabReview();
+        assertThat(created.coverageType()).isEqualTo("MANUAL_ONLY");
+        assertThat(created.manualFiles()).containsExactly(new ManualReviewFile("empty.java", null, NEW, null, "100644", "SOURCE_DIFF_UNAVAILABLE"));
     }
 
     @Test void nonblankHeadersWithoutChangedBodyCannotClaimFullCoverage() {
@@ -129,7 +135,7 @@ class GitCoverageTest {
         gitlab(List.of(blob("original.java", OLD, "100644")),
                 List.of(blob("original.java", OLD, "100644"), blob("copy.java", OLD, "100644")),
                 List.of(file("original.java", "copy.java", "")), 0);
-        assertThatThrownBy(this::gitlabReview).hasMessageContaining("unavailable");
+        assertThatThrownBy(this::gitlabReview).hasMessageContaining("immutable trees");
     }
 
     @Test void unchangedBlobDoesNotSuppressCollapsedBinaryOrContradictoryPatchFailures() {
@@ -193,13 +199,20 @@ class GitCoverageTest {
     }
     private void gitlab(List<Map<String, String>> before, List<Map<String, String>> after,
             List<Map<String, Object>> files, int additions) {
+        List<Map<String, Object>> explicitFiles = files.stream().map(file -> {
+            Map<String, Object> result = new HashMap<>(file);
+            result.putIfAbsent("new_file", before.stream().noneMatch(entry -> entry.get("path").equals(file.get("old_path"))));
+            result.putIfAbsent("deleted_file", after.stream().noneMatch(entry -> entry.get("path").equals(file.get("new_path"))));
+            result.putIfAbsent("renamed_file", !file.get("old_path").equals(file.get("new_path")));
+            return result;
+        }).toList();
         server.handler = request -> {
             if (request.path().endsWith("/repository/commits")) return ok(List.of(
                     Map.of("id", B, "parent_ids", List.of(A), "message", "Change"),
                     Map.of("id", A, "parent_ids", List.of(), "message", "Root")));
-            if (request.path().endsWith("/repository/commits/" + B)) return ok(Map.of("id", B, "stats", Map.of("additions", additions, "deletions", 0)));
+            if (request.path().endsWith("/repository/commits/" + B)) return ok(Map.of("id", B, "parent_ids", List.of(A), "stats", Map.of("additions", additions, "deletions", 0)));
             if (request.path().endsWith("/tree")) return ok(request.query().contains("ref=" + A) ? before : after);
-            if (request.path().endsWith("/diff")) return ok(files);
+            if (request.path().endsWith("/diff")) return ok(explicitFiles);
             return new HttpFixture.Reply(404, "{}");
         };
     }

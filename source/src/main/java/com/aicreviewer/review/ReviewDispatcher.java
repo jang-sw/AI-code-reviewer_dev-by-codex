@@ -54,15 +54,7 @@ public class ReviewDispatcher {
     private Submission submit(long projectId, String username) {
         if (!inFlight.add(projectId)) return Submission.ALREADY_QUEUED;
         try {
-            executor.execute(() -> {
-                try {
-                    coordinator.reviewProject(projectId, username);
-                } catch (RuntimeException exception) {
-                    LOG.log(System.Logger.Level.WARNING, "Project {0} review could not start: {1}", projectId, exception.getClass().getSimpleName());
-                } finally {
-                    inFlight.remove(projectId);
-                }
-            });
+            executor.execute(new ReviewTask(projectId, username));
             return Submission.QUEUED;
         } catch (RejectedExecutionException exception) {
             inFlight.remove(projectId);
@@ -71,6 +63,22 @@ public class ReviewDispatcher {
     }
 
     public boolean isQueued(long projectId) { return inFlight.contains(projectId); }
+
+    private final class ReviewTask implements Runnable {
+        private final long projectId;
+        private final String username;
+        private ReviewTask(long projectId, String username) { this.projectId = projectId; this.username = username; }
+        @Override public void run() {
+            try {
+                coordinator.reviewProject(projectId, username);
+            } catch (RuntimeException exception) {
+                LOG.log(System.Logger.Level.WARNING, "Project {0} review execution failed: {1}", projectId, exception.getClass().getSimpleName());
+            } finally {
+                inFlight.remove(projectId);
+            }
+        }
+        void discard() { inFlight.remove(projectId); }
+    }
 
     /**
      * Query enough candidates to get past every locally queued project, while bounding JDBC allocation.
@@ -85,13 +93,23 @@ public class ReviewDispatcher {
 
     @PreDestroy
     public void close() {
+        close(20, TimeUnit.SECONDS);
+    }
+
+    void close(long wait, TimeUnit unit) {
         executor.shutdown();
         try {
-            if (!executor.awaitTermination(20, TimeUnit.SECONDS)) executor.shutdownNow();
+            if (!executor.awaitTermination(wait, unit)) discardQueuedTasks();
         } catch (InterruptedException exception) {
-            executor.shutdownNow();
+            discardQueuedTasks();
             Thread.currentThread().interrupt();
         }
+    }
+
+    private void discardQueuedTasks() {
+        // shutdownNow only returns tasks that never started. Running tasks retain their
+        // reservation until their own finally block has actually finished.
+        for (Runnable task : executor.shutdownNow()) ((ReviewTask) task).discard();
     }
 
     public enum Submission { QUEUED, ALREADY_QUEUED, CAPACITY_REACHED }

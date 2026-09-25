@@ -41,8 +41,9 @@ public class IssueController {
                          @RequestParam(defaultValue = "0") int page, Principal principal, Model model) {
         filterStatus = filterStatus == null ? "OPEN" : filterStatus;
         IssueService.validateFilter(filterStatus, page);
-        model.addAttribute("issue", service.detail(id, reviews.actor(principal.getName())));
-        model.addAttribute("pageTitle", "수정 권고 확인");
+        var issue = service.detail(id, reviews.actor(principal.getName()));
+        model.addAttribute("issue", issue);
+        model.addAttribute("pageTitle", "MANUAL_REVIEW".equals(issue.get("issue_kind")) ? "수동 확인 업무" : "수정 권고 확인");
         model.addAttribute("filterStatus", filterStatus);
         model.addAttribute("page", page);
         return "issue-detail";
@@ -51,11 +52,12 @@ public class IssueController {
     @PostMapping("/issues/{id}/status")
     public String changeStatus(@PathVariable long id, @RequestParam String status,
                                @RequestParam(required = false) String filterStatus,
+                               @RequestParam(defaultValue = "") String reason,
                                @RequestParam(defaultValue = "0") int page, Principal principal, RedirectAttributes redirect) {
         filterStatus = filterStatus == null ? "OPEN" : filterStatus;
         IssueService.validateFilter(filterStatus, page);
-        service.changeStatus(id, status, reviews.actor(principal.getName()));
-        redirect.addFlashAttribute("message", "이슈 상태를 변경했습니다.");
+        service.changeStatus(id, status, reviews.actor(principal.getName()), reason);
+        redirect.addFlashAttribute("message", "이슈 처리 상태와 기록을 저장했습니다.");
         redirect.addAttribute("status", filterStatus);
         redirect.addAttribute("page", page);
         return "redirect:/issues";

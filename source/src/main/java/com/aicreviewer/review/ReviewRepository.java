@@ -4,6 +4,7 @@ import com.aicreviewer.ai.ReviewFinding;
 import com.aicreviewer.ai.ReviewResult;
 import com.aicreviewer.git.GitCommit;
 import com.aicreviewer.git.GitRepositoryClient;
+import com.aicreviewer.git.ManualReviewFile;
 import com.aicreviewer.git.IntegrationException;
 import com.aicreviewer.git.RepositoryOrigin;
 import org.springframework.http.HttpStatus;
@@ -103,18 +104,22 @@ public class ReviewRepository {
             throw new IllegalStateException("Review cursor changed during the run");
         }
         if (alreadyReviewed(current.id(), commit.sha())) return false;
+        if ("MANUAL_ONLY".equals(commit.coverageType()) && !review.findings().isEmpty()) {
+            throw new IllegalArgumentException("Manual-only commits cannot contain AI findings");
+        }
         String email = commit.authorEmail() == null || commit.authorEmail().isBlank() ? null : commit.authorEmail().strip().toLowerCase(Locale.ROOT);
         long commitId = insert("insert into reviewed_commit(project_id, commit_sha, author_login, author_email, summary, coverage_type, coverage_details, reviewed_at) values (?, ?, ?, ?, ?, ?, ?, ?)",
                 current.id(), commit.sha(), commit.authorLogin(), email, review.summary(), commit.coverageType(), commit.coverageDetails(), Timestamp.from(now));
         Assignment assignment = resolveAssignment(current, commit.authorLogin(), email);
-        if (!review.findings().isEmpty()) {
+        boolean hasIssues = !review.findings().isEmpty() || !commit.manualFiles().isEmpty();
+        if (hasIssues) {
             // The commit's email is personal metadata: only IDs and the assignment reason
             // belong in the audit stream. Issue readers do not receive raw author emails.
             audit(null, "ISSUES_ASSIGNED", "REVIEWED_COMMIT", commitId,
                     "reason=" + assignment.reason() + "; assignee=" + assignment.userId() +
                             (assignment.mappingId() == null ? "" : "; mapping=" + assignment.mappingId()), now);
         }
-        if ("PROJECT_OWNER_FALLBACK".equals(assignment.reason()) && !review.findings().isEmpty()) {
+        if ("PROJECT_OWNER_FALLBACK".equals(assignment.reason()) && hasIssues) {
             audit(null, "ISSUE_ASSIGNEE_FALLBACK", "REVIEWED_COMMIT", commitId,
                     "Git 작성자와 일치하는 활성 계정이나 매핑이 없어 프로젝트 소유자에게 배정했습니다. assignee=" + assignment.userId(), now);
         }
@@ -122,6 +127,19 @@ public class ReviewRepository {
             insert("insert into review_issue(project_id, reviewed_commit_id, assignee_id, severity, title, file_path, line_number, description, suggestion, assignment_reason, status, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?)",
                     current.id(), commitId, assignment.userId(), finding.severity(), finding.title(), finding.filePath(), finding.lineNumber(),
                     finding.description(), finding.suggestion(), assignment.reason(), Timestamp.from(now), Timestamp.from(now));
+        }
+        for (ManualReviewFile file : commit.manualFiles()) {
+            long fileId = insert("insert into manual_review_file(reviewed_commit_id, project_id, file_path, old_object_sha, new_object_sha, old_mode, new_mode, reason_code) values (?, ?, ?, ?, ?, ?, ?, ?)",
+                    commitId, current.id(), file.filePath(), file.oldObjectSha(), file.newObjectSha(), file.oldMode(), file.newMode(), file.reasonCode());
+            insert("insert into review_issue(project_id, reviewed_commit_id, assignee_id, severity, title, file_path, line_number, description, suggestion, assignment_reason, issue_kind, manual_file_id, status, created_at, updated_at) values (?, ?, ?, NULL, ?, ?, NULL, ?, ?, ?, 'MANUAL_REVIEW', ?, 'OPEN', ?, ?)",
+                    current.id(), commitId, assignment.userId(), "커밋 변경 파일 수동 확인", file.filePath(),
+                    file.reasonDescription() + " 불변 커밋과 첫 부모의 전체 파일 목록을 대조했습니다. 이 커밋은 AI 본문 검토를 수행하지 않았으며 모든 변경 경로를 수동 확인 대상으로 배정했습니다. AI가 결함을 발견했다는 의미는 아닙니다.",
+                    "원본 커밋에서 이 파일의 변경과 관련 파일의 영향을 확인한 뒤 확인 결과·해결 또는 제외 사유를 기록하세요.",
+                    assignment.reason(), fileId, Timestamp.from(now), Timestamp.from(now));
+        }
+        if (!commit.manualFiles().isEmpty()) {
+            audit(null, "MANUAL_REVIEW_ASSIGNED", "REVIEWED_COMMIT", commitId,
+                    "files=" + commit.manualFiles().size() + "; evidence=PINNED_TREES; assignee=" + assignment.userId(), now);
         }
         jdbc.update("update review_run set reviewed_commits = reviewed_commits + 1 where id = ? and status = 'RUNNING'", runId);
         return true;

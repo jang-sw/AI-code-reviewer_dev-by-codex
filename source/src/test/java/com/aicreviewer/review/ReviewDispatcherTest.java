@@ -14,6 +14,33 @@ import static org.mockito.Mockito.*;
 
 class ReviewDispatcherTest {
     @Test
+    void forcedShutdownDiscardsQueuedReservationsButKeepsStillRunningWorkerReserved() throws Exception {
+        var coordinator = mock(ReviewCoordinator.class);
+        var entered = new CountDownLatch(1);
+        var interrupted = new CountDownLatch(1);
+        var finish = new CountDownLatch(1);
+        when(coordinator.reviewProject(1L, null)).thenAnswer(invocation -> {
+            entered.countDown();
+            try { finish.await(5, TimeUnit.SECONDS); }
+            catch (InterruptedException exception) { interrupted.countDown(); finish.await(5, TimeUnit.SECONDS); }
+            return ReviewCoordinator.Outcome.FAILED;
+        });
+        var dispatcher = new ReviewDispatcher(coordinator, 1);
+        try {
+            assertThat(dispatcher.submitScheduled(1)).isEqualTo(ReviewDispatcher.Submission.QUEUED);
+            assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(dispatcher.submitScheduled(2)).isEqualTo(ReviewDispatcher.Submission.QUEUED);
+            dispatcher.close(1, TimeUnit.MILLISECONDS);
+            assertThat(interrupted.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(dispatcher.isQueued(2)).isFalse();
+            assertThat(dispatcher.isQueued(1)).isTrue();
+            assertThat(dispatcher.scheduledCandidateLimit()).isZero();
+            verify(coordinator, never()).reviewProject(2L, null);
+        } finally { finish.countDown(); dispatcher.close(); }
+        assertThat(dispatcher.isQueued(1)).isFalse();
+    }
+
+    @Test
     void manualSubmissionRunsInBackgroundAndDeduplicatesConcurrentRequest() throws Exception {
         var coordinator = mock(ReviewCoordinator.class);
         var entered = new CountDownLatch(1);

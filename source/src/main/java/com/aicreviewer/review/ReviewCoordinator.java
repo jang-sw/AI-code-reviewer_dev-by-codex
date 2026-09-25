@@ -1,6 +1,7 @@
 package com.aicreviewer.review;
 
 import com.aicreviewer.ai.AiReviewClient;
+import com.aicreviewer.ai.AiInputLimitException;
 import com.aicreviewer.ai.ReviewFinding;
 import com.aicreviewer.ai.ReviewResult;
 import com.aicreviewer.git.GitCommit;
@@ -21,7 +22,7 @@ import java.util.Set;
 public class ReviewCoordinator {
     private static final System.Logger LOG = System.getLogger(ReviewCoordinator.class.getName());
     private static final Set<String> SEVERITIES = Set.of("LOW", "MEDIUM", "HIGH", "CRITICAL");
-    private static final Set<String> COVERAGE_TYPES = Set.of("FULL", "EMPTY", "METADATA_ONLY");
+    private static final Set<String> COVERAGE_TYPES = Set.of("FULL", "EMPTY", "METADATA_ONLY", "MANUAL_ONLY");
     private final ReviewRepository repository;
     private final ProjectReviewLock locks;
     private final GitRepositoryClient git;
@@ -68,9 +69,9 @@ public class ReviewCoordinator {
                     if (Thread.currentThread().isInterrupted()) throw new IllegalStateException("Review interrupted");
                     // Retries never create a second issue set or move a cursor backwards.
                     if (repository.alreadyReviewed(projectId, commit.sha())) continue;
-                    ReviewResult result = reviewContent(commit);
-                    validateReview(result);
-                    transactions.execute(status -> repository.persistCommit(runId, project, project.lastReviewedSha(), commit, result, Instant.now()));
+                    PreparedReview prepared = prepareReview(project, commit);
+                    validateReview(prepared.result());
+                    transactions.execute(status -> repository.persistCommit(runId, project, project.lastReviewedSha(), prepared.commit(), prepared.result(), Instant.now()));
                 }
                 // A partial merge can persist progress without a checkpoint. Conversely, a
                 // fully persisted retry can advance to a safe checkpoint with no new commits.
@@ -92,10 +93,33 @@ public class ReviewCoordinator {
         }
     }
 
+    private PreparedReview prepareReview(ReviewProject project, GitCommit commit) {
+        try {
+            return new PreparedReview(commit, reviewContent(commit));
+        } catch (AiInputLimitException limit) {
+            // Only a known, preflight input limit can become manual work. HTTP, timeout,
+            // refusal and malformed output still fail the run and cannot move its cursor.
+            if (!"FULL".equals(commit.coverageType())) throw limit;
+            GitCommit manual = git.manualFallback(project.repository(), commit);
+            if (manual == null || !"MANUAL_ONLY".equals(manual.coverageType()) || !commit.sha().equals(manual.sha())
+                    || !java.util.Objects.equals(commit.authorLogin(), manual.authorLogin())
+                    || !java.util.Objects.equals(commit.authorEmail(), manual.authorEmail())
+                    || !commit.message().equals(manual.message())) {
+                throw new IntegrationException("Manual review evidence does not match the original commit");
+            }
+            validateBatch(new GitReviewBatch(List.of(manual), manual.sha()), Set.of());
+            return new PreparedReview(manual, reviewContent(manual));
+        }
+    }
+
+    private record PreparedReview(GitCommit commit, ReviewResult result) { }
+
     private ReviewResult reviewContent(GitCommit commit) {
         return switch (commit.coverageType()) {
             case "EMPTY" -> new ReviewResult("AI 본문 검토 없음: Git 저장소에서 파일 변경이 없는 커밋임을 확인했습니다.", List.of());
             case "METADATA_ONLY" -> new ReviewResult("AI 본문 검토 없음: 검증된 빈 파일 생성·삭제 또는 본문이 같은 파일의 경로·모드 변경입니다. 파일 존재 여부와 경로·권한·파일 유형 변경 수동 확인 필요.", List.of());
+            case "MANUAL_ONLY" -> new ReviewResult("AI 본문 검토 없음: 이 커밋의 전체 변경 경로 " + commit.manualFiles().size()
+                    + "개를 수동 확인 이슈로 배정했습니다. 이슈 처리는 별도로 필요하며 다음 커밋 리뷰는 계속 진행합니다.", List.of());
             case "FULL" -> ai.review(commit);
             default -> throw new IllegalArgumentException("Invalid review coverage type");
         };
@@ -113,6 +137,7 @@ public class ReviewCoordinator {
                     commit.coverageType() == null || !COVERAGE_TYPES.contains(commit.coverageType()) ||
                     commit.coverageDetails() == null || commit.coverageDetails().length() > 16000 ||
                     ("EMPTY".equals(commit.coverageType()) && !commit.diff().isBlank()) ||
+                    ("MANUAL_ONLY".equals(commit.coverageType()) && (!commit.diff().isBlank() || commit.coverageDetails().isBlank())) ||
                     ("METADATA_ONLY".equals(commit.coverageType()) && (commit.coverageDetails().isBlank() || containsPatchBody(commit.diff())))) {
                 throw new IllegalArgumentException("Invalid commit data");
             }

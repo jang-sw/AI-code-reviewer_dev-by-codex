@@ -4,5 +4,7 @@
   <input type="hidden" name="<c:out value='${_csrf.parameterName}'/>" value="<c:out value='${_csrf.token}'/>">
   <input type="hidden" name="filterStatus" value="<c:out value='${filterStatus}'/>">
   <input type="hidden" name="page" value="<c:out value='${page}'/>">
-  <label for="issue-status-${issue.id}">처리 상태</label><select id="issue-status-${issue.id}" name="status"><option value="OPEN" ${issue.status == 'OPEN' ? 'selected' : ''}>미처리</option><option value="RESOLVED" ${issue.status == 'RESOLVED' ? 'selected' : ''}>해결</option><option value="DISMISSED" ${issue.status == 'DISMISSED' ? 'selected' : ''}>검토 제외</option></select><button type="submit">상태 저장</button>
+  <label for="issue-status-${issue.id}">처리 상태</label><select id="issue-status-${issue.id}" name="status"><option value="OPEN" ${issue.status == 'OPEN' ? 'selected' : ''}>미처리</option><option value="RESOLVED" ${issue.status == 'RESOLVED' ? 'selected' : ''}>${issue.issue_kind == 'MANUAL_REVIEW' ? '확인 완료' : '해결'}</option><option value="DISMISSED" ${issue.status == 'DISMISSED' ? 'selected' : ''}>검토 제외</option></select>
+  <c:if test="${issue.issue_kind == 'MANUAL_REVIEW'}"><div class="field"><label for="issue-reason-${issue.id}">수동 확인 내용과 처리 사유</label><input id="issue-reason-${issue.id}" name="reason" required minlength="5" maxlength="1000" autocomplete="off" aria-describedby="issue-reason-help-${issue.id}"><p id="issue-reason-help-${issue.id}" class="hint">줄바꿈 없이 5~1000자. 상태를 유지하며 사유만 추가할 수도 있습니다. 이전 사유는 감사 기록에 남습니다. 비밀번호·토큰·소스코드 등 비밀정보를 입력하지 마세요.</p></div></c:if>
+  <button type="submit">상태와 기록 저장</button>
 </form>

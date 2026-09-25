@@ -34,10 +34,15 @@ public class AiReviewClient {
             Do not invent missing context, tests or vulnerabilities. If no actionable defects are supported,
             return an empty findings array. Never claim to have run tests. Never reproduce secret values.
             """;
+    private static final String CHUNK_PROMPT = SYSTEM_PROMPT + """
+            This request contains one complete group of changed files from a larger commit, not the entire commit.
+            Other file groups are reviewed separately. Do not assume their contents or claim cross-file coverage.
+            """;
     private static final Set<String> ROOT_FIELDS = Set.of("summary", "findings");
     private static final Set<String> FINDING_FIELDS = Set.of("severity", "title", "filePath", "lineNumber", "description", "suggestion");
     private static final Set<String> SEVERITIES = Set.of("LOW", "MEDIUM", "HIGH", "CRITICAL");
     private static final java.util.regex.Pattern HUNK = java.util.regex.Pattern.compile("^@@ -\\d+(?:,\\d+)? \\+(\\d+)(?:,(\\d+))? @@.*$");
+    private static final java.util.regex.Pattern COMPLETE_HUNK = java.util.regex.Pattern.compile("^@@ -(\\d+)(?:,(\\d+))? \\+(\\d+)(?:,(\\d+))? @@.*$");
     private final String provider;
     private final URI endpoint;
     private final String model;
@@ -45,6 +50,8 @@ public class AiReviewClient {
     private final int maxDiffBytes;
     private final int contextTokens;
     private final int maxOutputTokens;
+    private final int maxReviewCalls;
+    private final long timeoutNanos;
     private final SafeHttpTransport http;
     private final JsonMapper json = JsonMapper.builder().enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
             .enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION).build();
@@ -60,9 +67,18 @@ public class AiReviewClient {
             @Value("${app.ai.context-tokens:32768}") int contextTokens,
             @Value("${app.ai.max-output-tokens:4096}") int maxOutputTokens,
             @Value("${app.ai.openai-model:}") String openAiModel,
-            @Value("${OPENAI_API_KEY:}") String openAiApiKey) {
+            @Value("${OPENAI_API_KEY:}") String openAiApiKey,
+            @Value("${app.ai.max-review-calls:8}") int maxReviewCalls) {
         this(provider, baseUrl, model, apiKey, timeoutSeconds, maxDiffBytes, maxResponseBytes,
-                contextTokens, maxOutputTokens, openAiModel, openAiApiKey, null);
+                contextTokens, maxOutputTokens, openAiModel, openAiApiKey, maxReviewCalls, null);
+    }
+
+    /** Existing callers retain the bounded default of eight complete file groups. */
+    public AiReviewClient(String provider, String baseUrl, String model, String apiKey, int timeoutSeconds,
+            int maxDiffBytes, int maxResponseBytes, int contextTokens, int maxOutputTokens,
+            String openAiModel, String openAiApiKey) {
+        this(provider, baseUrl, model, apiKey, timeoutSeconds, maxDiffBytes, maxResponseBytes,
+                contextTokens, maxOutputTokens, openAiModel, openAiApiKey, 8);
     }
 
     /** Compatibility constructor: generic credentials never become direct OpenAI credentials. */
@@ -74,7 +90,7 @@ public class AiReviewClient {
 
     private AiReviewClient(String provider, String baseUrl, String model, String apiKey, int timeoutSeconds,
             int maxDiffBytes, int maxResponseBytes, int contextTokens, int maxOutputTokens,
-            String openAiModel, String openAiApiKey, URI fixtureEndpoint) {
+            String openAiModel, String openAiApiKey, int maxReviewCalls, URI fixtureEndpoint) {
         if (!Set.of("ollama", "litellm", "openai").contains(provider)) throw new IllegalArgumentException("AI provider must be ollama, litellm or openai");
         String selectedModel = provider.equals("openai") ? openAiModel : model;
         if (selectedModel == null || selectedModel.isBlank() || selectedModel.length() > 200
@@ -85,6 +101,7 @@ public class AiReviewClient {
         if (contextTokens < 2048 || contextTokens > 1048576 || maxOutputTokens < 256 || maxOutputTokens >= contextTokens) {
             throw new IllegalArgumentException("Invalid AI context or output token budget");
         }
+        if (maxReviewCalls < 1 || maxReviewCalls > 32) throw new IllegalArgumentException("AI review call limit must be between 1 and 32");
         this.provider = provider;
         if (provider.equals("openai")) {
             // No configurable production URL: OPENAI_API_KEY must not follow AI_BASE_URL.
@@ -103,38 +120,69 @@ public class AiReviewClient {
         this.maxDiffBytes = maxDiffBytes;
         this.contextTokens = contextTokens;
         this.maxOutputTokens = maxOutputTokens;
+        this.maxReviewCalls = maxReviewCalls;
         this.http = new SafeHttpTransport(Duration.ofSeconds(timeoutSeconds), maxResponseBytes);
+        this.timeoutNanos = Duration.ofSeconds(timeoutSeconds).toNanos();
     }
 
     /** Package-only loopback seam for HTTP fixtures; there is no production property enabling this. */
     static AiReviewClient openAiFixture(URI endpoint, String model, String apiKey, int timeoutSeconds,
             int maxDiffBytes, int maxResponseBytes, int contextTokens, int maxOutputTokens) {
+        return openAiFixture(endpoint, model, apiKey, timeoutSeconds, maxDiffBytes, maxResponseBytes,
+                contextTokens, maxOutputTokens, 8);
+    }
+
+    static AiReviewClient openAiFixture(URI endpoint, String model, String apiKey, int timeoutSeconds,
+            int maxDiffBytes, int maxResponseBytes, int contextTokens, int maxOutputTokens, int maxReviewCalls) {
         if (endpoint == null || !"http".equals(endpoint.getScheme()) || !"127.0.0.1".equals(endpoint.getHost())
                 || endpoint.getPort() < 1 || endpoint.getPort() > 65535 || !"/v1/responses".equals(endpoint.getRawPath())
                 || endpoint.getRawUserInfo() != null || endpoint.getRawQuery() != null || endpoint.getRawFragment() != null) {
             throw new IllegalArgumentException("OpenAI HTTP fixtures require an explicit loopback endpoint");
         }
         return new AiReviewClient("openai", "", "", "", timeoutSeconds, maxDiffBytes, maxResponseBytes,
-                contextTokens, maxOutputTokens, model, apiKey, endpoint);
+                contextTokens, maxOutputTokens, model, apiKey, maxReviewCalls, endpoint);
     }
 
     public ReviewResult review(GitCommit commit) {
+        long deadline = System.nanoTime() + timeoutNanos;
         if (commit == null || commit.sha() == null || !commit.sha().matches("[0-9a-f]{40}|[0-9a-f]{64}")
                 || commit.message() == null || commit.message().length() > 32768 || commit.diff() == null) {
             throw new IntegrationException("Invalid commit supplied to AI reviewer");
         }
         if (commit.diff().getBytes(StandardCharsets.UTF_8).length > maxDiffBytes) {
-            throw new IntegrationException("Commit diff exceeds AI input size limit");
+            throw new AiInputLimitException(AiInputLimitException.Reason.TOTAL_DIFF_BYTES);
         }
-        String input = json.writeValueAsString(Map.of("commitSha", commit.sha(), "commitMessage", commit.message(), "diff", commit.diff()));
-        // A UTF-8 byte is an intentionally conservative token upper bound; reserve template/schema overhead too.
-        int promptBytes = input.getBytes(StandardCharsets.UTF_8).length + SYSTEM_PROMPT.getBytes(StandardCharsets.UTF_8).length
-                + json.writeValueAsString(schema()).getBytes(StandardCharsets.UTF_8).length + 1024;
-        if ((long) promptBytes + maxOutputTokens > contextTokens) {
-            throw new IntegrationException("Complete review input exceeds the configured AI context budget");
+        List<ReviewChunk> chunks = plan(commit, deadline);
+        List<ReviewFinding> findings = new ArrayList<>();
+        Set<ReviewFinding> unique = new HashSet<>();
+        StringBuilder summary = new StringBuilder();
+        if (chunks.size() > 1) {
+            summary.append("파일 경계로 ").append(chunks.size())
+                    .append("회 분할 검토했습니다. 각 검토는 해당 파일 묶음만 확인하므로 파일 간 상호작용과 전체 맥락 검토에는 제한이 있습니다.");
         }
-        List<Map<String, String>> messages = List.of(Map.of("role", "system", "content", SYSTEM_PROMPT),
-                Map.of("role", "user", "content", input));
+        for (int index = 0; index < chunks.size(); index++) {
+            ReviewResult result = reviewChunk(chunks.get(index), deadline);
+            remaining(deadline);
+            if (chunks.size() == 1) return result;
+            if (findings.size() + result.findings().size() > 100) throw invalid("Combined AI findings exceed 100 entries");
+            for (ReviewFinding finding : result.findings()) {
+                if (!unique.add(finding)) throw invalid("AI returned duplicate findings across file groups");
+                findings.add(finding);
+            }
+            String heading = "\n\n[" + (index + 1) + "/" + chunks.size() + "] ";
+            if ((long) summary.length() + heading.length() + result.summary().length() > 32000) {
+                throw invalid("Combined AI review summary exceeds 32000 characters");
+            }
+            summary.append(heading).append(result.summary());
+        }
+        remaining(deadline);
+        return new ReviewResult(summary.toString(), findings);
+    }
+
+    private ReviewResult reviewChunk(ReviewChunk chunk, long deadline) {
+        remaining(deadline);
+        List<Map<String, String>> messages = List.of(Map.of("role", "system", "content", chunk.prompt()),
+                Map.of("role", "user", "content", chunk.input()));
         Map<String, Object> payload;
         if (provider.equals("ollama")) {
             payload = Map.of("model", model, "messages", messages, "stream", false, "format", schema(),
@@ -151,7 +199,7 @@ public class AiReviewClient {
         HttpRequest.Builder request = HttpRequest.newBuilder(endpoint).header("Content-Type", "application/json")
                 .header("Accept", "application/json").POST(HttpRequest.BodyPublishers.ofString(json.writeValueAsString(payload)));
         if (!apiKey.isBlank()) request.header("Authorization", "Bearer " + apiKey);
-        var response = http.exchange(request, "AI");
+        var response = http.exchange(request, "AI", remaining(deadline));
         try {
             JsonNode envelope = json.readTree(response.body());
             String content;
@@ -173,13 +221,151 @@ public class AiReviewClient {
             } else {
                 content = openAiContent(envelope);
             }
-            return parseResult(json.readTree(content), commit.diff());
+            return parseResult(json.readTree(content), chunk.diff());
         } catch (IntegrationException ex) {
             throw ex;
         } catch (RuntimeException ex) {
             throw invalid("AI returned invalid JSON or an invalid review schema");
         }
     }
+
+    private List<ReviewChunk> plan(GitCommit commit, long deadline) {
+        remaining(deadline);
+        String fullInput = input(commit, commit.diff());
+        if (fits(fullInput, SYSTEM_PROMPT)) return List.of(new ReviewChunk(commit.diff(), fullInput, SYSTEM_PROMPT));
+        long commonBytes = inputBytes(input(commit, ""), CHUNK_PROMPT);
+        if (commonBytes > contextTokens) throw new AiInputLimitException(AiInputLimitException.Reason.COMMIT_CONTEXT_BUDGET);
+        List<String> files = completeFiles(commit.diff(), deadline);
+        List<ReviewChunk> chunks = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        long currentBytes = commonBytes;
+        for (String file : files) {
+            remaining(deadline);
+            // JSON escaping is additive across complete files, including all metadata and line endings.
+            long fileBytes = json.writeValueAsString(file).getBytes(StandardCharsets.UTF_8).length - 2L;
+            if (commonBytes + fileBytes > contextTokens) throw new AiInputLimitException(AiInputLimitException.Reason.FILE_CONTEXT_BUDGET);
+            if (currentBytes + fileBytes > contextTokens) {
+                chunks.add(chunk(commit, current.toString()));
+                current.setLength(0);
+                currentBytes = commonBytes;
+            }
+            current.append(file);
+            currentBytes += fileBytes;
+        }
+        if (!current.isEmpty()) chunks.add(chunk(commit, current.toString()));
+        if (chunks.size() > maxReviewCalls) throw new AiInputLimitException(AiInputLimitException.Reason.MAX_REVIEW_CALLS);
+        remaining(deadline);
+        return List.copyOf(chunks);
+    }
+
+    private ReviewChunk chunk(GitCommit commit, String diff) {
+        String input = input(commit, diff);
+        if (!fits(input, CHUNK_PROMPT)) throw new AiInputLimitException(AiInputLimitException.Reason.FILE_CONTEXT_BUDGET);
+        return new ReviewChunk(diff, input, CHUNK_PROMPT);
+    }
+
+    private String input(GitCommit commit, String diff) {
+        return json.writeValueAsString(Map.of("commitSha", commit.sha(), "commitMessage", commit.message(), "diff", diff));
+    }
+
+    private boolean fits(String input, String prompt) { return inputBytes(input, prompt) <= contextTokens; }
+
+    private long inputBytes(String input, String prompt) {
+        // UTF-8 bytes conservatively bound tokens; include schema, template overhead and reserved output.
+        return (long) input.getBytes(StandardCharsets.UTF_8).length + prompt.getBytes(StandardCharsets.UTF_8).length
+                + json.writeValueAsString(schema()).getBytes(StandardCharsets.UTF_8).length + 1024 + maxOutputTokens;
+    }
+
+    private List<String> completeFiles(String diff, long deadline) {
+        List<String> files = new ArrayList<>();
+        Set<String> paths = new HashSet<>();
+        int start = -1;
+        for (int offset = 0; offset < diff.length();) {
+            remaining(deadline);
+            int newline = diff.indexOf('\n', offset);
+            int end = newline < 0 ? diff.length() : newline;
+            String line = withoutCarriageReturn(diff.substring(offset, end));
+            if (line.startsWith("diff --git ")) {
+                if (start < 0 && offset != 0) throw invalidSplit();
+                String path = splitPath(line);
+                if (!paths.add(path)) throw invalidSplit();
+                if (start >= 0) files.add(diff.substring(start, offset));
+                start = offset;
+            }
+            offset = newline < 0 ? diff.length() : newline + 1;
+        }
+        if (start < 0) throw invalidSplit();
+        files.add(diff.substring(start));
+        for (String file : files) validateCompleteFile(file, deadline);
+        return files;
+    }
+
+    private static String splitPath(String header) {
+        if (!header.startsWith("diff --git a/")) throw invalidSplit();
+        int separator = header.indexOf(" b/", 13);
+        if (separator < 0 || header.indexOf(" b/", separator + 3) >= 0) throw invalidSplit();
+        String oldPath = header.substring(13, separator);
+        String newPath = header.substring(separator + 3);
+        for (String path : List.of(oldPath, newPath)) {
+            if (path.isBlank() || path.length() > 1024 || path.startsWith("/") || path.contains("\\") || path.contains("\"")
+                    || path.chars().anyMatch(Character::isISOControl)
+                    || List.of(path.split("/", -1)).stream().anyMatch(part -> part.isEmpty() || part.equals(".") || part.equals(".."))) {
+                throw invalidSplit();
+            }
+        }
+        return newPath;
+    }
+
+    private static void validateCompleteFile(String file, long deadline) {
+        long oldRemaining = 0;
+        long newRemaining = 0;
+        String[] lines = file.split("\n", -1);
+        for (int index = 1; index < lines.length; index++) {
+            remaining(deadline);
+            String line = withoutCarriageReturn(lines[index]);
+            if (line.startsWith("@@")) {
+                if (oldRemaining != 0 || newRemaining != 0) throw invalidSplit();
+                var hunk = COMPLETE_HUNK.matcher(line);
+                if (!hunk.matches()) throw invalidSplit();
+                try {
+                    long oldStart = Long.parseLong(hunk.group(1));
+                    oldRemaining = hunk.group(2) == null ? 1 : Long.parseLong(hunk.group(2));
+                    long newStart = Long.parseLong(hunk.group(3));
+                    newRemaining = hunk.group(4) == null ? 1 : Long.parseLong(hunk.group(4));
+                    if (oldStart > Integer.MAX_VALUE || oldRemaining > Integer.MAX_VALUE - oldStart
+                            || newStart > Integer.MAX_VALUE || newRemaining > Integer.MAX_VALUE - newStart) throw invalidSplit();
+                } catch (NumberFormatException ex) { throw invalidSplit(); }
+            } else if (line.equals("\\ No newline at end of file")) {
+                // This marker adds no old/new lines and must be retained byte-for-byte.
+            } else if (oldRemaining != 0 || newRemaining != 0) {
+                if (line.startsWith(" ")) { oldRemaining--; newRemaining--; }
+                else if (line.startsWith("-")) oldRemaining--;
+                else if (line.startsWith("+")) newRemaining--;
+                else throw invalidSplit();
+                if (oldRemaining < 0 || newRemaining < 0) throw invalidSplit();
+            } else if (!line.isEmpty()
+                    && !line.startsWith("index ") && !line.startsWith("old mode ") && !line.startsWith("new mode ")
+                    && !line.startsWith("new file mode ") && !line.startsWith("deleted file mode ")
+                    && !line.startsWith("similarity index ") && !line.startsWith("dissimilarity index ")
+                    && !line.startsWith("rename from ") && !line.startsWith("rename to ")
+                    && !line.startsWith("copy from ") && !line.startsWith("copy to ")
+                    && !line.startsWith("--- ") && !line.startsWith("+++ ")) {
+                throw invalidSplit();
+            }
+        }
+        if (oldRemaining != 0 || newRemaining != 0) throw invalidSplit();
+    }
+
+    private static String withoutCarriageReturn(String line) { return line.endsWith("\r") ? line.substring(0, line.length() - 1) : line; }
+    private static IntegrationException invalidSplit() {
+        return invalid("Complete review input exceeds the context budget and has ambiguous or incomplete file boundaries");
+    }
+    private static Duration remaining(long deadline) {
+        long nanos = deadline - System.nanoTime();
+        if (nanos <= 0) throw invalid("AI operation exceeded its time budget");
+        return Duration.ofNanos(nanos);
+    }
+    private record ReviewChunk(String diff, String input, String prompt) { }
 
     private static String openAiContent(JsonNode envelope) {
         if (!envelope.isObject() || !"response".equals(envelope.path("object").asText(""))
@@ -274,7 +460,8 @@ public class AiReviewClient {
     private Map<String, List<LineRange>> changedLines(String diff) {
         Map<String, List<LineRange>> paths = new HashMap<>();
         String currentPath = null;
-        for (String line : diff.split("\n")) {
+        for (String rawLine : diff.split("\n")) {
+            String line = withoutCarriageReturn(rawLine);
             if (line.startsWith("diff --git a/")) {
                 int separator = line.indexOf(" b/", 13);
                 currentPath = separator >= 0 ? line.substring(separator + 3) : null;

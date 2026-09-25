@@ -2,6 +2,8 @@
 
 현재 개발 검증용 안내다. 운영 릴리스 승인은 WORK.md와 릴리스 점검 결과를 확인한다.
 
+확정한 운영 대상은 **Linux 서버, Docker 미사용**이다. 전용 계정·systemd·TLS 프록시·WAR 검증과 백업/새 DB 복원·업데이트/롤백 절차는 [Linux 배포 가이드](LINUX-DEPLOYMENT.md)를 따른다. 실제 서버 배포 검증은 별도로 남아 있다.
+
 ## 구성
 
 Java 25 / Spring Boot 4.0.8 / Maven Wrapper 3.9.11 / PostgreSQL 17 / JSP·JSTL을 사용한다. 서버는 WAR 하나로 웹 화면, DB 접근, Git/AI 어댑터, 예약 실행을 제공한다. 다중 인스턴스 간 같은 프로젝트의 동시 리뷰는 PostgreSQL 세션 advisory lock으로 차단한다.
@@ -77,10 +79,13 @@ GitHub 작성자 계정을 활성 사용자의 Git 계정과 먼저 매칭한다
 | `AI_TIMEOUT_SECONDS` | 120 |
 | `AI_CONTEXT_TOKENS` | 32768 |
 | `AI_MAX_OUTPUT_TOKENS` | 4096 |
+| `AI_MAX_REVIEW_CALLS` | 8; 커밋당 최대 파일 묶음 호출 수, 허용1..32 |
 
 Ollama는 `<base-url>/api/chat`, LiteLLM은 `<base-url>/chat/completions`를 사용한다. 프록시가 `/v1/chat/completions`를 제공하면 base URL을 `http://host:4000/v1`로 설정한다. 운영 LiteLLM에는 HTTPS와 접근 인증을 설정하고 해당 모델이 JSON schema structured output을 지원하는지 확인한다. 공급자를 LiteLLM으로 설정하면 코드 diff가 해당 프록시/모델로 전송되므로 조직이 승인한 주소와 모델만 설정한다.
 
 모델 context와 출력 예산을 실제 모델 용량에 맞춘다. 입력은 byte 기반 보수적 예산 검사로 silent context truncation을 방지한다. 큰 diff를 임의로 잘라 성공 처리하지 않는다. 구조가 잘못된 JSON, 잘못된 파일/행, 생성 중단, 거부, 과대 응답은 실패로 기록한다.
+
+전체 입력이 한도 안이면 한 번 호출한다. 넘으면 완전한 파일 경계로 분할하며 모든 파일·hunk 경계를 첫 요청 전에 검사한다. 한 파일 자체가 너무 크거나 총 호출 수 한도를 넘으면 전체 변경 경로를 Git에서 다시 증명한 뒤 커밋 전체를 수동 이슈로 넘긴다. 파일 내부를 잘라 보내지는 않는다. 여러 요청도 `AI_TIMEOUT_SECONDS` 하나의 총 시간 제한을 공유한다. 각 응답은 해당 묶음의 파일/행만 가리켜야 하고 합계100개 권고/32000자 요약을 넘거나 마지막 호출이 실패하면 커밋을 저장하지 않는다. 분할 검토 요약에는 파일 간 맥락 검토의 제한을 표시한다.
 
 OpenAI는 고정된 공식 HTTPS Responses endpoint를 사용하며 `AI_BASE_URL`/`AI_API_KEY`를 재사용하지 않는다. `store:false`를 요청하지만 공급자의 로그 보존까지 없애는 설정은 아니다. 코드가 외부로 전송되므로 조직이 승인한 모델과 정책으로 구성한다. 상세 설정·검증 범위는 [OpenAI 연결](OPENAI-INTEGRATION.md), 커밋 검사 방법은 [비밀정보 보호](SECRET-HYGIENE.md)를 따른다. 실제 API 키를 커밋·브라우저 입력·테스트 fixture에 넣지 않는다.
 
@@ -103,7 +108,15 @@ OpenAI는 고정된 공식 HTTPS Responses endpoint를 사용하며 `AI_BASE_URL
 - GitHub의 rename 또는0행 변경 후보가 있는 커밋은 현재와 첫 부모의 SHA에 연결된 전체 tree를 교차 검증한다. 모든 변경 경로·파일 상태·blob·모드가 일치해야 한다. tree 잘림·누락·copy·submodule·본문 모순은 실패한다. 후보 커밋은 보통 추가3회 GET이 필요하며 기존 요청/배치 시간·응답 크기 예산을 공유한다. 일반 본문 변경만 있는 기존 경로까지 전체 tree 검증을 확대한 것은 아니다.
 - GitHub/GitLab의 정규 빈 파일 생성·삭제는 고정 tree, 생성·삭제 상태, canonical Git 빈 blob SHA-1/SHA-256이 모두 맞아야 `METADATA_ONLY`로 처리한다. 실행 파일도 포함하지만 빈 symlink/submodule 생성·삭제는 지원하지 않는다. 내용이 없더라도 파일 존재 자체가 동작에 영향을 줄 수 있으므로 경로·권한의 수동 확인 안내를 남긴다.
 - `METADATA_ONLY`는 본문 AI 검토가 없으며 경로·실행권한·파일 유형 변경의 영향은 수동 확인 대상이다. 리뷰 기록에 이전/새 경로와 숫자 모드 및 안내를 표시한다. 자동 권고 이슈는 만들지 않는다. 처리 완료 커밋 수는 이런 커밋을 포함하므로 AI가 검토한 커밋 수와 다르다.
-- binary 본문 변경, 제공되지 않는 patch, 증거가 부족한 rename/mode/빈 파일, API 잘림은 명시적으로 실패한다. 임의 제외 후 진행하지 않는다. 원본 기반 diff 대안과 수동 검토 이슈 흐름은 후속 개발 대상이다.
+- binary 표시/제공되지 않는 patch/수집 크기 한도/AI 사전 입력 한도는 독립적인 고정 현재·첫 부모 tree와 전체 변경 목록을 대조할 수 있을 때만 `MANUAL_ONLY`로 저장한다. 이번 버전은 해당 커밋의 **모든 변경 경로**를 수동 이슈로 배정하고 다음 커밋으로 진행한다. 커밋당 최대1000개 경로이며 초과 시 실패한다. rename은 이전/새 경로가 각각 업무가 될 수 있다. 전체 원본 바이트를 읽거나 binary 형식을 증명한 것으로 표시하지 않는다.
+- 수동 이슈는 `MANUAL_REVIEW`이며 심각도/행 번호가 없고 파일별 고정 객체 SHA·모드·미검토 사유를 보존한다. AI 권고 `AI_FINDING`과 구분한다. 상태 저장 시 확인 결과/사유5..1000자가 필요하며 담당자/관리자만 처리할 수 있다. 이슈를 닫아도 당시 AI 미검토 범위는 유지한다. V10은 기존 이슈/범위를 보존하며 과거 커밋에 업무를 소급 생성하지 않는다.
+- GitHub는 파일별 추가/삭제 합계와 전체 통계를 대조하고, GitLab의 미제공 patch는 본문 행수를 확인할 수 없음을 범위 설명에 남긴다. 제공된 본문의 통계 모순이나 목록/트리 잘림·누락·부모 불일치·인증/네트워크/시간 초과·잘못된 응답은 계속 실패한다. AI 응답 오류/거절도 수동 성공으로 바꾸지 않는다. 원본 blob에서 diff 재구성 및 한 커밋 안의 부분 AI/부분 수동 혼합 처리는 후속 범위다.
+
+### 운영 상태와 DB 시간 제한
+
+관리자 메뉴의 **운영 상태**(`/admin/operations`)는 최근 실행 실패, 승인 후 실행 기록 없음, 마지막 시작 이후 오래된 프로젝트를50건씩 조회한다. 최신 실행이 성공하면 이전 실패는 실패 목록에서 제외한다. `OPERATIONS_STALE_AFTER_MINUTES=120`(1..10080)은 관찰용 기준이며 실행 완료 보장 시간이 아니다. 메모리 큐/다른 프로세스의 실제 실행 여부를 대신하지 않는다. DB 조회 장애를 빈 정상 목록으로 숨기지 않는다.
+
+JDBC 조회는 `JDBC_QUERY_TIMEOUT_SECONDS=30`, PostgreSQL 소켓 읽기는 `JDBC_SOCKET_TIMEOUT_SECONDS=45`, 연결은 `JDBC_CONNECT_TIMEOUT_SECONDS=10`초로 제한한다. 각1..3600이고 소켓 한도는 쿼리 한도보다 커야 한다. advisory lock 획득/해제에도 쿼리 제한을 적용한다. URL에 별도 `socketTimeout`/`connectTimeout`을 넣으면 이 값과 정확히 일치해야 하며 무제한/충돌/중복을 시작 시 거부한다. Hikari의 pool 대기10초와 실제 SQL/네트워크 시간 제한은 별개다. 제한 초과 실행의 저장 완료 여부를 확인하고 재시도한다.
 
 ### 강제 푸시 후 관리자 복구
 

@@ -21,7 +21,7 @@
     <c:forEach items="${commits}" var="commit"><article class="review-card">
       <div class="section-heading"><code class="commit-sha"><c:out value="${commit.commit_sha}"/></code><span>이슈 <c:out value="${commit.issue_count}"/>건</span></div>
       <c:if test="${not empty commit.commit_url}"><p><a href="<c:out value='${commit.commit_url}'/>" target="_blank" rel="noopener noreferrer">원본 커밋 보기</a></p></c:if>
-      <p><span class="badge"><c:choose><c:when test="${commit.coverage_type == 'EMPTY'}">파일 변경 없음 · AI 본문 검토 없음</c:when><c:when test="${commit.coverage_type == 'METADATA_ONLY'}">메타데이터 변경 · 수동 확인 필요</c:when><c:otherwise>AI 본문 리뷰<c:if test="${not empty commit.coverage_details}"> · 메타데이터 변경 포함</c:if></c:otherwise></c:choose></span></p>
+      <p><span class="badge"><c:choose><c:when test="${commit.coverage_type == 'EMPTY'}">파일 변경 없음 · AI 본문 검토 없음</c:when><c:when test="${commit.coverage_type == 'METADATA_ONLY'}">메타데이터 변경 · 수동 확인 필요</c:when><c:when test="${commit.coverage_type == 'MANUAL_ONLY'}">수동 확인 이슈 배정 · AI 본문 검토 없음</c:when><c:otherwise>AI 본문 리뷰<c:if test="${not empty commit.coverage_details}"> · 메타데이터 변경 포함</c:if></c:otherwise></c:choose></span></p>
       <p class="muted">작성자: <c:out value="${commit.author_login}" default="Git 계정 미확인"/> · <c:out value="${commit.reviewed_at}"/></p>
       <p class="preserve-lines"><c:out value="${commit.summary}"/></p>
       <c:if test="${commit.coverage_type == 'METADATA_ONLY'}"><p class="notice">빈 파일 생성·삭제 또는 경로·권한·파일 유형 변경의 영향을 수동 확인해 주세요. 심볼릭 링크로의 변경도 포함될 수 있습니다. 이 커밋은 별도 수정 권고 이슈를 자동 생성하지 않습니다.</p></c:if>

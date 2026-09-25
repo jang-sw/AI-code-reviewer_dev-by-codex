@@ -1,0 +1,44 @@
+[Unit]
+Description=AI Code Reviewer
+Documentation=https://github.com/jang-sw/code-reviewer_by-codex
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=exec
+User=ai-reviewer
+Group=ai-reviewer
+WorkingDirectory=/var/lib/ai-reviewer
+EnvironmentFile=/etc/ai-reviewer/reviewer.env
+ExecStart=/opt/ai-reviewer/java/bin/java -Xms256m -Xmx2g -XX:+ExitOnOutOfMemoryError -Djava.io.tmpdir=/run/ai-reviewer -jar /opt/ai-reviewer/current/ai-code-reviewer.war
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=180
+KillSignal=SIGTERM
+UMask=0077
+LimitCORE=0
+StateDirectory=ai-reviewer
+StateDirectoryMode=0750
+RuntimeDirectory=ai-reviewer
+RuntimeDirectoryMode=0700
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/ai-reviewer /run/ai-reviewer
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ai-reviewer
+
+[Install]
+WantedBy=multi-user.target

@@ -51,7 +51,7 @@ class IssueControllerTest {
         mvc.perform(post("/issues/42/status").principal(() -> "owner")
                         .param("status", "OPEN").param("filterStatus", "RESOLVED").param("page", "2"))
                 .andExpect(status().is3xxRedirection()).andExpect(redirectedUrl("/issues?status=RESOLVED&page=2"));
-        verify(service).changeStatus(42, "OPEN", actor);
+        verify(service).changeStatus(42, "OPEN", actor, "");
     }
 
     @Test
@@ -60,6 +60,7 @@ class IssueControllerTest {
                         .param("status", "OPEN").param("filterStatus", "https://example.test"))
                 .andExpect(status().isBadRequest());
         verify(service, never()).changeStatus(anyLong(), anyString(), any());
+        verify(service, never()).changeStatus(anyLong(), anyString(), any(), anyString());
     }
 
     @Test
@@ -70,5 +71,23 @@ class IssueControllerTest {
         mvc.perform(post("/issues/42/status").principal(() -> "owner").param("status", "RESOLVED")
                         .param("filterStatus", "").param("page", "1"))
                 .andExpect(status().is3xxRedirection()).andExpect(redirectedUrl("/issues?status=&page=1"));
+    }
+
+    @Test
+    void manualReasonIsPassedOnlyToTheServiceWithoutEchoingItInTheRedirectOrFlash() throws Exception {
+        String reason = "처리 사유 <script>fixture</script>";
+        var result = mvc.perform(post("/issues/42/status").principal(() -> "owner")
+                        .param("status", "RESOLVED").param("filterStatus", "").param("page", "2").param("reason", reason))
+                .andExpect(redirectedUrl("/issues?status=&page=2")).andReturn();
+        verify(service).changeStatus(42, "RESOLVED", actor, reason);
+        org.assertj.core.api.Assertions.assertThat(result.getFlashMap().toString()).doesNotContain(reason, "fixture", "<script>");
+    }
+
+    @Test
+    void manualDetailUsesTheHumanReviewPageTitle() throws Exception {
+        when(service.detail(42, actor)).thenReturn(java.util.Map.of("issue_kind", "MANUAL_REVIEW", "title", "Manual task"));
+        mvc.perform(get("/issues/42").principal(() -> "owner"))
+                .andExpect(status().isOk()).andExpect(model().attribute("pageTitle", "수동 확인 업무"));
+        verify(service).detail(42, actor);
     }
 }

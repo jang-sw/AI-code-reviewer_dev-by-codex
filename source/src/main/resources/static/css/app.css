@@ -79,6 +79,9 @@ td.actions { min-width:210px; }
 .review-history-table .review-result { min-width:280px; }
 .review-history-table .error-text { max-width:420px; margin:8px 0 0; white-space:normal; overflow-wrap:anywhere; }
 .review-history-scroll-hint { display:none; }
+.operations-table { min-width:950px; }
+.operations-table td:first-child { min-width:190px; max-width:280px; }
+.operations-table .operations-timestamp { white-space:nowrap; overflow-wrap:normal; }
 .badge,.status,.pill { display:inline-block; background:#edf2f9; color:#344d70; padding:3px 9px; border-radius:20px; font-size:11px; font-weight:700; white-space:nowrap; }
 .badge-success,.status-APPROVED,.status-SUCCEEDED,.status-RESOLVED { background:#e6f5ed; color:var(--green); }
 .badge-warning,.status-PENDING,.status-RUNNING,.status-OPEN { background:#fff2d9; color:#805416; }

@@ -72,7 +72,7 @@ class GitRepositoryClientTest {
         server.handler = request -> request.path().endsWith("/commits") ? ok(List.of(gh(A)))
                 : ok(Map.of("sha", A, "stats", Map.of("additions", 0, "deletions", 0), "files", List.of(
                         Map.of("filename", "binary.png", "additions", 0, "deletions", 0))));
-        assertThatThrownBy(() -> client().commits(GITHUB, null, null, 1)).hasMessageContaining("patch");
+        assertThatThrownBy(() -> client().commits(GITHUB, null, null, 1)).hasMessageContaining("parent metadata");
     }
 
     @Test void handlesGitlabEncodedNamespaceTreeVerificationAndScopedToken() {
@@ -109,23 +109,28 @@ class GitRepositoryClientTest {
                 .contains("+String message = \"Binary files differ; GIT binary patch\";");
     }
 
-    @Test void gitlabStandaloneBinaryMarkersAreRejected() {
+    @Test void gitlabStandaloneBinaryMarkersRequireManualCoverageAfterCompleteTreeProof() {
         gitlab(false, false);
         var usual = server.handler;
         RepositoryUrl repository = RepositoryUrl.parse(server.url() + "/group/sub/repo", Set.of("127.0.0.1"));
         for (String marker : List.of("Binary files a/a.java and b/a.java differ", "GIT binary patch")) {
             server.handler = request -> request.path().endsWith("/diff")
                     ? ok(List.of(Map.of("old_path", "a.java", "new_path", "a.java", "collapsed", false,
-                            "too_large", false, "diff", marker))) : usual.apply(request);
-            assertThatThrownBy(() -> client().commits(repository, null, null, 5)).hasMessageContaining("non-text file diff");
+                            "too_large", false, "diff", marker, "new_file", true, "deleted_file", false, "renamed_file", false))) : usual.apply(request);
+            GitCommit result = client().commits(repository, null, null, 5).getFirst();
+            assertThat(result.coverageType()).isEqualTo("MANUAL_ONLY");
+            assertThat(result.diff()).isEmpty();
+            assertThat(result.manualFiles()).containsExactly(new ManualReviewFile("a.java", null, B, null, "100644", "SOURCE_DIFF_UNAVAILABLE"));
         }
     }
 
-    @Test void rejectsGitlabCollapsedDiffAndUsesConfiguredGitlabToken() {
+    @Test void gitlabCollapsedDiffRequiresManualEvidenceAndUsesConfiguredGitlabToken() {
         gitlab(false, true);
         RepositoryUrl repository = RepositoryUrl.parse(server.url() + "/group/sub/repo", Set.of("127.0.0.1"));
         GitRepositoryClient gitlab = new GitRepositoryClient(Set.of("127.0.0.1"), server.url(), "gitlab-fixture-token", "127.0.0.1", server.url(), 2, 10, 65536, 262144, 300);
-        assertThatThrownBy(() -> gitlab.commits(repository, null, null, 5)).hasMessageContaining("collapsed");
+        GitCommit result = gitlab.commits(repository, null, null, 5).getFirst();
+        assertThat(result.coverageType()).isEqualTo("MANUAL_ONLY");
+        assertThat(result.manualFiles()).containsExactly(new ManualReviewFile("a.java", null, B, null, "100644", "SOURCE_DIFF_UNAVAILABLE"));
         assertThat(server.requests).allSatisfy(request -> assertThat(request.header("PRIVATE-TOKEN")).isEqualTo("gitlab-fixture-token"));
     }
 
@@ -273,10 +278,10 @@ class GitRepositoryClientTest {
         server.handler = request -> {
             if (request.path().endsWith("/repository/commits")) return ok(List.of(Map.of("id", A, "parent_ids", List.of(), "message", "Root",
                     "author_name", "unverified-display-name", "author_email", " Author@Example.COM ")));
-            if (request.path().endsWith("/repository/commits/" + A)) return ok(Map.of("id", A, "stats", Map.of("additions", 1, "deletions", 0)));
+            if (request.path().endsWith("/repository/commits/" + A)) return ok(Map.of("id", A, "parent_ids", List.of(), "stats", Map.of("additions", 1, "deletions", 0)));
             if (request.path().endsWith("/tree")) return ok(missingFile ? List.of(tree("a.java"), tree("binary.png")) : List.of(tree("a.java")));
             if (request.path().endsWith("/diff")) return ok(List.of(Map.of("old_path", "a.java", "new_path", "a.java", "collapsed", collapsed,
-                    "too_large", false, "diff", "@@ -0,0 +1,1 @@\n+one")));
+                    "too_large", false, "diff", "@@ -0,0 +1,1 @@\n+one", "new_file", true, "deleted_file", false, "renamed_file", false)));
             return new HttpFixture.Reply(404, "{}");
         };
     }

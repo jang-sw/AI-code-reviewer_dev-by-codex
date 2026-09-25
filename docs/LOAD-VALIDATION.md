@@ -1,4 +1,4 @@
-# 오프라인 이력 부하 검증
+# 로컬 합성 부하 검증
 
 2026-09-26 KST, Java25 개발 환경에서 `GitHistoryLoadSmokeTest`를 선택 실행했다. 외부 Git·AI·DB를 호출하지 않는 loopback HTTP fixture 검증이다. 운영 처리량이나 메모리 상한의 증거로 해석하지 않는다.
 
@@ -39,3 +39,50 @@ try {
     $env:RUN_GIT_LOAD_SMOKE = $priorLoadFlag
 }
 ```
+
+## 실제 PostgreSQL 수동 확인 이슈 1,000파일
+
+2026-09-26 KST, `ManualReviewLoadPostgresTest`를 격리된 로컬 PostgreSQL17의 `reviewer_integration`에서 선택 실행했다. 실제 `ReviewRepository`, `ReviewCoordinator`, `IssueService`, 트랜잭션과 PostgreSQL advisory lock을 사용했다. Git 응답과 tree 증거는 합성이며 AI 호출은0회다. 이 검사는 Git 증명의 정확성이나 실제 공급자 처리량을 측정하지 않는다.
+
+- 현재 커밋당 상한인1,000파일의 `MANUAL_ONLY` 커밋 하나를 처리하여 증거1,000행과 수동 이슈1,000행을 저장했다. 커밋 결과·진행 기준·실행 성공·배정 감사 기록도 확인했다.
+- 모든 이슈가 같은 프로젝트/커밋의 증거와 연결되고, 담당자가 맞으며 심각도·행 번호는 없고 초기 상태는 `OPEN`임을 확인했다.
+- 소유자 목록을25건씩40페이지 조회하여 전체1,000건의 순서·중복·누락, 마지막 페이지의 다음 페이지 없음, 범위 밖 빈 페이지를 검사했다. 목록은 요약만 반환하며 전체 확인 사유나 파일 객체 SHA를 싣지 않는다.
+- 소유자와 관리자의 상세·목록 접근, 무관한 사용자의 상세404·빈 목록·리뷰 실행 거절을 검사했다.
+- 같은 배치를 다시 전달해도 증거/이슈/커밋/배정 감사가 중복 생성되지 않고 두 번째 실행의 신규 처리 건수가0임을 확인했다.
+- 고유 계정·프로젝트만 추가하며 기존 이슈를 삭제하거나 테이블을 초기화하지 않는다. 측정 로그에는 건수·소요시간만 출력한다.
+
+### 실제 관찰과 한계
+
+로컬 로그 `.local/session3-pg-third.log`에서 선택 테스트1건이 실패·오류·건너뜀 없이 통과했다. 테스트 메서드 전체는4.217초였고, 내부 측정은 다음과 같다.
+
+| 구간 | 관찰 시간 |
+|---|---:|
+| 최초 리뷰 실행: 증거1,000행·이슈1,000행 및 관련 기록 저장 | 647ms |
+| 40페이지·경계·접근 권한·상세 조회 검사 | 2,277ms |
+| 같은 배치 재시도 및 저장 SHA 재사용 | 307ms |
+
+이는 단일 로컬 환경에서 합성 커밋 하나를 처리한 관찰값이다. 운영 처리량 보장이나 성능 합격 기준이 아니다. 실제 Git/AI 지연, 여러 프로젝트 동시 실행, 대규모 기존 이슈 누적, 프로세스 RSS, 장시간 실행·장애 복구는 측정하지 않았다. 같은 로그의 전체 검증은721건 중716통과·선택 시험5건 건너뜀이며9개 테이블 백업/복원과 identity 시퀀스 삽입 검증도 통과했다. 이후 변경의 검증 상태는 `WORK.md`를 따른다.
+
+### 안전한 선택 실행
+
+Java25와 PostgreSQL17 개발 도구가 있는 Windows에서 **저장소 루트**에서 실행한다. 아래 명령은 외부 Git/AI 선택 시험을 끄고, 기존 격리 검증 스크립트가 관리하는 `.local/pg-validation` 클러스터를 사용한다. 스크립트는 loopback으로만 연결하고 전용 테스트 DB URL을 설정한 뒤 전체 검증·백업/복원을 실행하고 자신이 시작한 클러스터를 종료한다. 동시에 다른 검증을 실행하지 않는다.
+
+```powershell
+$loadSmokeFlags = @('RUN_REVIEW_LOAD_SMOKE', 'RUN_GITHUB_SMOKE', 'RUN_GITLAB_SMOKE',
+    'RUN_OLLAMA_SMOKE', 'RUN_AI_EVALUATION', 'RUN_GIT_LOAD_SMOKE')
+$savedLoadSmokeFlags = @{}
+foreach ($name in $loadSmokeFlags) {
+    $savedLoadSmokeFlags[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+}
+try {
+    foreach ($name in $loadSmokeFlags) { [Environment]::SetEnvironmentVariable($name, 'false', 'Process') }
+    $env:RUN_REVIEW_LOAD_SMOKE = 'true'
+    & .\scripts\test-postgres.ps1 -BackupRestore
+} finally {
+    foreach ($name in $loadSmokeFlags) {
+        [Environment]::SetEnvironmentVariable($name, $savedLoadSmokeFlags[$name], 'Process')
+    }
+}
+```
+
+필요하면 스크립트의 `-PgBin`·`-Port`로 PostgreSQL 개발 도구와 비어 있는 로컬 포트를 지정한다. 이 테스트는 `RUN_REVIEW_LOAD_SMOKE=true`와 `TEST_DATABASE_URL=jdbc:postgresql://127.0.0.1:<port>/reviewer_integration` 또는 동등한 `localhost` URL을 모두 만족해야 실행된다. URL 검사만으로 DB의 소유권이 증명되지는 않으므로 운영 DB나 다른 작업의 DB를 이 이름으로 연결하지 않는다. 기본 실행·CI에서는 선택 시험을 건너뛰며, 이를 실행 통과로 해석하지 않는다.

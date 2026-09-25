@@ -29,13 +29,15 @@ class PostgresProjectReviewLockTest {
         when(acquire.executeQuery()).thenReturn(acquired);
         when(release.executeQuery()).thenReturn(released);
 
-        var lease = new PostgresProjectReviewLock(source).tryAcquire(52).orElseThrow();
+        var lease = new PostgresProjectReviewLock(source, 3).tryAcquire(52).orElseThrow();
+        verify(acquire).setQueryTimeout(3);
         verify(connection, never()).close();
         verify(connection, never()).prepareStatement("select pg_advisory_unlock(?)");
         lease.close();
         lease.close();
 
         var order = inOrder(release, connection);
+        order.verify(release).setQueryTimeout(3);
         order.verify(release).setLong(eq(1), anyLong());
         order.verify(release).executeQuery();
         order.verify(connection).close();
@@ -91,6 +93,33 @@ class PostgresProjectReviewLockTest {
         var order = inOrder(connection);
         order.verify(connection).abort(any());
         order.verify(connection).close();
+    }
+
+    @Test
+    void timeoutConfigurationFailureDiscardsSessionWithoutSendingLockQuery() throws Exception {
+        DataSource source = mock(DataSource.class);
+        Connection connection = mock(Connection.class);
+        PreparedStatement acquire = mock(PreparedStatement.class);
+        when(source.getConnection()).thenReturn(connection);
+        when(connection.prepareStatement("select pg_try_advisory_lock(?)")).thenReturn(acquire);
+        doThrow(new SQLException("Timeout setting failed")).when(acquire).setQueryTimeout(2);
+
+        assertThatThrownBy(() -> new PostgresProjectReviewLock(source, 2).tryAcquire(52))
+                .isInstanceOf(IllegalStateException.class);
+        verify(acquire, never()).executeQuery();
+        var order = inOrder(connection);
+        order.verify(connection).abort(any());
+        order.verify(connection).close();
+    }
+
+    @Test
+    void disabledOrUnboundedQueryTimeoutCannotStart() {
+        DataSource source = mock(DataSource.class);
+        for (int seconds : new int[] { -1, 0, 3601 }) {
+            assertThatThrownBy(() -> new PostgresProjectReviewLock(source, seconds))
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+        verifyNoInteractions(source);
     }
 
     private static ResultSet result(boolean value) throws SQLException {

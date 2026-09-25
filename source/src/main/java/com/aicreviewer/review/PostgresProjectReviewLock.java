@@ -1,6 +1,8 @@
 package com.aicreviewer.review;
 
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
@@ -12,9 +14,19 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class PostgresProjectReviewLock implements ProjectReviewLock {
     private static final long KEY_NAMESPACE = 0x4149435200000000L;
     private final DataSource dataSource;
+    private final int queryTimeoutSeconds;
 
     public PostgresProjectReviewLock(DataSource dataSource) {
+        this(dataSource, 30);
+    }
+
+    @Autowired
+    public PostgresProjectReviewLock(DataSource dataSource, @Value("${app.jdbc.query-timeout-seconds:30}") int queryTimeoutSeconds) {
+        if (queryTimeoutSeconds < 1 || queryTimeoutSeconds > 3600) {
+            throw new IllegalArgumentException("JDBC query timeout must be between 1 and 3600 seconds");
+        }
         this.dataSource = dataSource;
+        this.queryTimeoutSeconds = queryTimeoutSeconds;
     }
 
     @Override
@@ -26,10 +38,11 @@ public class PostgresProjectReviewLock implements ProjectReviewLock {
             connection = dataSource.getConnection();
             long key = KEY_NAMESPACE ^ projectId;
             try (var statement = connection.prepareStatement("select pg_try_advisory_lock(?)")) {
+                statement.setQueryTimeout(queryTimeoutSeconds);
                 statement.setLong(1, key);
                 try (var result = statement.executeQuery()) {
                     if (result.next() && result.getBoolean(1)) {
-                        return Optional.of(new SessionLease(connection, key));
+                        return Optional.of(new SessionLease(connection, key, queryTimeoutSeconds));
                     }
                 }
             }
@@ -54,11 +67,13 @@ public class PostgresProjectReviewLock implements ProjectReviewLock {
     private static final class SessionLease implements Lease {
         private final Connection connection;
         private final long key;
+        private final int queryTimeoutSeconds;
         private final AtomicBoolean closed = new AtomicBoolean();
 
-        private SessionLease(Connection connection, long key) {
+        private SessionLease(Connection connection, long key, int queryTimeoutSeconds) {
             this.connection = connection;
             this.key = key;
+            this.queryTimeoutSeconds = queryTimeoutSeconds;
         }
 
         @Override
@@ -66,6 +81,7 @@ public class PostgresProjectReviewLock implements ProjectReviewLock {
             if (!closed.compareAndSet(false, true)) return;
             SQLException failure = null;
             try (var statement = connection.prepareStatement("select pg_advisory_unlock(?)")) {
+                statement.setQueryTimeout(queryTimeoutSeconds);
                 statement.setLong(1, key);
                 try (var result = statement.executeQuery()) {
                     if (!result.next() || !result.getBoolean(1)) {
