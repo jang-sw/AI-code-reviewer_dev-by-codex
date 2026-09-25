@@ -25,6 +25,8 @@ import tools.jackson.databind.json.JsonMapper;
 @Service
 public class GitRepositoryClient {
     private static final int PAGE_SIZE = 100;
+    /** Bounded durable progress input; repositories must stop reading before exceeding this count. */
+    public static final int MAX_REVIEWED_SHAS = 131072;
     private final Set<String> allowedHosts;
     private final URI githubApi;
     private final GitCredentialRegistry credentials;
@@ -69,15 +71,32 @@ public class GitRepositoryClient {
     }
 
     public List<GitCommit> commits(RepositoryUrl repository, String branch, String lastReviewedSha, int limit) {
+        return collectWithDeadline(repository, branch, lastReviewedSha, Set.of(), limit, true).commits();
+    }
+
+    public GitReviewBatch batch(RepositoryUrl repository, String branch, String lastReviewedSha,
+            Set<String> reviewedShas, int limit) {
+        if (reviewedShas == null || reviewedShas.size() > MAX_REVIEWED_SHAS) {
+            throw new IntegrationException("Durable review progress exceeds the configured memory safety budget");
+        }
+        if (reviewedShas.stream().anyMatch(value -> value == null || !validSha(value))) {
+            throw new IntegrationException("Durable review progress contains an invalid commit identifier");
+        }
+        return collectWithDeadline(repository, branch, lastReviewedSha, Set.copyOf(reviewedShas), limit, false);
+    }
+
+    private GitReviewBatch collectWithDeadline(RepositoryUrl repository, String branch, String lastReviewedSha,
+            Set<String> reviewedShas, int limit, boolean requireClosedBatch) {
         operationDeadline.set(System.nanoTime() + Duration.ofSeconds(operationTimeoutSeconds).toNanos());
         try {
-            return collectCommits(repository, branch, lastReviewedSha, limit);
+            return collectCommits(repository, branch, lastReviewedSha, reviewedShas, limit, requireClosedBatch);
         } finally {
             operationDeadline.remove();
         }
     }
 
-    private List<GitCommit> collectCommits(RepositoryUrl repository, String branch, String lastReviewedSha, int limit) {
+    private GitReviewBatch collectCommits(RepositoryUrl repository, String branch, String lastReviewedSha,
+            Set<String> reviewedShas, int limit, boolean requireClosedBatch) {
         RepositoryUrl checked = RepositoryUrl.parse(repository.normalizedUrl(), allowedHosts);
         if (!checked.equals(repository)) throw new IllegalArgumentException("Repository metadata does not match its URL");
         credentials.tokenFor(repository);
@@ -94,7 +113,7 @@ public class GitRepositoryClient {
         requireArray(initial);
         if (initial.isEmpty()) {
             if (lastReviewedSha != null) throw new IntegrationException("Review cursor is missing from repository history");
-            return List.of();
+            return new GitReviewBatch(List.of(), null);
         }
         String head = sha(initial.get(0), github ? "sha" : "id");
         Map<String, CommitMeta> graph = new LinkedHashMap<>();
@@ -129,21 +148,39 @@ public class GitRepositoryClient {
             for (int i = 0; i < ordered.size(); i++) if (ordered.get(i).sha().equals(lastReviewedSha)) start = i + 1;
             if (start == -1) throw new IntegrationException("Review cursor is missing; repository history may have been rewritten");
         }
-        List<GitCommit> result = new ArrayList<>();
-        int end = Math.min(ordered.size(), start + limit);
-        while (end > start && !checkpointShas.contains(ordered.get(end - 1).sha())) end--;
-        if (end == start && start < ordered.size()) {
-            throw new IntegrationException("Commit batch limit is too small to review the next complete merge group");
+        List<CommitMeta> selected = new ArrayList<>();
+        String checkpoint = null;
+        if (requireClosedBatch) {
+            // Compatibility API: callers historically checkpointed the final returned SHA.
+            int end = Math.min(ordered.size(), start + limit);
+            while (end > start && !checkpointShas.contains(ordered.get(end - 1).sha())) end--;
+            if (end == start && start < ordered.size()) {
+                throw new IntegrationException("Commit batch limit is too small to review the next complete merge group");
+            }
+            selected.addAll(ordered.subList(start, end));
+            if (!selected.isEmpty()) checkpoint = selected.getLast().sha();
+        } else {
+            // The first-parent-first DFS above gives the cursor an immutable, closed prefix.
+            // Reviewed orphan SHAs never participate: only nodes in this pinned graph are visited.
+            for (int i = start; i < ordered.size(); i++) {
+                CommitMeta meta = ordered.get(i);
+                if (!reviewedShas.contains(meta.sha())) {
+                    if (selected.size() == limit) break;
+                    selected.add(meta);
+                }
+                // Keep walking an already-reviewed tail even when the selected quota is full.
+                if (checkpointShas.contains(meta.sha())) checkpoint = meta.sha();
+            }
         }
         // Keep manifests only for this batch. No source files are written to disk.
         Map<String, Map<String, String>> trees = new LinkedHashMap<>(4, 0.75f, true) {
             @Override protected boolean removeEldestEntry(Map.Entry<String, Map<String, String>> eldest) { return size() > 2; }
         };
-        for (int i = start; i < end; i++) {
-            CommitMeta meta = ordered.get(i);
+        List<GitCommit> result = new ArrayList<>();
+        for (CommitMeta meta : selected) {
             result.add(github ? githubCommit(repository, base, meta) : gitlabCommit(repository, base, meta, trees));
         }
-        return List.copyOf(result);
+        return new GitReviewBatch(List.copyOf(result), checkpoint);
     }
 
     private GitCommit githubCommit(RepositoryUrl repository, String base, CommitMeta meta) {

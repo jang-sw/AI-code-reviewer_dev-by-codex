@@ -10,6 +10,7 @@
     <p class="muted">배정 근거: <c:choose><c:when test="${issue.assignment_reason == 'GITHUB_ACCOUNT'}">GitHub 계정 연결</c:when><c:when test="${issue.assignment_reason == 'GIT_EMAIL_MAPPING'}">관리자가 등록한 저장소 이메일 매핑</c:when><c:when test="${issue.assignment_reason == 'PROJECT_OWNER_FALLBACK'}">프로젝트 소유자 대체 배정</c:when><c:otherwise>기존 이슈 (배정 근거 미기록)</c:otherwise></c:choose></p>
     <c:if test="${issue.assignment_reason == 'PROJECT_OWNER_FALLBACK' or issue.fallback_assignment}"><p class="notice">Git 작성자와 일치하는 활성 계정이나 저장소 이메일 매핑이 없어 프로젝트 소유자에게 배정된 이슈입니다.</p></c:if>
     <p><code class="commit-sha"><c:out value="${issue.commit_sha}"/></code></p>
+    <c:if test="${not empty issue.commit_url}"><p><a href="<c:out value='${issue.commit_url}'/>" target="_blank" rel="noopener noreferrer">원본 커밋 보기</a></p></c:if>
     <p><code class="file-path"><c:out value="${issue.file_path}"/><c:if test="${not empty issue.line_number}">:<c:out value="${issue.line_number}"/></c:if></code></p>
     <h3>검토 내용</h3><p class="preserve-lines"><c:out value="${issue.description}"/></p>
     <h3>수정 권고</h3><pre class="suggestion"><c:out value="${issue.suggestion}"/></pre>

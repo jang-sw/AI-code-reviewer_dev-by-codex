@@ -13,8 +13,10 @@
 - [x] CSRF·출력 escaping·CSP·로그인 제한·비밀정보 로그 차단
 - [x] Git 작성자 origin/email 관리자 매핑·배정 근거, 실제 PostgreSQL 동작 검증
 - [x] 복수 비공개 호스트 credential 구성·격리 fixture·회전 절차
+- [x] 큰 merge 그룹의 여러 배치 처리·저장 SHA 재사용·명시적 안전 checkpoint 회귀 검증
+- [x] 실행/커밋 기록 페이지 처리·안전한 원본 커밋 링크·실제 HTTP 권한 검증
 - [ ] 바이너리/rename/mode-only·큰 소스 변경 처리와 검토 제외 범위 표시
-- [ ] 큰 merge 그룹·대형 저장소 이력 처리, force-push 복구 절차/UI
+- [ ] 대형 저장소 이력 부하·API 예산 검증, force-push 복구 절차/UI
 - [ ] 운영에 맞는 queue 지속성·일정 지연/복구 정책·공정성
 
 ## 검증
@@ -23,10 +25,11 @@
 - [x] 실제 Tomcat HTTP/JSP 로그인·CSRF·소유권·비동기 수동 리뷰 저장
 - [x] 인코딩된 로그인 URL 제한 우회 회귀, 동시 마지막 관리자 보호
 - [x] 공개 GitHub 전체 이력·재개 smoke
+- [x] 공식 공개 GitLab fixture pinned 이력·루트 diff·재개 smoke (비공개/설치형 검증과 별개)
 - [x] 설치된 Ollama gemma3:1b JSON 프로토콜 smoke
 - [ ] 데스크톱·모바일 시각 확인, 키보드 사용성
 - [ ] 실제 설치형 GitLab·비공개 GitHub·LiteLLM 연결
-- [ ] 운영 모델 품질 평가 (현재 Gemma 합성 샘플에 오탐 확인)
+- [ ] 운영 모델 품질 합격 (Gemma 오탐·설명 미달, Llama8B 시간 초과·근거 미달)
 - [ ] 장시간/부하·API rate limit·프로세스/DB/네트워크 장애 복구 실증
 - [x] 운영 Maven 의존성 OSV·공급자 공지 확인, Tomcat 수정 후 재검사
 - [ ] JDK/OS/DB/AI 서버·배포 이미지 보안 점검 및 잔여 위험 결정

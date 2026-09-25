@@ -5,6 +5,7 @@ import com.aicreviewer.ai.ReviewFinding;
 import com.aicreviewer.ai.ReviewResult;
 import com.aicreviewer.git.GitCommit;
 import com.aicreviewer.git.GitRepositoryClient;
+import com.aicreviewer.git.GitReviewBatch;
 import com.aicreviewer.git.IntegrationException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -59,8 +60,10 @@ public class ReviewCoordinator {
             Long runId = transactions.execute(status -> repository.startRun(projectId, actor == null ? null : actor.id(), Instant.now()));
             if (runId == null) throw new IllegalStateException("No review run was created");
             try {
-                List<GitCommit> commits = git.commits(project.repository(), project.branch(), project.lastReviewedSha(), maxCommits);
-                validateBatch(commits);
+                Set<String> reviewedShas = repository.reviewedShas(projectId);
+                GitReviewBatch batch = git.batch(project.repository(), project.branch(), project.lastReviewedSha(), reviewedShas, maxCommits);
+                validateBatch(batch, reviewedShas);
+                List<GitCommit> commits = batch.commits();
                 for (GitCommit commit : commits) {
                     if (Thread.currentThread().isInterrupted()) throw new IllegalStateException("Review interrupted");
                     // Retries never create a second issue set or move a cursor backwards.
@@ -69,8 +72,9 @@ public class ReviewCoordinator {
                     validateReview(result);
                     transactions.execute(status -> repository.persistCommit(runId, project, project.lastReviewedSha(), commit, result, Instant.now()));
                 }
-                String checkpoint = commits.isEmpty() ? null : commits.getLast().sha();
-                transactions.executeWithoutResult(status -> repository.completeBatch(runId, project, checkpoint, Instant.now()));
+                // A partial merge can persist progress without a checkpoint. Conversely, a
+                // fully persisted retry can advance to a safe checkpoint with no new commits.
+                transactions.executeWithoutResult(status -> repository.completeBatch(runId, project, batch.checkpointSha(), Instant.now()));
                 return Outcome.SUCCEEDED;
             } catch (RuntimeException exception) {
                 // IntegrationException has an explicit safe-message contract. Other exception
@@ -97,11 +101,13 @@ public class ReviewCoordinator {
         };
     }
 
-    private void validateBatch(List<GitCommit> commits) {
-        if (commits == null || commits.size() > maxCommits) throw new IllegalArgumentException("Invalid commit batch");
+    private void validateBatch(GitReviewBatch batch, Set<String> reviewedShas) {
+        if (batch == null || batch.commits() == null || batch.commits().size() > maxCommits) {
+            throw new IllegalArgumentException("Invalid commit batch");
+        }
         Set<String> seen = new HashSet<>();
-        for (GitCommit commit : commits) {
-            if (commit == null || commit.sha() == null || !commit.sha().matches("[0-9a-f]{40,64}") || !seen.add(commit.sha()) ||
+        for (GitCommit commit : batch.commits()) {
+            if (commit == null || commit.sha() == null || !commit.sha().matches("[0-9a-f]{40}|[0-9a-f]{64}") || !seen.add(commit.sha()) ||
                     commit.message() == null || commit.diff() == null || (commit.authorLogin() != null && commit.authorLogin().length() > 100) ||
                     (commit.authorEmail() != null && (commit.authorEmail().length() > 320 || commit.authorEmail().chars().anyMatch(Character::isISOControl))) ||
                     commit.coverageType() == null || !COVERAGE_TYPES.contains(commit.coverageType()) ||
@@ -110,6 +116,11 @@ public class ReviewCoordinator {
                     ("METADATA_ONLY".equals(commit.coverageType()) && (commit.coverageDetails().isBlank() || containsPatchBody(commit.diff())))) {
                 throw new IllegalArgumentException("Invalid commit data");
             }
+        }
+        String checkpoint = batch.checkpointSha();
+        if (checkpoint != null && (!checkpoint.matches("[0-9a-f]{40}|[0-9a-f]{64}") ||
+                (!seen.contains(checkpoint) && !reviewedShas.contains(checkpoint)))) {
+            throw new IllegalArgumentException("Invalid review checkpoint");
         }
     }
 

@@ -1,5 +1,6 @@
 package com.aicreviewer.issue;
 
+import com.aicreviewer.git.GitCommitLink;
 import com.aicreviewer.review.ReviewActor;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -39,10 +40,13 @@ public class IssueService {
         Long total = jdbc.queryForObject("select count(*) from review_issue i" + filter, Long.class, args.toArray());
         args.add(PAGE_SIZE);
         args.add(page * PAGE_SIZE);
-        List<Map<String, Object>> issues = jdbc.queryForList("select i.*, p.name as project_name, u.username as assignee_username, c.commit_sha, c.author_login, " +
+        List<Map<String, Object>> issues = jdbc.queryForList("select i.*, p.name as project_name, p.repository_url, u.username as assignee_username, c.commit_sha, c.author_login, " +
                 "exists(select 1 from audit_event a where a.action = 'ISSUE_ASSIGNEE_FALLBACK' and a.target_type = 'REVIEWED_COMMIT' and a.target_id = c.id) as fallback_assignment " +
                 "from review_issue i join project p on p.id = i.project_id join app_user u on u.id = i.assignee_id join reviewed_commit c on c.id = i.reviewed_commit_id" +
                 filter + " order by i.id desc limit ? offset ?", args.toArray());
+        for (var issue : issues) {
+            issue.put("commit_url", GitCommitLink.from((String) issue.remove("repository_url"), (String) issue.get("commit_sha")));
+        }
         return new IssuePage(issues, total == null ? 0 : total, page);
     }
 

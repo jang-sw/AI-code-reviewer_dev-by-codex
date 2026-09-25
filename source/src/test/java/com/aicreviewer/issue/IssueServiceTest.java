@@ -88,6 +88,35 @@ class IssueServiceTest {
     }
 
     @Test
+    void assignedAuthorGetsCanonicalSourceLinkWithoutGainingProjectHistoryAccess() {
+        var issue = service.list(actor("author"), "OPEN", 0).issues().getFirst();
+
+        assertThat(issue).containsEntry("commit_url", "https://github.com/org/sample/commit/" + "a".repeat(40))
+                .doesNotContainKeys("repository_url", "author_email");
+        assertThatThrownBy(() -> reviews.authorizedProject(10, actor("author")))
+                .isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
+        assertThat(service.list(actor("other"), "", 0).issues()).isEmpty();
+    }
+
+    @Test
+    void gitlabSourceLinkPreservesServerPortAndNestedNamespace() {
+        db.jdbc.update("update project set repository_url = 'https://git.example.test:8443/group/sub/repo', provider = 'GITLAB', repository_host = 'git.example.test', repository_path = 'group/sub/repo' where id = 10");
+
+        assertThat(service.list(actor("author"), "OPEN", 0).issues().getFirst())
+                .containsEntry("commit_url", "https://git.example.test:8443/group/sub/repo/-/commit/" + "a".repeat(40));
+    }
+
+    @Test
+    void malformedStoredSourceDataKeepsTheIssueVisibleWithoutAUnsafeLink() {
+        db.jdbc.update("update project set repository_url = 'javascript:alert(1)' where id = 10");
+        assertThat(service.list(actor("author"), "OPEN", 0).issues().getFirst())
+                .containsEntry("title", "Author finding").containsEntry("commit_url", null).doesNotContainKey("repository_url");
+        db.jdbc.update("update project set repository_url = 'https://github.com/org/sample' where id = 10");
+        db.jdbc.update("update reviewed_commit set commit_sha = 'main?untrusted=1' where id = 50");
+        assertThat(service.list(actor("author"), "OPEN", 0).issues().getFirst()).containsEntry("commit_url", null);
+    }
+
+    @Test
     void paginationHasStableNewestFirstOrderingAndBoundedPageSize() {
         for (long id = 102; id < 130; id++) {
             db.jdbc.update("insert into review_issue(id, project_id, reviewed_commit_id, assignee_id, severity, title, file_path, description, suggestion) values (?, 10, 50, 2, 'LOW', 'Finding', 'Code.java', 'Description', 'Suggestion')", id);

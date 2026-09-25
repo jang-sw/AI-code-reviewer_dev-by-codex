@@ -73,6 +73,12 @@ tbody tr:last-child td { border-bottom:0; }
 td a { font-weight:600; }
 td { overflow-wrap:anywhere; }
 td.actions { min-width:210px; }
+.review-history-scroll { max-width:100%; }
+.review-history-table { min-width:720px; }
+.review-history-table .review-timestamp { white-space:nowrap; overflow-wrap:normal; }
+.review-history-table .review-result { min-width:280px; }
+.review-history-table .error-text { max-width:420px; margin:8px 0 0; white-space:normal; overflow-wrap:anywhere; }
+.review-history-scroll-hint { display:none; }
 .badge,.status,.pill { display:inline-block; background:#edf2f9; color:#344d70; padding:3px 9px; border-radius:20px; font-size:11px; font-weight:700; white-space:nowrap; }
 .badge-success,.status-APPROVED,.status-SUCCEEDED,.status-RESOLVED { background:#e6f5ed; color:var(--green); }
 .badge-warning,.status-PENDING,.status-RUNNING,.status-OPEN { background:#fff2d9; color:#805416; }
@@ -91,4 +97,5 @@ details { border-top:1px solid var(--line); padding-top:12px; margin-top:12px; }
 summary { cursor:pointer; color:var(--blue); font-weight:600; }
 .site-footer { width:min(1200px,calc(100% - 48px)); margin:0 auto; padding:22px 0; border-top:1px solid var(--line); display:flex; justify-content:space-between; gap:16px; color:var(--muted); font-size:11px; }
 @media(max-width:1050px) { .site-header { flex-wrap:wrap; gap:12px 24px; } nav { order:3; flex-basis:100%; } .session-menu { margin-left:auto; } }
+@media(max-width:640px) { .review-history-scroll-hint { display:block; } }
 @media(max-width:640px) { .site-header { padding:16px 20px; } .container { width:calc(100% - 32px); margin-top:28px; } .card,.panel,section { padding:18px; border-radius:10px; } .page-header,.page-heading { display:block; } h1 { font-size:25px; } nav { gap:4px 16px; } nav a { font-size:12px; } .username { display:none; } .auth-card,.login-card { margin:24px auto; padding:24px; } th,td { padding:12px 10px; } .site-footer { width:calc(100% - 32px); display:block; } .site-footer span { display:block; } dl { grid-template-columns:1fr; gap:4px; } dd { margin-bottom:12px; } }

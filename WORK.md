@@ -1,49 +1,48 @@
 # 현재 작업 상태
 
-- 작업: 실사용 AI 소스코드 리뷰 시스템 신규 개발. **개발 중, 릴리스 완료 아님.**
-- 이번 회차: 2026-09-25 22:32 KST 시작, 상한 약 2시간 (09-26 00:32 KST).
-- 기준 브랜치/커밋: `main` / `4b00b94` (작성자 매핑·복수 자격증명), 검토 범위/운영 검증 후속 작업 중.
-- 확정 요구사항: `docs/REQUIREMENTS.md`. 내부 이슈함, 최초 전체 이력 리뷰, 기존 Java25/Spring/Maven/JSP/PostgreSQL 유지.
+- 작업: 실사용 AI 소스코드 리뷰 시스템. **개발 중, 릴리스 완료 아님.**
+- 이번 회차: 2026-09-25 22:32 KST 시작, 상한 약2시간 (09-26 00:32 KST).
+- 기록 기준: `main` / `b55d71f` 이후 이력 페이지·큰 merge 재개·평가 재현성 변경. 이번 회차 구현·검증을 정리했으며 최신 커밋 SHA는 `git log -1`로 확인한다.
+- 확정 요구사항: `docs/REQUIREMENTS.md`. 내부 이슈함 우선, 최초 전체 이력, Java25/Spring/Maven/JSP/PostgreSQL 유지.
+- 재개 시 이 문서와 실제 Git 상태를 대조하고 아래 다음 작업부터 진행한다. 모든 릴리스 항목 검증 전 완료라고 보고하지 않는다.
 
-## 구현·검증된 1차 흐름
+## 구현한 내용
 
-- Maven Wrapper + WAR, PostgreSQL Flyway V1/V2, JSP/JSTL 반응형 UI.
-- ADMIN 계정 생성·관리, USER 로그인/비밀번호, BCrypt12·CSRF·CSP·로그인 제한·영구 세션 폐기·동시 마지막 관리자 보호.
-- URL 프로젝트 신청·승인/반려/중지/재개, 소유권 검사.
-- GitHub/GitLab 전체 이력/페이지/부모 그래프 및 diff 완전성 검사, Ollama/LiteLLM 구조화 출력 검증.
-- 시간별/수동 백그라운드 리뷰, PG advisory lock, 커밋별 저장과 배치 성공 checkpoint, 재시도 중복 방지.
-- 내부 이슈함/상태/배정 사유, 감사 기록, 일반화된 오류 화면.
-- 실제 패키지에서 발견한 JSP forward/CSP/record property/UTF8 문제 수정.
-- 교차 리뷰로 발견한 encoded 로그인 경로 제한 우회·아이디 정규화 우회·Git token scheme/port 격리 수정.
+- Maven Wrapper/WAR, PostgreSQL Flyway V1~V6, JSP/JSTL 반응형 화면.
+- ADMIN 계정 생성·활성/초기화, USER 로그인/비밀번호, BCrypt12·CSRF·CSP·로그인 제한·세션 폐기·동시 마지막 관리자 보호.
+- clone 형태 HTTP(S) URL 프로젝트 신청·승인/반려/중지/재개·소유권 검사.
+- GitHub/GitLab 전체 이력·부모 그래프·diff 완전성 검사, Ollama/LiteLLM 엄격한 구조화 출력 검증.
+- 매 정시/수동 백그라운드 리뷰, 프로젝트별 PG advisory lock, 커밋별 리뷰/이슈 원자 저장, 실패 후 재사용과 중복 방지.
+- 큰 merge를 여러 배치로 처리하는 명시적 checkpoint, 저장된 SHA는 quota/diff/AI 호출에서 제외. force-push/누락/안전 한도 초과는 실패.
+- 내부 이슈함·상태·배정 사유, 관리자 origin/email 작성자 매핑, 서버별 복수 Git 토큰 격리, 감사 기록.
+- 검증된 EMPTY/METADATA_ONLY를 본문 AI 검토와 구분하고 수동 확인 범위 표시. 일반 누락을 제외 성공으로 처리하지 않는다.
+- 실행/커밋 기록 독립50건 페이지, 이슈/리뷰의 안전한 원본 커밋 링크.
+- 격리 PG 자동 검증/백업복원, Java25·PG17 CI 정의와 필수DB검증 gate, OSV 의존성 검사.
 
-## 마지막 실제 검증
+## 최신 실제 검증
 
-- `scripts/test-postgres.ps1`: PostgreSQL17.9 격리 클러스터 생성/시작/종료 및 `mvnw verify` 성공. 총140건 중138통과, 외부 서비스 선택검증2건 skip.
-- 실제 PostgreSQL7개 HTTP/JSP/권한/배치/SQL오류 rollback 검사와 관리자 동시성1개 포함. 소유자 수동 POST→큐→리뷰→DB 저장 확인.
-- 공개 GitHub octocat/Hello-World 전체 이력·head 재개 smoke: 별도 실행 통과(1.86초).
-- 설치된 로컬 Ollama gemma3:1b smoke: JSON 프로토콜 통과(72.75초). 안전한 변경에 오탐·영어 응답 확인, 품질 합격 아님 (`docs/AI-EVALUATION.md`).
-- 실행 WAR의 브라우저 로그인·빈 대시보드·프로젝트 URL 등록/승인 확인. 390/1280 viewport에서 page 가로 넘침 없음. 모든 화면/키보드 전체 검증은 남음.
-- 실패했던 테스트/실행 문제는 수정 후 위 검증으로 재확인. 외부 GitLab/LiteLLM·운영 배포·부하·복원·취약점 검사는 미실행.
-- 커밋 전 교차 검토의 이슈 전체 필터·diff 문자열 오인 문제를 수정하고 HTTP 및 adapter 회귀 검증 통과.
-- 후속 `scripts/test-postgres.ps1 -BackupRestore`: 총208건 중205통과, 선택검증3건 skip. 실제 PostgreSQL 작성자 매핑 HTTP/배정·권한 검사 및 V2→V4 업그레이드 통과. 환경변수 테스트 fixture를 실제 Spring 환경 소스 이름으로 수정 후 전체 재검증함.
-- pg_dump→새 격리 DB pg_restore 후8개 테이블 행 내용·건수 fingerprint와 identity 시퀀스 삽입 일치. 검증 DB만 제거, 원본 보존. `.local/backups/restore-report.json`에 증거 기록.
-- 합성 AI 품질 평가6사례 실제 gemma3:1b 실행: JSON 모두 통과, 품질 기준0/6. 안전한 변경 오탐·실제 결함 미설명·영어 응답. docs/AI-EVALUATION.md에 사례별 대조 기록. 보고서 생성 테스트 성공을 품질 합격으로 해석하지 않는다.
-- V5 EMPTY/METADATA_ONLY 검토 범위 기능까지 전체241건 중238통과, 선택3skip. 빈/메타데이터 커밋은 본문 AI 검토 없이 분류하고 수동 확인 안내; 혼합 본문은 AI 호출. 실제PG 저장/화면출력·마이그레이션·백업복원 재검증.
-- WAR의 관리자 매핑 등록/감사 화면, 모바일390px 가로 넘침 없음 및 Tab→본문 건너뛰기→검색 필드 이동 확인. 화면 조각이 중복된 fullPage 캡처는 DOM 중복 아님(필드/푸터 각1개 확인).
-- 본문 없는 header-only diff가 FULL로 통과할 수 있던 경계를 차단하고 symlink 모드 안내를 보완. Tomcat11.0.26 보안 수정 후 전체245건 중242통과, 선택3skip 및 백업복원 통과.
-- 운영 Maven 의존성87개 OSV 검사: 기존 Tomcat3공지 발견, 공급자 최신 공지와 대조해11.0.26 갱신 후 일치0개. 실제 WAR5개Tomcat 모듈 버전 확인. 환경 전체의 보안 합격을 의미하지 않음.
-- CI workflow 추가: Java25/PG17 실DB 검증, 외부모델 비활성, 필수DB 테스트 skip 실패 gate. actionlint/셸 문법/Python gate6개·의존성 scanner12개 통과. 원격 CI 실행은 푸시하지 않아 미실행.
+- `scripts/test-postgres.ps1 -BackupRestore`: 최종 전체330건 중326통과, 외부 선택4skip. 실제 PG11개 HTTP/저장 검사 및 동시 관리자 보호 포함. V5→V6 마이그레이션, 페이지 권한/경계, 부분 merge·빈 선택 checkpoint 복구, rollback 검증.
+- pg_dump→새 격리 DB pg_restore 후8개 테이블 내용/건수 fingerprint와 identity 시퀀스 삽입 일치. 생성한 복원 DB만 제거하고 원본 보존.
+- 공개 GitHub octocat/Hello-World 전체 이력/재개 + 새 batch API의 이미 저장된 이력 checkpoint 실제 smoke 통과(2.284초).
+- 공식 공개 GitLab gitlab-org/gitlab-test pinned47개 이력·루트1개diff·재개 smoke 실제 통과(3.794초). 전체diff/비공개/설치형 인증 검증 아님.
+- 1001개 side-branch 커밋 merge fixture에서100건 분할·재시도·이미 검토한 diff 미호출, 두 provider 및 뒤쪽/빈 선택 checkpoint 회귀 통과.
+- Tomcat11.0.26 수정 후 운영 의존성87개 OSV 일치0건(시점 한정), 실제 WAR Tomcat5모듈 버전 확인. JDK/OS/DB/AI 환경 보안은 별도.
+- actionlint·셸 문법·Python gate6건·의존성 scanner12건 통과. 원격 CI는 미푸시로 미실행.
+- 실제 WAR 브라우저 로그인·프로젝트 등록/승인·관리자 매핑/감사·리뷰 페이지50→2건 독립 이동·원본 href·메타데이터 펼치기 확인. 390/1280 viewport page overflow 없음. 모바일 날짜 줄바꿈을 수정하고 재패키지 후 행 높이233→54px, 표 가로 스크롤·키보드 오른쪽 이동 확인.
+- Gemma1B 합성6사례 JSON6/6, 거친 품질0/6; Llama8B 기본 설정 JSON2/6 및120초 초과4건, 거친 품질1/6도 의미 합격 아님. `docs/AI-EVALUATION.md`에 직접 대조 기록.
+- Llama8B context8192/출력1024/60초 재평가도 같은4사례 시간 초과, 나머지2사례 의미/근거 미달. 평가 설정 검증11건 통과. 평가 BUILD SUCCESS를 품질 합격으로 해석하지 않는다.
 
 ## 다음 작업
 
-1. 검토 범위·의존성 보안·CI 변경 커밋.
-2. 전체 이력의 화면 페이지 처리/원본 커밋 링크, 설치된 Llama8b 비교 결과 정리.
-3. 큰/binary/GitHub rename 변경 처리·이력 확장·운영 모델 교체/평가와 운영 검증은 릴리스 체크리스트 기준으로 이어서 진행.
+1. `docs/REVIEW-COVERAGE-PLAN.md`의 제안을 실제 요구사항과 대조한 뒤 GitHub 동일 blob rename/mode 증명과 파일별 범위 계약부터 구현한다. binary/큰 diff/새 빈 파일에서 후속 이력 처리가 멈추는 것이 릴리스 차단점이다. 설계 문서는 미구현 제안이며 통과 근거가 아니다.
+2. 운영 모델/설정 품질 개선과 독립 평가 확대. 실제 설치형 GitLab·비공개 GitHub·LiteLLM 연결 검증.
+3. 대형 저장소 부하·force-push 관리자 복구·queue 지속성/공정성·장애 복구·모니터링/보존 정책 구현·검증.
+4. 배포 환경 답변 확인 후 패키지/설치·업데이트·백업·롤백 구성, 운영 보안·원격CI·사용자 인수 검사. `docs/RELEASE-CHECKLIST.md` 기준.
 
 ## 재개·운영 메모
 
-- 원격 origin: jang-sw/code-reviewer_by-codex. main 직접 푸시 별도 승인 없음 → 로컬 커밋만, 푸시/배포 없음.
-- `.local/pg-test` 개발검증 PG는127.0.0.1:55432, 운영 설치 DB와 분리. `.local/pg-validation` 스크립트 PG는55439, 스크립트가 종료함.
-- 격리 UI 테스트 WAR는127.0.0.1:18080, 리뷰 스케줄 비활성. 종료 전 상태를 정리한다. `.local`은 Git 제외.
-- GitLab 작성자 origin/email 매핑과 복수 토큰 지원. Binary/일부rename/mode-only, oversized diff·merge는 안전하게 실패함.
-- `docs/RELEASE-CHECKLIST.md` 미완료 항목이 남으면 완료라고 보고하지 않는다. 사용자가 `이어서 진행`하면 실제 Git/코드/문서를 대조하고 계속한다.
+- 사용자에게 운영 대상(Linux Docker Compose / Windows / 기존 환경)을 질문했으며 아직 미확정.
+- origin: jang-sw/code-reviewer_by-codex. main 직접 푸시 별도 승인 없음 → 로컬 커밋만, 푸시/배포 없음.
+- `.local/pg-test`: 개발검증 전용127.0.0.1:55432. `.local/pg-validation`: 테스트 스크립트55439. 두 검증 클러스터 모두 종료했다. 설치된 다른 PG 서비스는 변경하지 않음.
+- `.local`은 Git 제외. 합성 UI 검증 WAR127.0.0.1:18080도 종료했고 임시 브라우저 탭/viewport를 정리했다. 사용자 Ollama 서비스는 그대로 둠.
+- 런타임 Git 수집은 매번 pinned 전체 이력을 재검증, 기본1000페이지/metadata32MiB/저장SHA131072개 안전 한도. 제한을 자동 확장/절삭하지 않는다.

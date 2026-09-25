@@ -20,5 +20,12 @@ class PublicGitHubSmokeTest {
         assertThat(commits.stream().map(commit -> commit.sha()).distinct().count()).isEqualTo(commits.size());
         assertThat(commits).allSatisfy(commit -> assertThat(commit.diff()).isNotNull());
         assertThat(client.commits(repository, null, commits.getLast().sha(), 100)).isEmpty();
+        Set<String> reviewed = commits.stream().map(commit -> commit.sha()).collect(java.util.stream.Collectors.toSet());
+        var finalized = client.batch(repository, null, null, reviewed, 1);
+        assertThat(finalized.commits()).isEmpty();
+        assertThat(finalized.checkpointSha()).isEqualTo(commits.getLast().sha());
+        var resumed = client.batch(repository, null, finalized.checkpointSha(), reviewed, 1);
+        assertThat(resumed.commits()).isEmpty();
+        assertThat(resumed.checkpointSha()).isNull();
     }
 }

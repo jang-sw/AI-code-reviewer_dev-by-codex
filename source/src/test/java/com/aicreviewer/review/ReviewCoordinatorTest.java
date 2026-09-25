@@ -5,15 +5,19 @@ import com.aicreviewer.ai.ReviewFinding;
 import com.aicreviewer.ai.ReviewResult;
 import com.aicreviewer.git.GitCommit;
 import com.aicreviewer.git.GitRepositoryClient;
+import com.aicreviewer.git.GitReviewBatch;
 import com.aicreviewer.git.IntegrationException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -50,7 +54,7 @@ class ReviewCoordinatorTest {
 
     @Test
     void fullHistoryBatchAssignsMatchedAuthorAndAuditsOwnerFallback() {
-        when(git.commits(any(), isNull(), isNull(), eq(100))).thenReturn(List.of(FIRST, MERGE));
+        when(git.batch(any(), isNull(), isNull(), eq(Set.of()), eq(100))).thenReturn(new GitReviewBatch(List.of(FIRST, MERGE), MERGE.sha()));
 
         assertThat(coordinator.reviewProject(10, "owner")).isEqualTo(ReviewCoordinator.Outcome.SUCCEEDED);
 
@@ -59,13 +63,15 @@ class ReviewCoordinatorTest {
         assertThat(db.jdbc.queryForList("select assignee_id from review_issue order by id", Long.class)).containsExactly(2L, 1L);
         assertThat(db.jdbc.queryForObject("select count(*) from audit_event where action = 'ISSUE_ASSIGNEE_FALLBACK'", Long.class)).isEqualTo(1);
         assertThat(db.jdbc.queryForObject("select reviewed_commits from review_run", Integer.class)).isEqualTo(2);
-        verify(git).commits(any(), isNull(), isNull(), eq(100));
+        verify(git).batch(any(), isNull(), isNull(), eq(Set.of()), eq(100));
         verify(lease).close();
     }
 
     @Test
     void failedSideBranchKeepsBatchCheckpointAndRetryDoesNotDuplicateAlreadyReviewedCommits() {
-        when(git.commits(any(), isNull(), isNull(), eq(100))).thenReturn(List.of(FIRST, SIDE_BRANCH, MERGE));
+        when(git.batch(any(), isNull(), isNull(), anySet(), eq(100)))
+                .thenReturn(new GitReviewBatch(List.of(FIRST, SIDE_BRANCH, MERGE), MERGE.sha()))
+                .thenReturn(new GitReviewBatch(List.of(SIDE_BRANCH, MERGE), MERGE.sha()));
         when(ai.review(SIDE_BRANCH)).thenThrow(new IllegalStateException("secret-token must not be recorded"))
                 .thenReturn(review("Side branch fix"));
 
@@ -84,13 +90,15 @@ class ReviewCoordinatorTest {
         verify(ai, times(1)).review(FIRST);
         verify(ai, times(2)).review(SIDE_BRANCH);
         verify(ai, times(1)).review(MERGE);
+        verify(git).batch(any(), isNull(), isNull(), eq(Set.of()), eq(100));
+        verify(git).batch(any(), isNull(), isNull(), eq(Set.of(FIRST.sha())), eq(100));
         verify(lease, times(2)).close();
     }
 
     @Test
     void databaseFailureRollsBackCommitEveryIssueAndProgressCount() {
         db.jdbc.execute("alter table review_issue add constraint reject_fixture check (title <> 'rollback-me')");
-        when(git.commits(any(), any(), any(), anyInt())).thenReturn(List.of(FIRST));
+        stubBatch(List.of(FIRST), FIRST.sha());
         when(ai.review(FIRST)).thenReturn(new ReviewResult("Two findings", List.of(finding("good"), finding("rollback-me"))));
 
         assertThat(coordinator.reviewProject(10, null)).isEqualTo(ReviewCoordinator.Outcome.FAILED);
@@ -105,7 +113,9 @@ class ReviewCoordinatorTest {
 
     @Test
     void checkpointAndRunSuccessRollbackTogetherThenStoredBatchCanResume() {
-        when(git.commits(any(), any(), any(), anyInt())).thenReturn(List.of(FIRST, SIDE_BRANCH, MERGE));
+        when(git.batch(any(), any(), any(), anySet(), anyInt()))
+                .thenReturn(new GitReviewBatch(List.of(FIRST, SIDE_BRANCH, MERGE), MERGE.sha()))
+                .thenReturn(new GitReviewBatch(List.of(), MERGE.sha()));
         doAnswer(invocation -> { invocation.callRealMethod(); throw new IllegalStateException("checkpoint fixture failure"); })
                 .doCallRealMethod().when(repository).completeBatch(anyLong(), any(), anyString(), any());
 
@@ -118,12 +128,111 @@ class ReviewCoordinatorTest {
         assertThat(coordinator.reviewProject(10, null)).isEqualTo(ReviewCoordinator.Outcome.SUCCEEDED);
         assertThat(db.cursor()).isEqualTo(MERGE.sha());
         assertThat(db.count("review_issue")).isEqualTo(3);
+        assertThat(db.jdbc.queryForList("select reviewed_commits from review_run order by id", Integer.class)).containsExactly(3, 0);
+        verify(git).batch(any(), isNull(), isNull(), eq(Set.of(FIRST.sha(), SIDE_BRANCH.sha(), MERGE.sha())), eq(100));
         verify(ai, times(3)).review(any());
     }
 
     @Test
+    void partialMergePersistsAcrossSmallBatchesWithoutAdvancingToSideBranch() {
+        coordinator = new ReviewCoordinator(repository, lock, git, ai, db.transactionManager, 1);
+        when(git.batch(any(), isNull(), isNull(), eq(Set.of()), eq(1)))
+                .thenReturn(new GitReviewBatch(List.of(FIRST), FIRST.sha()));
+        when(git.batch(any(), isNull(), eq(FIRST.sha()), eq(Set.of(FIRST.sha())), eq(1)))
+                .thenReturn(new GitReviewBatch(List.of(SIDE_BRANCH), null));
+        when(git.batch(any(), isNull(), eq(FIRST.sha()), eq(Set.of(FIRST.sha(), SIDE_BRANCH.sha())), eq(1)))
+                .thenReturn(new GitReviewBatch(List.of(MERGE), MERGE.sha()));
+
+        assertThat(coordinator.reviewProject(10, null)).isEqualTo(ReviewCoordinator.Outcome.SUCCEEDED);
+        assertThat(db.cursor()).isEqualTo(FIRST.sha());
+        assertThat(coordinator.reviewProject(10, null)).isEqualTo(ReviewCoordinator.Outcome.SUCCEEDED);
+        assertThat(db.cursor()).isEqualTo(FIRST.sha());
+        assertThat(db.count("reviewed_commit")).isEqualTo(2);
+        assertThat(coordinator.reviewProject(10, null)).isEqualTo(ReviewCoordinator.Outcome.SUCCEEDED);
+        assertThat(db.cursor()).isEqualTo(MERGE.sha());
+        assertThat(db.count("reviewed_commit")).isEqualTo(3);
+        assertThat(db.jdbc.queryForList("select reviewed_commits from review_run order by id", Integer.class)).containsExactly(1, 1, 1);
+        verify(ai).review(FIRST);
+        verify(ai).review(SIDE_BRANCH);
+        verify(ai).review(MERGE);
+    }
+
+    @Test
+    void plannedCheckpointCanBeAnAlreadyPersistedCommitBeyondLastSelectedCommit() {
+        db.jdbc.update("insert into reviewed_commit(project_id, commit_sha, summary) values (10, ?, 'Previously stored review')", MERGE.sha());
+        stubBatch(List.of(FIRST), MERGE.sha());
+
+        assertThat(coordinator.reviewProject(10, null)).isEqualTo(ReviewCoordinator.Outcome.SUCCEEDED);
+
+        assertThat(db.cursor()).isEqualTo(MERGE.sha());
+        assertThat(db.count("reviewed_commit")).isEqualTo(2);
+        assertThat(db.jdbc.queryForObject("select reviewed_commits from review_run", Integer.class)).isEqualTo(1);
+        verify(ai).review(FIRST);
+        verify(ai, never()).review(MERGE);
+        verify(git).batch(any(), isNull(), isNull(), eq(Set.of(MERGE.sha())), eq(100));
+    }
+
+    @Test
+    void unknownCheckpointFailsBeforeAiOrAnyCommitPersistence() {
+        stubBatch(List.of(FIRST), MERGE.sha());
+
+        assertThat(coordinator.reviewProject(10, null)).isEqualTo(ReviewCoordinator.Outcome.FAILED);
+
+        assertThat(db.cursor()).isNull();
+        assertThat(db.count("reviewed_commit")).isZero();
+        verifyNoInteractions(ai);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = { "invalid", "javascript:alert(1)", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" })
+    void invalidCheckpointFormatFailsBeforeAi(String checkpoint) {
+        stubBatch(List.of(FIRST), checkpoint);
+
+        assertThat(coordinator.reviewProject(10, null)).isEqualTo(ReviewCoordinator.Outcome.FAILED);
+
+        assertThat(db.cursor()).isNull();
+        assertThat(db.count("reviewed_commit")).isZero();
+        verifyNoInteractions(ai);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = { "NULL_BATCH", "NULL_COMMITS", "TOO_MANY" })
+    void invalidBatchShapeOrSizeFailsBeforeAi(String kind) {
+        GitReviewBatch batch = switch (kind) {
+            case "NULL_BATCH" -> null;
+            case "NULL_COMMITS" -> new GitReviewBatch(null, null);
+            default -> new GitReviewBatch(java.util.Collections.nCopies(101, FIRST), FIRST.sha());
+        };
+        when(git.batch(any(), any(), any(), anySet(), anyInt())).thenReturn(batch);
+
+        assertThat(coordinator.reviewProject(10, null)).isEqualTo(ReviewCoordinator.Outcome.FAILED);
+
+        assertThat(db.cursor()).isNull();
+        assertThat(db.count("reviewed_commit")).isZero();
+        verifyNoInteractions(ai);
+    }
+
+    @Test
+    void persistedSetFailureIsRecordedInsideLeaseAndDoesNotCallExternalProviders() {
+        doThrow(new IntegrationException("Stored review history exceeds the memory safety budget"))
+                .when(repository).reviewedShas(10);
+
+        assertThat(coordinator.reviewProject(10, null)).isEqualTo(ReviewCoordinator.Outcome.FAILED);
+
+        var order = inOrder(lock, repository, lease);
+        order.verify(lock).tryAcquire(10);
+        order.verify(repository).startRun(eq(10L), isNull(), any());
+        order.verify(repository).reviewedShas(10);
+        order.verify(repository).finishRun(anyLong(), eq(false), any(), contains("memory safety budget"));
+        order.verify(lease).close();
+        assertThat(db.jdbc.queryForObject("select status from review_run", String.class)).isEqualTo("FAILED");
+        assertThat(db.cursor()).isNull();
+        verifyNoInteractions(git, ai);
+    }
+
+    @Test
     void invalidOrDuplicatedBatchFailsBeforeAnyAiCall() {
-        when(git.commits(any(), any(), any(), anyInt())).thenReturn(List.of(FIRST, FIRST));
+        stubBatch(List.of(FIRST, FIRST), FIRST.sha());
         assertThat(coordinator.reviewProject(10, null)).isEqualTo(ReviewCoordinator.Outcome.FAILED);
         assertThat(db.count("reviewed_commit")).isZero();
         assertThat(db.cursor()).isNull();
@@ -132,7 +241,7 @@ class ReviewCoordinatorTest {
 
     @Test
     void invalidAiResultNeverMarksCommitReviewed() {
-        when(git.commits(any(), any(), any(), anyInt())).thenReturn(List.of(FIRST));
+        stubBatch(List.of(FIRST), FIRST.sha());
         when(ai.review(FIRST)).thenReturn(new ReviewResult("", List.of()));
         assertThat(coordinator.reviewProject(10, null)).isEqualTo(ReviewCoordinator.Outcome.FAILED);
         assertThat(db.count("reviewed_commit")).isZero();
@@ -141,10 +250,10 @@ class ReviewCoordinatorTest {
 
     @Test
     void safeIntegrationFailureExplainsRequiredOperatorAction() {
-        when(git.commits(any(), any(), any(), anyInt())).thenThrow(new IntegrationException("Commit batch limit is too small to review the next complete merge group"));
+        when(git.batch(any(), any(), any(), anySet(), anyInt())).thenThrow(new IntegrationException("Review cursor is no longer on the branch first-parent history; manual history reconciliation is required"));
         assertThat(coordinator.reviewProject(10, null)).isEqualTo(ReviewCoordinator.Outcome.FAILED);
         assertThat(db.jdbc.queryForObject("select error_message from review_run", String.class))
-                .contains("Commit batch limit is too small");
+                .contains("manual history reconciliation is required");
         assertThat(db.cursor()).isNull();
         verifyNoInteractions(ai);
     }
@@ -177,14 +286,14 @@ class ReviewCoordinatorTest {
     @Test
     void interruptedRunIsFailedOnlyAfterExclusiveLeaseAcquired() {
         db.jdbc.update("insert into review_run(project_id, status) values (10, 'RUNNING')");
-        when(git.commits(any(), any(), any(), anyInt())).thenReturn(List.of());
+        stubBatch(List.of(), null);
         assertThat(coordinator.reviewProject(10, null)).isEqualTo(ReviewCoordinator.Outcome.SUCCEEDED);
         assertThat(db.jdbc.queryForList("select status from review_run order by id", String.class)).containsExactly("FAILED", "SUCCEEDED");
     }
 
     @Test
     void pauseDuringAiCallPreventsPersistenceAndCheckpoint() {
-        when(git.commits(any(), any(), any(), anyInt())).thenReturn(List.of(FIRST));
+        stubBatch(List.of(FIRST), FIRST.sha());
         when(ai.review(FIRST)).thenAnswer(invocation -> {
             db.jdbc.update("update project set status = 'PAUSED' where id = 10");
             return review("Change");
@@ -197,4 +306,8 @@ class ReviewCoordinatorTest {
 
     private static ReviewResult review(String title) { return new ReviewResult("Review summary", List.of(finding(title))); }
     private static ReviewFinding finding(String title) { return new ReviewFinding("HIGH", title, "src/Main.java", 7, "Missing validation", "Validate before use"); }
+
+    private void stubBatch(List<GitCommit> commits, String checkpoint) {
+        when(git.batch(any(), any(), any(), anySet(), anyInt())).thenReturn(new GitReviewBatch(commits, checkpoint));
+    }
 }

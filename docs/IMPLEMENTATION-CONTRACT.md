@@ -27,6 +27,8 @@ V4 `reviewed_commit.author_email` varchar(320) nullable, `review_issue.assignmen
 
 V5 `reviewed_commit.coverage_type` varchar(20) default FULL, `coverage_details` text default '' (최대16000자). 범위는 FULL/EMPTY/METADATA_ONLY. 검증된 EMPTY와 METADATA_ONLY만 AI를 생략하며 해당 사실과 수동 확인 범위를 화면에 명시한다. 일반 누락/잘림 파일을 제외 성공으로 처리하지 않는다.
 
+V6 `reviewed_commit(project_id,id DESC)`, `review_run(project_id,id DESC)` 페이지 조회 인덱스. `/reviews`의 `commitPage`와 `runPage`는 각각0부터10000까지, 페이지당50건이다. 프로젝트 권한 검사 후 두 기록을 독립 조회한다.
+
 ## 모듈 경계
 
 ### identity/project (agent)
@@ -37,7 +39,9 @@ V5 `reviewed_commit.coverage_type` varchar(20) default FULL, `coverage_details` 
 
 ### integrations (agent)
 - package `git`: `RepositoryUrl` record `(String normalizedUrl, String provider, String host, String path)`, static parse(String, Set<String>) allowing HTTPS/explicit configured HTTP self-hosted hosts, no credentials/query/fragment; hosts exact allow-list. GitHub host github.com default; other configured hosts GitLab.
-- `GitRepositoryClient` Spring bean method `List<GitCommit> commits(RepositoryUrl repository, String branch, String lastReviewedSha, int limit)` returns oldest-first new commits, initial null cursor enumerates full history and returns the oldest batch up to limit. Existing cursor returns the oldest next batch up to limit. Pin history to immutable head; paginated full history must not silently skip commits. Fail closed if cursor missing/history rewritten/safety page budget exceeded. `GitCommit` record `(String sha, String authorLogin, String authorEmail, String message, String diff, String coverageType, String coverageDetails)` (기존 4/5인자 생성자는 FULL/빈 설명으로 호환). `RepositoryOrigin.normalize(origin, allowedHosts)`와 `fromRepositoryUrl(url)`로 scheme/host/port를 정규화하고 자격증명 목록과 작성자 매핑이 같은 기준을 쓴다.
+- `GitRepositoryClient.batch(RepositoryUrl,String branch,String lastReviewedSha,Set<String> reviewedShas,int limit)` returns `GitReviewBatch(List<GitCommit> commits,String checkpointSha)`. Immutable head의 전체 부모 그래프를 검증하고 첫 부모 우선 DFS 순서에서 아직 저장되지 않은 커밋만 최대limit개 선택한다. checkpoint는 선택된 커밋 전체 성공을 전제로 연속 검토 범위의 가장 뒤 first-parent SHA이며 부분 merge이면 null일 수 있다. 이미 저장된 뒤쪽 SHA일 수 있고 선택0건에도 갱신될 수 있다. 기존4인자 `commits(...)`는 마지막 반환 SHA를 checkpoint로 해석하던 호환 계약을 유지하므로 닫힌 merge 경계가 한도 안에 없으면 실패한다. 누락/재작성된 cursor·페이지 예산 초과를 성공 처리하지 않는다.
+- `reviewedShas`는 프로젝트 잠금 아래 조회하며 SQL LIMIT131073으로 DB 응답부터 제한,131072건 초과이면 실패한다. Git adapter도 같은 입력 한도를 검사한다. orphan SHA는 현재 그래프의 진행에 관여하지 않는다. 이는 보수적 논리적 메모리 한도이며 프로세스 RSS 보장은 아니다.
+- `GitCommit` record `(String sha, String authorLogin, String authorEmail, String message, String diff, String coverageType, String coverageDetails)` (기존 4/5인자 생성자는 FULL/빈 설명으로 호환). `RepositoryOrigin.normalize(origin, allowedHosts)`와 `fromRepositoryUrl(url)`로 scheme/host/port를 정규화하고 자격증명 목록과 작성자 매핑이 같은 기준을 쓴다. `GitCommitLink.from(url,sha)`는 검증된 HTTP(S) URL과40/64자리 SHA만 외부 커밋 링크로 표시한다.
 - package `ai`: `AiReviewClient` Spring bean method `ReviewResult review(GitCommit commit)`; records `ReviewResult(String summary, List<ReviewFinding> findings)`, `ReviewFinding(String severity, String title, String filePath, Integer lineNumber, String description, String suggestion)`. Validate bounds, output schema, failures; treat diff as untrusted. No silent success if response invalid or diff too large.
 - Use Java HTTP client (no redirects), Jackson 3 (`tools.jackson.databind`) from Boot; injected configuration via @Value or private @ConfigurationProperties.
 - meaningful HTTP fixtures tests, no live external calls.

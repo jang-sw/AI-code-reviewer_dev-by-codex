@@ -36,7 +36,7 @@ Git 기본 호스트는 `github.com`이다. 설치형 GitLab은 관리자가 허
 
 ## 남은 릴리스 과제
 
-- binary/큰 변경/일부 rename·mode-only 처리와 대형 이력·merge 그룹 확장. 현재 누락 우려 시 실패하며 성공으로 숨기지 않는다.
+- binary/큰 변경/일부 rename·mode-only 처리와 대형 이력 부하·force-push 복구. 큰 merge는 저장한 SHA를 재사용해 여러 배치로 처리한다. 누락 우려 시 실패하며 성공으로 숨기지 않는다.
 - 실제 GitLab·LiteLLM 환경, 운영 모델 품질, 장시간·장애·부하 검증.
 - 운영 백업/복원·모니터링·보존·업그레이드/롤백·의존성 취약점 검증.
 - 상세 기준은 `docs/RELEASE-CHECKLIST.md`와 `docs/AI-EVALUATION.md`를 따른다.

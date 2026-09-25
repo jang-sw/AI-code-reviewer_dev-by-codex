@@ -80,7 +80,7 @@ Ollama는 `<base-url>/api/chat`, LiteLLM은 `<base-url>/chat/completions`를 사
 
 모델 context와 출력 예산을 실제 모델 용량에 맞춘다. 입력은 byte 기반 보수적 예산 검사로 silent context truncation을 방지한다. 큰 diff를 임의로 잘라 성공 처리하지 않는다. 구조가 잘못된 JSON, 잘못된 파일/행, 생성 중단, 거부, 과대 응답은 실패로 기록한다.
 
-실제 `gemma3:1b` 연결은 확인했지만 오탐을 관찰했다. [AI 검증 기록](AI-EVALUATION.md)을 확인한다. 더 큰 모델의 품질 평가 및 실제 LiteLLM 환경 검증이 남아 있다.
+실제 `gemma3:1b`는 오탐·설명 품질 문제가 있었고, 설치된 `llama3.1:8b` 비교에서도6사례 중4개 시간 초과와 근거 문제가 있었다. [AI 검증 기록](AI-EVALUATION.md)을 확인한다. 모델·context 조정 후 품질 재평가 및 실제 LiteLLM 환경 검증이 남아 있다.
 
 ## 시간표와 복구
 
@@ -91,7 +91,9 @@ Ollama는 `<base-url>/api/chat`, LiteLLM은 `<base-url>/chat/completions`를 사
 - 리뷰 중 프로젝트가 일시정지되면 이후 DB 저장 단계에서 다시 상태를 검사한다. 이미 실행 중인 HTTP 호출은 시간 제한까지 걸릴 수 있다.
 - 프로세스 중단 뒤 다음 실행은 해당 프로젝트 잠금을 확보한 경우에만 이전 RUNNING을 실패로 정리한다. 메모리 큐는 재시작 시 사라지며 승인 프로젝트는 다음 정시에 다시 대상이 된다.
 - force-push로 커서가 없어지거나 first-parent 순서가 바뀌면 자동으로 이력을 건너뛰지 않고 실패한다. 관리자가 이력을 대조하는 복구 절차/UI는 릴리스 전 보완 대상이다.
-- 큰 merge 묶음이 배치 한도를 넘으면 한도를 올리거나 후속 개선이 필요하다. 현재 최대1000커밋이다.
+- 큰 merge 묶음은 여러 배치로 나누어 처리한다. 배치당 새로 처리할 커밋만 최대1000개이며 이미 저장한 커밋의 diff/AI는 재호출하지 않는다. 부분 merge 성공 중에는 기준 커밋이 그대로여도 저장 건수가 증가할 수 있다. 모든 선행 변경 검토가 끝난 안전한 경계에 도달하면 기준을 갱신한다.
+- 매 실행은 불변 head 전체 이력을 다시 검증하므로 저장소 크기에 따른 API 비용이 있다. 전체 metadata32MiB, 기본1000페이지, 저장된 SHA131072개 제한을 넘으면 실패한다. 제한을 무시하거나 이력을 자동 절삭하지 않는다. 대형 저장소 부하·재작성 후 관리자 복구는 후속 검증 대상이다.
+- 리뷰 기록의 실행/커밋 목록은 최신순50건씩 각각 이전/다음 페이지로 조회한다. 이슈와 커밋 카드에서 원본 커밋을 새 창으로 열 수 있으며 Git 서버 자체 권한은 별도로 적용된다.
 - 파일 목록·통계(그리고 GitLab 트리)로 확인된 빈 커밋은 `EMPTY`로 기록하며 AI를 호출하지 않는다. GitLab의 경로/모드 변경은 불변 blob ID로 본문이 같음을 증명한 경우에만 `METADATA_ONLY`로 구분한다. 본문 diff가 섞인 커밋은 메타데이터 변경을 포함해 AI로 전달한다.
 - `METADATA_ONLY`는 본문 AI 검토가 없으며 경로·실행권한·파일 유형 변경의 영향은 수동 확인 대상이다. 리뷰 기록에 이전/새 경로와 숫자 모드 및 안내를 표시한다. 자동 권고 이슈는 만들지 않는다. 처리 완료 커밋 수는 이런 커밋을 포함하므로 AI가 검토한 커밋 수와 다르다.
 - binary, 제공되지 않는 patch, GitHub의 일부 rename/mode-only, 새 빈 파일, API 잘림은 명시적으로 실패한다. 임의 제외 후 진행하지 않는다. 원본 기반 diff 대안과 수동 검토 이슈 흐름은 후속 개발 대상이다.
@@ -126,15 +128,22 @@ Remove-Item Env:RUN_OLLAMA_SMOKE
 $env:RUN_GITHUB_SMOKE='true'
 .\mvnw.cmd '-Dtest=PublicGitHubSmokeTest' test
 Remove-Item Env:RUN_GITHUB_SMOKE
+
+# source: 공식 공개 GitLab fixture의 pinned 이력/루트 diff/재개, 토큰/AI 없음
+$env:RUN_GITLAB_SMOKE='true'
+.\mvnw.cmd '-Dtest=PublicGitLabSmokeTest' test
+Remove-Item Env:RUN_GITLAB_SMOKE
 ```
 
 `scripts/test-postgres.ps1`은 `.local/pg-validation`과 별도 포트를 사용한다. 이 스크립트가 만든 marker가 없는 DB 디렉터리를 재사용하지 않는다. 운영 DB를 삭제하지 않는다. `reviewer_integration`, `identity_security`는 테스트 전용이다. 이 환경에서만 허용하는 trust 인증을 운영 설정으로 복사하지 않는다. 테스트 결과 XML은 `source/target/surefire-reports`, 패키지는 `source/target/ai-code-reviewer.war`에 생성된다.
 
 `-BackupRestore`를 추가하면 같은 테스트 클러스터를 확인한 뒤 pg_dump를 만들고 새 임시 DB에 복원한다. 모든 업무 테이블·Flyway 기록의 내용과 identity 시퀀스 삽입을 검증하고 생성한 복원 DB만 제거한다. 결과와 합성 테스트 백업은 `.local/backups`에 남는다. 운영 복원·암호화·보존 정책 검증과 구분한다.
 
+공개 GitLab smoke는 [GitLab 자체 테스트 저장소](https://gitlab.com/gitlab-org/gitlab-test)의 고정 head 이력47개 중 루트 커밋1개의 diff와 해당 루트 기준 재개만 읽는다. 2026-09-26 실제3.794초 통과했다. 전체47개 변경의 리뷰 지원이나 사용자 설치형 GitLab·비공개 인증 검증을 대신하지 않는다.
+
 ## CI와 의존성 검사
 
-`.github/workflows/verify.yml`은 push/PR/수동 실행에서 Java25와 임시 PostgreSQL17로 `scripts/verify-ci.sh`를 실행한다. 두 실제 PostgreSQL 테스트가 누락되거나 skip이면 실패한다. 외부 GitHub/Ollama/모델 평가 호출은 비활성화한다. 코드 검증만 수행하며 배포하지 않는다. 로컬 문법·gate 검증은 수행했으나 실제 GitHub Actions 실행은 원격 반영 전 미실행이다.
+`.github/workflows/verify.yml`은 push/PR/수동 실행에서 Java25와 임시 PostgreSQL17로 `scripts/verify-ci.sh`를 실행한다. 두 실제 PostgreSQL 테스트가 누락되거나 skip이면 실패한다. 외부 GitHub/GitLab/Ollama/모델 평가 호출은 비활성화한다. 코드 검증만 수행하며 배포하지 않는다. 로컬 문법·gate 검증은 수행했으나 실제 GitHub Actions 실행은 원격 반영 전 미실행이다.
 
 Tomcat은 공급자 보안 수정을 위해 `pom.xml`에서11.0.26으로 고정했다. Maven 운영 의존성 검사와 재현 명령은 [의존성 점검 기록](DEPENDENCY-AUDIT.md)을 따른다. OSV 결과와 공급자 공지를 함께 확인하며, 검사 시점·범위 밖의 안전성을 주장하지 않는다.
 

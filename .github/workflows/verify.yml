@@ -34,6 +34,7 @@ jobs:
       TEST_DATABASE_USERNAME: reviewer_test
       TEST_DATABASE_PASSWORD: reviewer_ci_database_only
       RUN_GITHUB_SMOKE: 'false'
+      RUN_GITLAB_SMOKE: 'false'
       RUN_OLLAMA_SMOKE: 'false'
       RUN_AI_EVALUATION: 'false'
     steps:

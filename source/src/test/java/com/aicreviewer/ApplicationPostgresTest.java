@@ -5,6 +5,7 @@ import com.aicreviewer.ai.ReviewFinding;
 import com.aicreviewer.ai.ReviewResult;
 import com.aicreviewer.git.GitCommit;
 import com.aicreviewer.git.GitRepositoryClient;
+import com.aicreviewer.git.GitReviewBatch;
 import com.aicreviewer.identity.UserAccountService;
 import com.aicreviewer.project.ProjectService;
 import com.aicreviewer.review.ProjectReviewLock;
@@ -20,6 +21,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Pattern;
 import org.junit.jupiter.api.BeforeEach;
@@ -110,7 +112,7 @@ class ApplicationPostgresTest {
         String firstSha = "a".repeat(40), secondSha = "b".repeat(40);
         GitCommit first = new GitCommit(firstSha, writer, "first", "diff --git a/A.java b/A.java\n@@ -0,0 +1 @@\n+bad();");
         GitCommit second = new GitCommit(secondSha, null, "second", "diff --git a/B.java b/B.java\n@@ -0,0 +1 @@\n+bad();");
-        when(git.commits(any(), any(), any(), anyInt())).thenReturn(List.of(first, second));
+        stubBatch(List.of(first, second), secondSha);
         when(ai.review(first)).thenReturn(finding("A.java"));
         when(ai.review(second)).thenThrow(new IllegalStateException("provider secret must not be persisted"));
         assertThat(reviews.reviewProject(projectId, writer)).isEqualTo(ReviewCoordinator.Outcome.FAILED);
@@ -131,6 +133,8 @@ class ApplicationPostgresTest {
         HttpResponse<String> ownerIssues = get(ownerSession, "/issues");
         assertThat(ownerIssues.statusCode()).isEqualTo(200);
         assertThat(ownerIssues.body()).contains("테스트 권고", "&lt;script&gt;").doesNotContain("<script>bad</script>");
+        String repositoryUrl = jdbc.queryForObject("select repository_url from project where id=?", String.class, projectId);
+        assertThat(ownerIssues.body()).contains(repositoryUrl + "/commit/" + firstSha, "rel=\"noopener noreferrer\"");
         HttpClient unrelatedSession = login(outsider);
         HttpResponse<String> unrelatedIssues = get(unrelatedSession, "/issues");
         assertThat(unrelatedIssues.body()).doesNotContain("테스트 권고");
@@ -173,7 +177,7 @@ class ApplicationPostgresTest {
     void manualPostDispatchesBackgroundReviewToDurableCompletion() throws Exception {
         projects.transition("pgadmin", projectId, "approve");
         GitCommit commit = new GitCommit("d".repeat(40), writer, "background", "diff --git a/A.java b/A.java\n@@ -0,0 +1 @@\n+bad();");
-        when(git.commits(any(), any(), any(), anyInt())).thenReturn(List.of(commit));
+        stubBatch(List.of(commit), commit.sha());
         when(ai.review(commit)).thenReturn(finding("A.java"));
         HttpClient session = login(writer);
         String token = csrf(get(session, "/projects/" + projectId).body());
@@ -191,7 +195,7 @@ class ApplicationPostgresTest {
     void postgresConstraintFailureRollsBackCommitIssuesAndCount() {
         projects.transition("pgadmin", projectId, "approve");
         GitCommit commit = new GitCommit("e".repeat(40), writer, "atomic", "diff --git a/A.java b/A.java\n@@ -0,0 +1 @@\n+bad();");
-        when(git.commits(any(), any(), any(), anyInt())).thenReturn(List.of(commit));
+        stubBatch(List.of(commit), commit.sha());
         when(ai.review(commit)).thenReturn(new ReviewResult("rollback fixture", List.of(new ReviewFinding("HIGH", "PG_ROLLBACK_TEST", "A.java", 1, "test description", "test suggestion"))));
         jdbc.execute("alter table review_issue add constraint it_reject_marker check (title <> 'PG_ROLLBACK_TEST')");
         try {
@@ -244,7 +248,7 @@ class ApplicationPostgresTest {
         long mappingId = jdbc.queryForObject("select id from git_author_mapping where repository_origin=? and author_email=?", Long.class, origin, email);
         assertThat(get(adminSession, "/admin/git-authors").body()).contains(email);
         GitCommit first = new GitCommit("1".repeat(40), writer, email, "GitLab claimed author", "diff --git a/A.java b/A.java\n@@ -0,0 +1 @@\n+bad();");
-        when(git.commits(any(), any(), any(), anyInt())).thenReturn(List.of(first));
+        stubBatch(List.of(first), first.sha());
         when(ai.review(first)).thenReturn(finding("A.java"));
         assertThat(reviews.reviewProject(gitlabProject, writer)).isEqualTo(ReviewCoordinator.Outcome.SUCCEEDED);
         long issueId = jdbc.queryForObject("select id from review_issue where project_id=?", Long.class, gitlabProject);
@@ -256,7 +260,7 @@ class ApplicationPostgresTest {
         assertThat(post(adminSession, "/admin/git-authors/" + mappingId + "/delete", Map.of("_csrf", token)).statusCode()).isEqualTo(302);
         assertThat(jdbc.queryForObject("select count(*) from git_author_mapping where id=?", Integer.class, mappingId)).isZero();
         GitCommit second = new GitCommit("2".repeat(40), outsider, email, "Deleted mapping", "diff --git a/B.java b/B.java\n@@ -0,0 +1 @@\n+bad();");
-        when(git.commits(any(), any(), any(), anyInt())).thenReturn(List.of(second));
+        stubBatch(List.of(second), second.sha());
         when(ai.review(second)).thenReturn(finding("B.java"));
         assertThat(reviews.reviewProject(gitlabProject, writer)).isEqualTo(ReviewCoordinator.Outcome.SUCCEEDED);
         assertThat(jdbc.queryForObject("select assignment_reason from review_issue where project_id=? order by id desc limit 1", String.class, gitlabProject))
@@ -270,7 +274,7 @@ class ApplicationPostgresTest {
         GitCommit empty = new GitCommit("3".repeat(40), writer, null, "empty", "", "EMPTY", "파일 변경 없음");
         GitCommit metadata = new GitCommit("4".repeat(40), writer, null, "metadata", "", "METADATA_ONLY",
                 "<script>alert(1)</script> 경로 및 실행권한 변경: 100644 -> 100755");
-        when(git.commits(any(), any(), any(), anyInt())).thenReturn(List.of(empty, metadata));
+        stubBatch(List.of(empty, metadata), metadata.sha());
         assertThat(reviews.reviewProject(projectId, writer)).isEqualTo(ReviewCoordinator.Outcome.SUCCEEDED);
         verifyNoInteractions(ai);
         assertThat(cursor()).isEqualTo(metadata.sha());
@@ -282,6 +286,57 @@ class ApplicationPostgresTest {
         assertThat(response.statusCode()).isEqualTo(200);
         assertThat(response.body()).contains("AI 본문 검토 없음", "수동 확인 필요", "&lt;script&gt;alert(1)&lt;/script&gt;")
                 .doesNotContain("<script>alert(1)</script>");
+    }
+
+    @Test
+    void paginatesBothHistoriesIndependentlyThroughRenderedJsp() throws Exception {
+        for (int index = 0; index < 52; index++) {
+            jdbc.update("insert into review_run(project_id,status,error_message) values (?,'FAILED',?)", projectId,
+                    "RUN_" + String.format("%02d", index) + "_END");
+            jdbc.update("insert into reviewed_commit(project_id,commit_sha,summary) values (?,?,?)", projectId,
+                    String.format("%040x", index + 1), "COMMIT_" + String.format("%02d", index) + "_END");
+        }
+        HttpClient owner = login(writer);
+        String path = "/reviews?projectId=" + projectId;
+        var firstPage = get(owner, path);
+        assertThat(firstPage.statusCode()).isEqualTo(200);
+        assertThat(firstPage.body()).contains("RUN_51_END", "COMMIT_51_END", "원본 커밋 보기")
+                .doesNotContain("RUN_00_END", "COMMIT_00_END");
+        var olderCommits = get(owner, path + "&commitPage=1");
+        assertThat(olderCommits.statusCode()).isEqualTo(200);
+        assertThat(olderCommits.body()).contains("COMMIT_00_END", "COMMIT_01_END", "RUN_51_END",
+                "commitPage=1&amp;runPage=1#runs").doesNotContain("COMMIT_51_END", "RUN_00_END");
+        var olderRuns = get(owner, path + "&runPage=1");
+        assertThat(olderRuns.statusCode()).isEqualTo(200);
+        assertThat(olderRuns.body()).contains("RUN_00_END", "RUN_01_END", "COMMIT_51_END",
+                "commitPage=1&amp;runPage=1#commits").doesNotContain("RUN_51_END", "COMMIT_00_END");
+        assertThat(get(owner, path + "&commitPage=-1").statusCode()).isEqualTo(400);
+        assertThat(get(owner, path + "&runPage=10001").statusCode()).isEqualTo(400);
+        assertThat(get(login(outsider), path + "&commitPage=1").statusCode()).isEqualTo(403);
+    }
+
+    @Test
+    void partialMergeProgressAndEmptyRecoveryAdvanceOnlyExplicitCheckpoint() {
+        projects.transition("pgadmin", projectId, "approve");
+        GitCommit first = new GitCommit("5".repeat(40), writer, null, "partial merge", "", "EMPTY", "파일 변경 없음");
+        stubBatch(List.of(first), null);
+        assertThat(reviews.reviewProject(projectId, writer)).isEqualTo(ReviewCoordinator.Outcome.SUCCEEDED);
+        assertThat(cursor()).isNull();
+        assertThat(count("reviewed_commit")).isEqualTo(1);
+        // Simulate resuming after commit persistence but before safe checkpoint persistence.
+        stubBatch(List.of(), first.sha());
+        assertThat(reviews.reviewProject(projectId, writer)).isEqualTo(ReviewCoordinator.Outcome.SUCCEEDED);
+        assertThat(cursor()).isEqualTo(first.sha());
+        assertThat(count("reviewed_commit")).isEqualTo(1);
+        verify(git).batch(any(), any(), isNull(), eq(Set.of(first.sha())), anyInt());
+        verifyNoInteractions(ai);
+    }
+
+    private void stubBatch(List<GitCommit> commits, String checkpoint) {
+        when(git.batch(any(), any(), any(), anySet(), anyInt())).thenAnswer(invocation -> {
+            Set<String> completed = invocation.getArgument(3);
+            return new GitReviewBatch(commits.stream().filter(commit -> !completed.contains(commit.sha())).toList(), checkpoint);
+        });
     }
 
     private ReviewResult finding(String file) {

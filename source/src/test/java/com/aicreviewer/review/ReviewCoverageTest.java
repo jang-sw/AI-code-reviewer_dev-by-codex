@@ -4,6 +4,7 @@ import com.aicreviewer.ai.AiReviewClient;
 import com.aicreviewer.ai.ReviewResult;
 import com.aicreviewer.git.GitCommit;
 import com.aicreviewer.git.GitRepositoryClient;
+import com.aicreviewer.git.GitReviewBatch;
 import com.aicreviewer.git.IntegrationException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -189,7 +190,7 @@ class ReviewCoverageTest {
         return new GitCommit("a".repeat(40), "author-git", null, "Commit", diff, coverage, details);
     }
 
-    private void batch(GitCommit commit) { when(git.commits(any(), any(), any(), anyInt())).thenReturn(List.of(commit)); }
+    private void batch(GitCommit commit) { when(git.batch(any(), any(), any(), anySet(), anyInt())).thenReturn(new GitReviewBatch(List.of(commit), commit.sha())); }
 
     private void assertFailedWithoutPersistence() {
         assertThat(coordinator.reviewProject(10, "owner")).isEqualTo(ReviewCoordinator.Outcome.FAILED);

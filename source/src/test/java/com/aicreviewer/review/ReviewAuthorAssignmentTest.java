@@ -5,6 +5,7 @@ import com.aicreviewer.ai.ReviewFinding;
 import com.aicreviewer.ai.ReviewResult;
 import com.aicreviewer.git.GitCommit;
 import com.aicreviewer.git.GitRepositoryClient;
+import com.aicreviewer.git.GitReviewBatch;
 import com.aicreviewer.issue.IssueService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -150,7 +151,7 @@ class ReviewAuthorAssignmentTest {
     private GitCommit commit(String login, String email) { return new GitCommit("a".repeat(40), login, email, "Commit", "diff"); }
 
     private void review(GitCommit commit) {
-        when(git.commits(any(), any(), any(), anyInt())).thenReturn(List.of(commit));
+        when(git.batch(any(), any(), any(), anySet(), anyInt())).thenReturn(new GitReviewBatch(List.of(commit), commit.sha()));
         assertThat(coordinator.reviewProject(10, "owner")).isEqualTo(ReviewCoordinator.Outcome.SUCCEEDED);
     }
 

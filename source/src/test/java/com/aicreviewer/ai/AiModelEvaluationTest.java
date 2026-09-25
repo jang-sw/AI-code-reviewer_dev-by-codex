@@ -21,11 +21,15 @@ class AiModelEvaluationTest {
     void evaluateSyntheticCorpusAndWriteResultsBeforeOptionalGate() throws Exception {
         String provider = setting("AI_EVAL_PROVIDER", "ollama");
         String model = setting("AI_EVAL_MODEL", "gemma3:1b");
+        AiEvaluationSettings settings = AiEvaluationSettings.fromEnvironment(System.getenv());
         var client = new AiReviewClient(provider, setting("AI_EVAL_BASE_URL", "http://127.0.0.1:11434"), model,
-                setting("AI_EVAL_API_KEY", ""), 120, 262144, 1048576, 32768, 4096);
+                setting("AI_EVAL_API_KEY", ""), settings.timeoutSeconds(), 262144, 1048576,
+                settings.contextTokens(), settings.maxOutputTokens());
         var results = new ArrayList<Map<String, Object>>();
+        var samples = AiEvaluationCorpus.cases();
         int acceptable = 0;
-        for (var sample : AiEvaluationCorpus.cases()) {
+        writeReport(provider, model, settings, samples.size(), results, acceptable);
+        for (var sample : samples) {
             long start = System.nanoTime();
             var row = new LinkedHashMap<String, Object>();
             row.put("caseId", sample.id());
@@ -50,19 +54,21 @@ class AiModelEvaluationTest {
             }
             row.put("elapsedMillis", (System.nanoTime() - start) / 1_000_000);
             results.add(row);
-            writeReport(provider, model, results, acceptable);
+            writeReport(provider, model, settings, samples.size(), results, acceptable);
         }
         if ("true".equals(setting("AI_EVAL_ENFORCE", "false"))) {
             assertThat(acceptable).as("coarse model gate; semantic human review is additionally required")
-                    .isEqualTo(AiEvaluationCorpus.cases().size());
+                    .isEqualTo(samples.size());
         }
     }
 
-    private void writeReport(String provider, String model, ArrayList<Map<String, Object>> results, int acceptable) throws Exception {
+    private void writeReport(String provider, String model, AiEvaluationSettings settings, int requestedCases,
+            ArrayList<Map<String, Object>> results, int acceptable) throws Exception {
         Files.createDirectories(Path.of("target"));
-        var report = Map.of("generatedAt", Instant.now().toString(), "provider", provider, "model", model,
+        var report = new LinkedHashMap<String, Object>(Map.of("generatedAt", Instant.now().toString(), "provider", provider, "model", model,
                 "completedCases", results.size(), "coarseAcceptedCases", acceptable,
-                "humanSemanticReviewRequired", true, "cases", results);
+                "requestedCases", requestedCases, "humanSemanticReviewRequired", true, "cases", results));
+        report.putAll(settings.reportFields());
         Files.writeString(Path.of("target/ai-evaluation-report.json"), JsonMapper.builder().build()
                 .writerWithDefaultPrettyPrinter().writeValueAsString(report));
     }

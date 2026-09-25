@@ -3,6 +3,8 @@ package com.aicreviewer.review;
 import com.aicreviewer.ai.ReviewFinding;
 import com.aicreviewer.ai.ReviewResult;
 import com.aicreviewer.git.GitCommit;
+import com.aicreviewer.git.GitRepositoryClient;
+import com.aicreviewer.git.IntegrationException;
 import com.aicreviewer.git.RepositoryOrigin;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -15,12 +17,16 @@ import java.sql.PreparedStatement;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.List;
+import java.util.HashSet;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 @Repository
 public class ReviewRepository {
+    public static final int HISTORY_PAGE_SIZE = 50;
+    public static final int MAX_HISTORY_PAGE = 10000;
     private final JdbcTemplate jdbc;
 
     public ReviewRepository(JdbcTemplate jdbc) {
@@ -66,6 +72,23 @@ public class ReviewRepository {
 
     public boolean alreadyReviewed(long projectId, String sha) {
         return Boolean.TRUE.equals(jdbc.queryForObject("select exists(select 1 from reviewed_commit where project_id = ? and commit_sha = ?)", Boolean.class, projectId, sha));
+    }
+
+    /** The SQL cap bounds JDBC materialization as well as the returned durable-progress set. */
+    public Set<String> reviewedShas(long projectId) {
+        List<String> rows = jdbc.queryForList("select commit_sha from reviewed_commit where project_id = ? order by id limit ?",
+                String.class, projectId, GitRepositoryClient.MAX_REVIEWED_SHAS + 1);
+        if (rows.size() > GitRepositoryClient.MAX_REVIEWED_SHAS) {
+            throw new IntegrationException("Durable review progress exceeds the configured memory safety budget");
+        }
+        var shas = new HashSet<String>();
+        for (String sha : rows) {
+            if (sha == null || !sha.matches("[0-9a-f]{40}|[0-9a-f]{64}")) {
+                throw new IntegrationException("Durable review progress contains an invalid commit identifier");
+            }
+            shas.add(sha);
+        }
+        return Set.copyOf(shas);
     }
 
     /** Caller wraps this entire operation in one database transaction. */
@@ -122,7 +145,7 @@ public class ReviewRepository {
 
     private record Assignment(long userId, String reason, Long mappingId) { }
 
-    /** The Git adapter returns only batches ending at a safe first-parent boundary. */
+    /** The adapter supplies an explicit closed checkpoint, or null while a merge group is incomplete. */
     public void completeBatch(long runId, ReviewProject original, String checkpoint, Instant now) {
         ReviewProject current = project(original.id(), true);
         requireApproved(current);
@@ -143,12 +166,35 @@ public class ReviewRepository {
     }
 
     public List<Map<String, Object>> runs(long projectId) {
-        return jdbc.queryForList("select id, status, started_at, finished_at, reviewed_commits, error_message from review_run where project_id = ? order by id desc limit 50", projectId);
+        return runs(projectId, 0).rows();
+    }
+
+    public HistoryPage runs(long projectId, int page) {
+        requireHistoryPage(page);
+        return historyPage(jdbc.queryForList("select id, status, started_at, finished_at, reviewed_commits, error_message from review_run where project_id = ? order by id desc limit ? offset ?",
+                projectId, HISTORY_PAGE_SIZE + 1, (long) page * HISTORY_PAGE_SIZE), page);
     }
 
     public List<Map<String, Object>> reviewedCommits(long projectId) {
-        return jdbc.queryForList("select c.id, c.commit_sha, c.author_login, c.summary, c.coverage_type, c.coverage_details, c.reviewed_at, (select count(*) from review_issue i where i.reviewed_commit_id = c.id) as issue_count from reviewed_commit c where c.project_id = ? order by c.id desc limit 50", projectId);
+        return reviewedCommits(projectId, 0).rows();
     }
+
+    public HistoryPage reviewedCommits(long projectId, int page) {
+        requireHistoryPage(page);
+        return historyPage(jdbc.queryForList("select c.id, c.commit_sha, c.author_login, c.summary, c.coverage_type, c.coverage_details, c.reviewed_at, (select count(*) from review_issue i where i.reviewed_commit_id = c.id) as issue_count from reviewed_commit c where c.project_id = ? order by c.id desc limit ? offset ?",
+                projectId, HISTORY_PAGE_SIZE + 1, (long) page * HISTORY_PAGE_SIZE), page);
+    }
+
+    private static void requireHistoryPage(int page) {
+        if (page < 0 || page > MAX_HISTORY_PAGE) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "리뷰 기록 페이지가 올바르지 않습니다.");
+    }
+
+    private static HistoryPage historyPage(List<Map<String, Object>> rows, int page) {
+        return new HistoryPage(List.copyOf(rows.subList(0, Math.min(rows.size(), HISTORY_PAGE_SIZE))), page,
+                rows.size() > HISTORY_PAGE_SIZE && page < MAX_HISTORY_PAGE);
+    }
+
+    public record HistoryPage(List<Map<String, Object>> rows, int page, boolean hasNext) { }
 
     public Map<String, Object> dashboard(ReviewActor actor) {
         String filter = actor.admin() ? "1 = 1" : "owner_id = " + actor.id();
