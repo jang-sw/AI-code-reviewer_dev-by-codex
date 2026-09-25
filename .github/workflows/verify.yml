@@ -1,0 +1,66 @@
+name: Verify application
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: reviewer_test
+          POSTGRES_PASSWORD: reviewer_ci_database_only
+          POSTGRES_DB: postgres
+        ports:
+          - 5432/tcp
+        options: >-
+          --health-cmd "pg_isready -U reviewer_test -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_USERNAME: reviewer_test
+      TEST_DATABASE_PASSWORD: reviewer_ci_database_only
+      RUN_GITHUB_SMOKE: 'false'
+      RUN_OLLAMA_SMOKE: 'false'
+      RUN_AI_EVALUATION: 'false'
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Java 25
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+          cache-dependency-path: |
+            source/pom.xml
+            source/.mvn/wrapper/maven-wrapper.properties
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
+      - name: Create isolated integration databases
+        env:
+          POSTGRES_SERVICE_ID: ${{ job.services.postgres.id }}
+        run: |
+          docker exec "$POSTGRES_SERVICE_ID" createdb -U reviewer_test reviewer_integration
+          docker exec "$POSTGRES_SERVICE_ID" createdb -U reviewer_test identity_security
+      - name: Verify report gate fixtures
+        run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
+      - name: Build and run all local integration tests
+        env:
+          TEST_DATABASE_URL: jdbc:postgresql://127.0.0.1:${{ job.services.postgres.ports['5432'] }}/reviewer_integration
+          TEST_IDENTITY_DATABASE_URL: jdbc:postgresql://127.0.0.1:${{ job.services.postgres.ports['5432'] }}/identity_security
+        run: bash scripts/verify-ci.sh

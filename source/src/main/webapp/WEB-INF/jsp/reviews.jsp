@@ -15,7 +15,14 @@
 </section>
 <section class="panel"><h2>최근 리뷰 커밋 50건</h2>
   <c:choose><c:when test="${empty commits}"><p class="empty-state">완료된 커밋 리뷰가 없습니다.</p></c:when><c:otherwise>
-    <c:forEach items="${commits}" var="commit"><article class="review-card"><div class="section-heading"><code class="commit-sha"><c:out value="${commit.commit_sha}"/></code><span>이슈 <c:out value="${commit.issue_count}"/>건</span></div><p class="muted">작성자: <c:out value="${commit.author_login}" default="Git 계정 미확인"/> · <c:out value="${commit.reviewed_at}"/></p><p class="preserve-lines"><c:out value="${commit.summary}"/></p></article></c:forEach>
+    <c:forEach items="${commits}" var="commit"><article class="review-card">
+      <div class="section-heading"><code class="commit-sha"><c:out value="${commit.commit_sha}"/></code><span>이슈 <c:out value="${commit.issue_count}"/>건</span></div>
+      <p><span class="badge"><c:choose><c:when test="${commit.coverage_type == 'EMPTY'}">파일 변경 없음 · AI 본문 검토 없음</c:when><c:when test="${commit.coverage_type == 'METADATA_ONLY'}">메타데이터 변경 · 수동 확인 필요</c:when><c:otherwise>AI 본문 리뷰<c:if test="${not empty commit.coverage_details}"> · 메타데이터 변경 포함</c:if></c:otherwise></c:choose></span></p>
+      <p class="muted">작성자: <c:out value="${commit.author_login}" default="Git 계정 미확인"/> · <c:out value="${commit.reviewed_at}"/></p>
+      <p class="preserve-lines"><c:out value="${commit.summary}"/></p>
+      <c:if test="${commit.coverage_type == 'METADATA_ONLY'}"><p class="notice">경로·권한·파일 유형 변경을 수동 확인해 주세요. 심볼릭 링크로의 변경도 포함될 수 있습니다. 이 커밋은 별도 수정 권고 이슈를 자동 생성하지 않습니다.</p></c:if>
+      <c:if test="${not empty commit.coverage_details}"><details><summary>검토 범위와 메타데이터 변경</summary><pre><c:out value="${commit.coverage_details}"/></pre></details></c:if>
+    </article></c:forEach>
   </c:otherwise></c:choose>
 </section>
 <p class="muted">AI 리뷰는 보조 의견입니다. 변경 전 코드 맥락과 테스트 결과를 확인하세요. 실패한 커밋은 성공으로 기록하거나 진행 위치를 넘기지 않습니다.</p>

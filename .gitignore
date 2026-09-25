@@ -10,3 +10,5 @@ source/application-local.properties
 .idea/
 .vscode/
 *.iml
+__pycache__/
+*.pyc

@@ -178,6 +178,10 @@ public class GitRepositoryClient {
         if (additions != expectedAdds || deletions != expectedDeletes) {
             throw new IntegrationException("GitHub diff is incomplete compared with commit statistics");
         }
+        if (filenames.isEmpty()) {
+            return new GitCommit(meta.sha(), meta.author(), meta.authorEmail(), meta.message(), "", "EMPTY",
+                    "변경 파일 0개, 추가/삭제 0행을 확인했습니다. AI 본문 검토 없음.");
+        }
         return new GitCommit(meta.sha(), meta.author(), meta.authorEmail(), meta.message(), diff.toString());
     }
 
@@ -196,6 +200,8 @@ public class GitRepositoryClient {
         Set<String> covered = new HashSet<>();
         Set<String> seenFiles = new HashSet<>();
         StringBuilder diff = new StringBuilder();
+        StringBuilder metadataDetails = new StringBuilder();
+        int bodyFiles = 0;
         long actualAdds = 0, actualDeletes = 0;
         for (int page = 1; ; page++) {
             if (page > maxPages) throw new IntegrationException("GitLab diff exceeds configured pagination budget");
@@ -211,21 +217,54 @@ public class GitRepositoryClient {
                 if (!expected.contains(oldPath) && !expected.contains(newPath)) throw new IntegrationException("GitLab diff does not match commit trees");
                 covered.add(oldPath);
                 covered.add(newPath);
-                String patch = field(file, "diff", maxDiffBytes);
-                if (patch.isBlank() || patch.lines().anyMatch(line -> line.equals("GIT binary patch")
+                String before = parent.get(oldPath), after = current.get(newPath);
+                boolean metadataChange = before != null && after != null
+                        && (!oldPath.equals(newPath) || !mode(before).equals(mode(after)));
+                boolean unchangedBlob = metadataChange && blob(before).equals(blob(after))
+                        && blobMode(mode(before)) && blobMode(mode(after))
+                        && (oldPath.equals(newPath) || (!current.containsKey(oldPath) && !parent.containsKey(newPath)));
+                String patch = unchangedBlob && !file.hasNonNull("diff") ? "" : field(file, "diff", maxDiffBytes);
+                if (patch.lines().anyMatch(line -> line.equals("GIT binary patch")
                         || (line.startsWith("Binary files ") && line.endsWith(" differ")))) {
                     throw new IntegrationException("GitLab returned an unavailable or non-text file diff");
                 }
-                actualAdds += lineCount(patch, '+');
-                actualDeletes += lineCount(patch, '-');
-                append(diff, "diff --git a/" + oldPath + " b/" + newPath + "\n" + patch + "\n");
+                long fileAdds = lineCount(patch, '+'), fileDeletes = lineCount(patch, '-');
+                if (unchangedBlob && (fileAdds != 0 || fileDeletes != 0 || patch.lines().anyMatch(line ->
+                        line.startsWith("@@") || (line.startsWith("+") && !line.startsWith("+++ "))
+                                || (line.startsWith("-") && !line.startsWith("--- "))))) {
+                    throw new IntegrationException("GitLab diff contradicts unchanged blob identifiers");
+                }
+                if (!unchangedBlob && (patch.isBlank() || fileAdds + fileDeletes == 0)) {
+                    throw new IntegrationException("GitLab returned an unavailable or non-text file diff");
+                }
+                actualAdds += fileAdds;
+                actualDeletes += fileDeletes;
+                append(diff, "diff --git a/" + oldPath + " b/" + newPath + "\n");
+                if (metadataChange) {
+                    appendCoverage(metadataDetails, "이전 경로: " + oldPath + ", 모드: " + mode(before)
+                            + " → 새 경로: " + newPath + ", 모드: " + mode(after)
+                            + (unchangedBlob ? " (동일 blob; 본문 변경 없음)\n" : " (본문 변경 포함)\n"));
+                    if (!oldPath.equals(newPath)) append(diff, "rename from " + oldPath + "\nrename to " + newPath + "\n");
+                    append(diff, "old mode " + mode(before) + "\nnew mode " + mode(after) + "\n");
+                }
+                if (!unchangedBlob) bodyFiles++;
+                append(diff, (unchangedBlob ? "" : patch) + "\n");
             }
             if (!response.next() && response.body().size() < PAGE_SIZE) break;
         }
         if (!covered.containsAll(expected) || actualAdds != additions || actualDeletes != deletions) {
             throw new IntegrationException("GitLab diff is incomplete compared with commit trees or statistics");
         }
-        return new GitCommit(meta.sha(), null, meta.authorEmail(), meta.message(), diff.toString());
+        if (expected.isEmpty()) {
+            return new GitCommit(meta.sha(), null, meta.authorEmail(), meta.message(), "", "EMPTY",
+                    "변경 파일 0개, 추가/삭제 0행과 동일한 커밋 트리를 확인했습니다. AI 본문 검토 없음.");
+        }
+        if (bodyFiles == 0) {
+            return new GitCommit(meta.sha(), null, meta.authorEmail(), meta.message(), diff.toString(), "METADATA_ONLY",
+                    coverage("AI 본문 검토 없음. 경로·권한·파일 유형 변경은 수동 확인이 필요합니다.\n", metadataDetails));
+        }
+        return new GitCommit(meta.sha(), null, meta.authorEmail(), meta.message(), diff.toString(), "FULL",
+                metadataDetails.isEmpty() ? "" : coverage("본문 diff와 함께 다음 경로·권한·파일 유형 변경을 전달했습니다.\n", metadataDetails));
     }
 
     private Map<String, String> gitlabTree(RepositoryUrl repository, String base, String sha) {
@@ -242,7 +281,15 @@ public class GitRepositoryClient {
                 if (treeBytes > 16L * 1024 * 1024) throw new IntegrationException("GitLab tree exceeds the memory safety budget");
                 if (!seen.add(path)) throw new IntegrationException("GitLab returned duplicate tree entries");
                 String type = field(entry, "type", 20);
-                if (!type.equals("tree")) tree.put(path, sha(entry, "id") + ":" + field(entry, "mode", 10));
+                String mode = field(entry, "mode", 10);
+                if (!mode.matches("[0-7]{6}")) throw new IntegrationException("GitLab returned an invalid tree mode");
+                if (!type.equals("tree")) {
+                    if (!type.equals("blob") && !type.equals("commit")) throw new IntegrationException("GitLab returned an invalid tree type");
+                    if ((type.equals("blob") && !blobMode(mode)) || (type.equals("commit") && !mode.equals("160000"))) {
+                        throw new IntegrationException("GitLab returned inconsistent tree metadata");
+                    }
+                    tree.put(path, sha(entry, "id") + ":" + mode);
+                }
             }
             if (!response.next() && response.body().size() < PAGE_SIZE) break;
         }
@@ -332,8 +379,25 @@ public class GitRepositoryClient {
         }
     }
 
+    private static String blob(String entry) { return entry.substring(0, entry.indexOf(':')); }
+    private static String mode(String entry) { return entry.substring(entry.indexOf(':') + 1); }
+    private static boolean blobMode(String mode) { return Set.of("100644", "100755", "120000").contains(mode); }
+
+    private static void appendCoverage(StringBuilder target, String value) {
+        if (target.length() + value.length() > 16000) throw new IntegrationException("Commit coverage details exceed the size limit");
+        target.append(value);
+    }
+
+    private static String coverage(String prefix, StringBuilder details) {
+        StringBuilder result = new StringBuilder();
+        appendCoverage(result, prefix);
+        appendCoverage(result, details.toString());
+        return result.toString();
+    }
+
     private static void verifyPatchCounts(String patch, int additions, int deletions) {
-        if (patch.isBlank() || lineCount(patch, '+') != additions || lineCount(patch, '-') != deletions) {
+        if (patch.isBlank() || (long) additions + deletions == 0
+                || lineCount(patch, '+') != additions || lineCount(patch, '-') != deletions) {
             throw new IntegrationException("Git returned a missing or truncated text patch");
         }
     }
@@ -343,7 +407,13 @@ public class GitRepositoryClient {
         boolean inHunk = false;
         long count = 0;
         for (String line : patch.split("\n", -1)) {
-            if (line.startsWith("@@ ")) { inHunk = true; continue; }
+            if (line.startsWith("@@")) {
+                if (!line.matches("@@ -[0-9]+(?:,[0-9]+)? \\+[0-9]+(?:,[0-9]+)? @@.*")) {
+                    throw new IntegrationException("Git returned an invalid patch hunk");
+                }
+                inHunk = true;
+                continue;
+            }
             if (inHunk && !line.isEmpty() && line.charAt(0) == prefix) count++;
         }
         return count;

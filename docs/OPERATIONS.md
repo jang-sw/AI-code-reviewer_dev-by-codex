@@ -92,7 +92,9 @@ Ollama는 `<base-url>/api/chat`, LiteLLM은 `<base-url>/chat/completions`를 사
 - 프로세스 중단 뒤 다음 실행은 해당 프로젝트 잠금을 확보한 경우에만 이전 RUNNING을 실패로 정리한다. 메모리 큐는 재시작 시 사라지며 승인 프로젝트는 다음 정시에 다시 대상이 된다.
 - force-push로 커서가 없어지거나 first-parent 순서가 바뀌면 자동으로 이력을 건너뛰지 않고 실패한다. 관리자가 이력을 대조하는 복구 절차/UI는 릴리스 전 보완 대상이다.
 - 큰 merge 묶음이 배치 한도를 넘으면 한도를 올리거나 후속 개선이 필요하다. 현재 최대1000커밋이다.
-- binary, 제공되지 않는 patch, 일부 rename/mode-only, API 잘림은 명시적으로 실패한다. 원본 기반 diff 대안과 검토 제외 정책은 후속 개발 대상이다.
+- 파일 목록·통계(그리고 GitLab 트리)로 확인된 빈 커밋은 `EMPTY`로 기록하며 AI를 호출하지 않는다. GitLab의 경로/모드 변경은 불변 blob ID로 본문이 같음을 증명한 경우에만 `METADATA_ONLY`로 구분한다. 본문 diff가 섞인 커밋은 메타데이터 변경을 포함해 AI로 전달한다.
+- `METADATA_ONLY`는 본문 AI 검토가 없으며 경로·실행권한·파일 유형 변경의 영향은 수동 확인 대상이다. 리뷰 기록에 이전/새 경로와 숫자 모드 및 안내를 표시한다. 자동 권고 이슈는 만들지 않는다. 처리 완료 커밋 수는 이런 커밋을 포함하므로 AI가 검토한 커밋 수와 다르다.
+- binary, 제공되지 않는 patch, GitHub의 일부 rename/mode-only, 새 빈 파일, API 잘림은 명시적으로 실패한다. 임의 제외 후 진행하지 않는다. 원본 기반 diff 대안과 수동 검토 이슈 흐름은 후속 개발 대상이다.
 
 ## 계정·보안
 
@@ -127,6 +129,14 @@ Remove-Item Env:RUN_GITHUB_SMOKE
 ```
 
 `scripts/test-postgres.ps1`은 `.local/pg-validation`과 별도 포트를 사용한다. 이 스크립트가 만든 marker가 없는 DB 디렉터리를 재사용하지 않는다. 운영 DB를 삭제하지 않는다. `reviewer_integration`, `identity_security`는 테스트 전용이다. 이 환경에서만 허용하는 trust 인증을 운영 설정으로 복사하지 않는다. 테스트 결과 XML은 `source/target/surefire-reports`, 패키지는 `source/target/ai-code-reviewer.war`에 생성된다.
+
+`-BackupRestore`를 추가하면 같은 테스트 클러스터를 확인한 뒤 pg_dump를 만들고 새 임시 DB에 복원한다. 모든 업무 테이블·Flyway 기록의 내용과 identity 시퀀스 삽입을 검증하고 생성한 복원 DB만 제거한다. 결과와 합성 테스트 백업은 `.local/backups`에 남는다. 운영 복원·암호화·보존 정책 검증과 구분한다.
+
+## CI와 의존성 검사
+
+`.github/workflows/verify.yml`은 push/PR/수동 실행에서 Java25와 임시 PostgreSQL17로 `scripts/verify-ci.sh`를 실행한다. 두 실제 PostgreSQL 테스트가 누락되거나 skip이면 실패한다. 외부 GitHub/Ollama/모델 평가 호출은 비활성화한다. 코드 검증만 수행하며 배포하지 않는다. 로컬 문법·gate 검증은 수행했으나 실제 GitHub Actions 실행은 원격 반영 전 미실행이다.
+
+Tomcat은 공급자 보안 수정을 위해 `pom.xml`에서11.0.26으로 고정했다. Maven 운영 의존성 검사와 재현 명령은 [의존성 점검 기록](DEPENDENCY-AUDIT.md)을 따른다. OSV 결과와 공급자 공지를 함께 확인하며, 검사 시점·범위 밖의 안전성을 주장하지 않는다.
 
 ## 공식 참조
 

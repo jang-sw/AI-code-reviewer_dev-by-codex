@@ -25,6 +25,8 @@ V3 `git_author_mapping`: id bigint identity PK, user_id FK app_user, repository_
 
 V4 `reviewed_commit.author_email` varchar(320) nullable, `review_issue.assignment_reason` varchar(32) default LEGACY: GITHUB_ACCOUNT/GIT_EMAIL_MAPPING/PROJECT_OWNER_FALLBACK/LEGACY. 배정 시점의 근거를 보존하며 일반 화면에 이메일 원문을 노출하지 않는다.
 
+V5 `reviewed_commit.coverage_type` varchar(20) default FULL, `coverage_details` text default '' (최대16000자). 범위는 FULL/EMPTY/METADATA_ONLY. 검증된 EMPTY와 METADATA_ONLY만 AI를 생략하며 해당 사실과 수동 확인 범위를 화면에 명시한다. 일반 누락/잘림 파일을 제외 성공으로 처리하지 않는다.
+
 ## 모듈 경계
 
 ### identity/project (agent)
@@ -35,7 +37,7 @@ V4 `reviewed_commit.author_email` varchar(320) nullable, `review_issue.assignmen
 
 ### integrations (agent)
 - package `git`: `RepositoryUrl` record `(String normalizedUrl, String provider, String host, String path)`, static parse(String, Set<String>) allowing HTTPS/explicit configured HTTP self-hosted hosts, no credentials/query/fragment; hosts exact allow-list. GitHub host github.com default; other configured hosts GitLab.
-- `GitRepositoryClient` Spring bean method `List<GitCommit> commits(RepositoryUrl repository, String branch, String lastReviewedSha, int limit)` returns oldest-first new commits, initial null cursor enumerates full history and returns the oldest batch up to limit. Existing cursor returns the oldest next batch up to limit. Pin history to immutable head; paginated full history must not silently skip commits. Fail closed if cursor missing/history rewritten/safety page budget exceeded. `GitCommit` record `(String sha, String authorLogin, String authorEmail, String message, String diff)` (기존 4인자 생성자는 이메일 null로 호환). `RepositoryOrigin.normalize(origin, allowedHosts)`와 `fromRepositoryUrl(url)`로 scheme/host/port를 정규화하고 자격증명 목록과 작성자 매핑이 같은 기준을 쓴다.
+- `GitRepositoryClient` Spring bean method `List<GitCommit> commits(RepositoryUrl repository, String branch, String lastReviewedSha, int limit)` returns oldest-first new commits, initial null cursor enumerates full history and returns the oldest batch up to limit. Existing cursor returns the oldest next batch up to limit. Pin history to immutable head; paginated full history must not silently skip commits. Fail closed if cursor missing/history rewritten/safety page budget exceeded. `GitCommit` record `(String sha, String authorLogin, String authorEmail, String message, String diff, String coverageType, String coverageDetails)` (기존 4/5인자 생성자는 FULL/빈 설명으로 호환). `RepositoryOrigin.normalize(origin, allowedHosts)`와 `fromRepositoryUrl(url)`로 scheme/host/port를 정규화하고 자격증명 목록과 작성자 매핑이 같은 기준을 쓴다.
 - package `ai`: `AiReviewClient` Spring bean method `ReviewResult review(GitCommit commit)`; records `ReviewResult(String summary, List<ReviewFinding> findings)`, `ReviewFinding(String severity, String title, String filePath, Integer lineNumber, String description, String suggestion)`. Validate bounds, output schema, failures; treat diff as untrusted. No silent success if response invalid or diff too large.
 - Use Java HTTP client (no redirects), Jackson 3 (`tools.jackson.databind`) from Boot; injected configuration via @Value or private @ConfigurationProperties.
 - meaningful HTTP fixtures tests, no live external calls.

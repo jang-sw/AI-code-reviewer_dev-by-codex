@@ -78,8 +78,8 @@ public class ReviewRepository {
         }
         if (alreadyReviewed(current.id(), commit.sha())) return false;
         String email = commit.authorEmail() == null || commit.authorEmail().isBlank() ? null : commit.authorEmail().strip().toLowerCase(Locale.ROOT);
-        long commitId = insert("insert into reviewed_commit(project_id, commit_sha, author_login, author_email, summary, reviewed_at) values (?, ?, ?, ?, ?, ?)",
-                current.id(), commit.sha(), commit.authorLogin(), email, review.summary(), Timestamp.from(now));
+        long commitId = insert("insert into reviewed_commit(project_id, commit_sha, author_login, author_email, summary, coverage_type, coverage_details, reviewed_at) values (?, ?, ?, ?, ?, ?, ?, ?)",
+                current.id(), commit.sha(), commit.authorLogin(), email, review.summary(), commit.coverageType(), commit.coverageDetails(), Timestamp.from(now));
         Assignment assignment = resolveAssignment(current, commit.authorLogin(), email);
         if (!review.findings().isEmpty()) {
             // The commit's email is personal metadata: only IDs and the assignment reason
@@ -147,7 +147,7 @@ public class ReviewRepository {
     }
 
     public List<Map<String, Object>> reviewedCommits(long projectId) {
-        return jdbc.queryForList("select c.id, c.commit_sha, c.author_login, c.summary, c.reviewed_at, (select count(*) from review_issue i where i.reviewed_commit_id = c.id) as issue_count from reviewed_commit c where c.project_id = ? order by c.id desc limit 50", projectId);
+        return jdbc.queryForList("select c.id, c.commit_sha, c.author_login, c.summary, c.coverage_type, c.coverage_details, c.reviewed_at, (select count(*) from review_issue i where i.reviewed_commit_id = c.id) as issue_count from reviewed_commit c where c.project_id = ? order by c.id desc limit 50", projectId);
     }
 
     public Map<String, Object> dashboard(ReviewActor actor) {

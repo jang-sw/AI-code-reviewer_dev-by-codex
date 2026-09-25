@@ -20,6 +20,7 @@ import java.util.Set;
 public class ReviewCoordinator {
     private static final System.Logger LOG = System.getLogger(ReviewCoordinator.class.getName());
     private static final Set<String> SEVERITIES = Set.of("LOW", "MEDIUM", "HIGH", "CRITICAL");
+    private static final Set<String> COVERAGE_TYPES = Set.of("FULL", "EMPTY", "METADATA_ONLY");
     private final ReviewRepository repository;
     private final ProjectReviewLock locks;
     private final GitRepositoryClient git;
@@ -64,7 +65,7 @@ public class ReviewCoordinator {
                     if (Thread.currentThread().isInterrupted()) throw new IllegalStateException("Review interrupted");
                     // Retries never create a second issue set or move a cursor backwards.
                     if (repository.alreadyReviewed(projectId, commit.sha())) continue;
-                    ReviewResult result = ai.review(commit);
+                    ReviewResult result = reviewContent(commit);
                     validateReview(result);
                     transactions.execute(status -> repository.persistCommit(runId, project, project.lastReviewedSha(), commit, result, Instant.now()));
                 }
@@ -87,16 +88,35 @@ public class ReviewCoordinator {
         }
     }
 
+    private ReviewResult reviewContent(GitCommit commit) {
+        return switch (commit.coverageType()) {
+            case "EMPTY" -> new ReviewResult("AI 본문 검토 없음: Git 저장소에서 파일 변경이 없는 커밋임을 확인했습니다.", List.of());
+            case "METADATA_ONLY" -> new ReviewResult("AI 본문 검토 없음: 동일한 파일 본문의 경로·파일 모드 변경입니다. 경로·권한·파일 유형 변경 수동 확인 필요.", List.of());
+            case "FULL" -> ai.review(commit);
+            default -> throw new IllegalArgumentException("Invalid review coverage type");
+        };
+    }
+
     private void validateBatch(List<GitCommit> commits) {
         if (commits == null || commits.size() > maxCommits) throw new IllegalArgumentException("Invalid commit batch");
         Set<String> seen = new HashSet<>();
         for (GitCommit commit : commits) {
             if (commit == null || commit.sha() == null || !commit.sha().matches("[0-9a-f]{40,64}") || !seen.add(commit.sha()) ||
                     commit.message() == null || commit.diff() == null || (commit.authorLogin() != null && commit.authorLogin().length() > 100) ||
-                    (commit.authorEmail() != null && (commit.authorEmail().length() > 320 || commit.authorEmail().chars().anyMatch(Character::isISOControl)))) {
+                    (commit.authorEmail() != null && (commit.authorEmail().length() > 320 || commit.authorEmail().chars().anyMatch(Character::isISOControl))) ||
+                    commit.coverageType() == null || !COVERAGE_TYPES.contains(commit.coverageType()) ||
+                    commit.coverageDetails() == null || commit.coverageDetails().length() > 16000 ||
+                    ("EMPTY".equals(commit.coverageType()) && !commit.diff().isBlank()) ||
+                    ("METADATA_ONLY".equals(commit.coverageType()) && (commit.coverageDetails().isBlank() || containsPatchBody(commit.diff())))) {
                 throw new IllegalArgumentException("Invalid commit data");
             }
         }
+    }
+
+    private static boolean containsPatchBody(String diff) {
+        return diff.lines().anyMatch(line -> line.startsWith("@@") ||
+                (line.startsWith("+") && !line.startsWith("+++ ")) ||
+                (line.startsWith("-") && !line.startsWith("--- ")));
     }
 
     private static void validateReview(ReviewResult review) {

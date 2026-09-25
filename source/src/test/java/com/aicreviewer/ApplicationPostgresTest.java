@@ -264,6 +264,26 @@ class ApplicationPostgresTest {
         assertThat(jdbc.queryForObject("select assignee_id from review_issue where id=?", Long.class, issueId)).isEqualTo(authorId);
     }
 
+    @Test
+    void verifiedEmptyAndMetadataOnlyCommitsPersistExplicitCoverageWithoutAiClaims() throws Exception {
+        projects.transition("pgadmin", projectId, "approve");
+        GitCommit empty = new GitCommit("3".repeat(40), writer, null, "empty", "", "EMPTY", "파일 변경 없음");
+        GitCommit metadata = new GitCommit("4".repeat(40), writer, null, "metadata", "", "METADATA_ONLY",
+                "<script>alert(1)</script> 경로 및 실행권한 변경: 100644 -> 100755");
+        when(git.commits(any(), any(), any(), anyInt())).thenReturn(List.of(empty, metadata));
+        assertThat(reviews.reviewProject(projectId, writer)).isEqualTo(ReviewCoordinator.Outcome.SUCCEEDED);
+        verifyNoInteractions(ai);
+        assertThat(cursor()).isEqualTo(metadata.sha());
+        assertThat(count("reviewed_commit")).isEqualTo(2);
+        assertThat(count("review_issue")).isZero();
+        assertThat(jdbc.queryForList("select coverage_type from reviewed_commit where project_id=? order by id", String.class, projectId))
+                .containsExactly("EMPTY", "METADATA_ONLY");
+        var response = get(login(writer), "/reviews?projectId=" + projectId);
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(response.body()).contains("AI 본문 검토 없음", "수동 확인 필요", "&lt;script&gt;alert(1)&lt;/script&gt;")
+                .doesNotContain("<script>alert(1)</script>");
+    }
+
     private ReviewResult finding(String file) {
         return new ReviewResult("커밋 검토 결과", List.of(new ReviewFinding("HIGH", "테스트 권고", file, 1,
                 "<script>bad</script> 수정이 필요합니다.", "입력을 검증하세요.")));
