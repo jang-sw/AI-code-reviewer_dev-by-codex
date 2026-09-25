@@ -178,35 +178,56 @@ public class GitRepositoryClient {
         };
         List<GitCommit> result = new ArrayList<>();
         for (CommitMeta meta : selected) {
-            result.add(github ? githubCommit(repository, base, meta) : gitlabCommit(repository, base, meta, trees));
+            result.add(github ? githubCommit(repository, base, meta, trees) : gitlabCommit(repository, base, meta, trees));
         }
         return new GitReviewBatch(List.copyOf(result), checkpoint);
     }
 
-    private GitCommit githubCommit(RepositoryUrl repository, String base, CommitMeta meta) {
-        StringBuilder diff = new StringBuilder();
+    private GitCommit githubCommit(RepositoryUrl repository, String base, CommitMeta meta,
+            Map<String, Map<String, String>> trees) {
         Set<String> filenames = new HashSet<>();
+        List<GithubFile> collected = new ArrayList<>();
         long additions = 0, deletions = 0;
+        long collectedBytes = 0;
         int expectedAdds = -1, expectedDeletes = -1;
+        boolean needsManifest = false;
+        JsonNode firstDetails = null;
         for (int page = 1; ; page++) {
             if (page > Math.min(maxPages, 30)) throw new IntegrationException("GitHub commit diff exceeds pagination limit");
             Page response = get(repository, base + "/commits/" + meta.sha() + "?per_page=100&page=" + page);
             JsonNode body = response.body();
             if (!sha(body, "sha").equals(meta.sha())) throw new IntegrationException("Git returned an unexpected commit");
-            expectedAdds = nonnegative(body.path("stats"), "additions");
-            expectedDeletes = nonnegative(body.path("stats"), "deletions");
+            int pageAdds = nonnegative(body.path("stats"), "additions"), pageDeletes = nonnegative(body.path("stats"), "deletions");
+            if (firstDetails == null) {
+                firstDetails = body;
+                expectedAdds = pageAdds;
+                expectedDeletes = pageDeletes;
+            } else if (expectedAdds != pageAdds || expectedDeletes != pageDeletes
+                    || !firstDetails.path("commit").path("tree").equals(body.path("commit").path("tree"))
+                    || !firstDetails.path("parents").equals(body.path("parents"))) {
+                throw new IntegrationException("GitHub returned inconsistent paginated commit metadata");
+            }
             JsonNode files = body.path("files");
             requireArray(files);
             for (JsonNode file : files) {
                 String path = filePath(file, "filename");
                 if (!filenames.add(path)) throw new IntegrationException("GitHub returned duplicate diff files");
-                String patch = field(file, "patch", maxDiffBytes);
                 int adds = nonnegative(file, "additions"), deletes = nonnegative(file, "deletions");
-                verifyPatchCounts(patch, adds, deletes);
+                String oldPath = file.hasNonNull("previous_filename") ? filePath(file, "previous_filename") : path;
+                String status = file.hasNonNull("status") ? field(file, "status", 20) : "";
+                // Missing binary/new-empty-file patches are not evidence of a metadata change.
+                boolean metadataCandidate = !oldPath.equals(path) || status.equals("renamed")
+                        || ((long) adds + deletes == 0 && Set.of("modified", "changed").contains(status));
+                String patch = metadataCandidate && !file.hasNonNull("patch") ? "" : field(file, "patch", maxDiffBytes);
+                if (!metadataCandidate) verifyPatchCounts(patch, adds, deletes);
+                needsManifest |= metadataCandidate;
                 additions += adds;
                 deletions += deletes;
-                String oldPath = file.hasNonNull("previous_filename") ? filePath(file, "previous_filename") : path;
-                append(diff, "diff --git a/" + oldPath + " b/" + path + "\n" + patch + "\n");
+                collectedBytes += oldPath.getBytes(StandardCharsets.UTF_8).length + path.getBytes(StandardCharsets.UTF_8).length
+                        + patch.getBytes(StandardCharsets.UTF_8).length + 18L; // Exact canonical file header and two newlines.
+                if (collectedBytes > maxDiffBytes) throw new IntegrationException("Commit diff exceeds configured size limit");
+                String blob = file.hasNonNull("sha") ? field(file, "sha", 64) : "";
+                collected.add(new GithubFile(oldPath, path, status, blob, patch, adds, deletes));
             }
             if (!response.next() && files.size() < PAGE_SIZE) break;
             // GitHub caps its JSON file listing at 3,000; never accept reaching that ceiling.
@@ -219,8 +240,124 @@ public class GitRepositoryClient {
             return new GitCommit(meta.sha(), meta.author(), meta.authorEmail(), meta.message(), "", "EMPTY",
                     "변경 파일 0개, 추가/삭제 0행을 확인했습니다. AI 본문 검토 없음.");
         }
+        if (needsManifest) return githubMetadataCommit(repository, base, meta, firstDetails, collected, trees);
+        StringBuilder diff = new StringBuilder();
+        for (GithubFile file : collected) append(diff, "diff --git a/" + file.oldPath() + " b/" + file.path() + "\n" + file.patch() + "\n");
         return new GitCommit(meta.sha(), meta.author(), meta.authorEmail(), meta.message(), diff.toString());
     }
+
+    private GitCommit githubMetadataCommit(RepositoryUrl repository, String base, CommitMeta meta, JsonNode details,
+            List<GithubFile> files, Map<String, Map<String, String>> trees) {
+        JsonNode parents = details.path("parents");
+        requireArray(parents);
+        List<String> detailParents = new ArrayList<>();
+        for (JsonNode parent : parents) detailParents.add(sha(parent, "sha"));
+        if (!detailParents.equals(meta.parents())) throw new IntegrationException("GitHub commit parents disagree with pinned history");
+        String currentTree = sha(details.path("commit").path("tree"), "sha");
+        Map<String, String> current = trees.computeIfAbsent(currentTree, key -> githubTree(repository, base, key));
+        Map<String, String> parent = Map.of();
+        if (!meta.parents().isEmpty()) {
+            String parentSha = meta.parents().getFirst();
+            JsonNode parentDetails = get(repository, base + "/git/commits/" + parentSha).body();
+            if (!sha(parentDetails, "sha").equals(parentSha)) throw new IntegrationException("GitHub returned an unexpected parent commit");
+            String parentTree = sha(parentDetails.path("tree"), "sha");
+            parent = trees.computeIfAbsent(parentTree, key -> githubTree(repository, base, key));
+        }
+        Set<String> expected = new HashSet<>(current.keySet());
+        expected.addAll(parent.keySet());
+        Map<String, String> previous = parent;
+        expected.removeIf(path -> java.util.Objects.equals(current.get(path), previous.get(path)));
+        Set<String> covered = new HashSet<>();
+        StringBuilder diff = new StringBuilder(), metadataDetails = new StringBuilder();
+        int bodyFiles = 0;
+        for (GithubFile file : files) {
+            String before = parent.get(file.oldPath()), after = current.get(file.path());
+            validateGithubTreeChange(file, before, after, parent, current);
+            for (String path : file.oldPath().equals(file.path()) ? Set.of(file.path()) : Set.of(file.oldPath(), file.path())) {
+                if (!expected.contains(path) || !covered.add(path)) throw new IntegrationException("GitHub diff does not match complete commit trees");
+            }
+            String expectedBlob = after != null ? blob(after) : blob(before);
+            if (!validSha(file.blob()) || !file.blob().equals(expectedBlob)) {
+                throw new IntegrationException("GitHub diff blob disagrees with immutable commit tree");
+            }
+            boolean metadataChange = before != null && after != null
+                    && (!file.oldPath().equals(file.path()) || !mode(before).equals(mode(after)));
+            boolean unchangedBlob = metadataChange && blob(before).equals(blob(after));
+            String patch = file.patch();
+            if (patch.lines().anyMatch(line -> line.equals("GIT binary patch") || (line.startsWith("Binary files ") && line.endsWith(" differ")))) {
+                throw new IntegrationException("GitHub returned an unavailable or non-text file diff");
+            }
+            if (unchangedBlob) {
+                if (file.additions() != 0 || file.deletions() != 0 || patch.lines().anyMatch(line ->
+                        line.startsWith("@@") || (line.startsWith("+") && !line.startsWith("+++ "))
+                                || (line.startsWith("-") && !line.startsWith("--- ")))) {
+                    throw new IntegrationException("GitHub diff contradicts unchanged blob identifiers");
+                }
+            } else {
+                verifyPatchCounts(patch, file.additions(), file.deletions());
+                bodyFiles++;
+            }
+            append(diff, "diff --git a/" + file.oldPath() + " b/" + file.path() + "\n");
+            if (metadataChange) {
+                appendCoverage(metadataDetails, "이전 경로: " + file.oldPath() + ", 모드: " + mode(before)
+                        + " → 새 경로: " + file.path() + ", 모드: " + mode(after)
+                        + (unchangedBlob ? " (동일 blob; 본문 변경 없음)\n" : " (본문 변경 포함)\n"));
+                if (!file.oldPath().equals(file.path())) append(diff, "rename from " + file.oldPath() + "\nrename to " + file.path() + "\n");
+                append(diff, "old mode " + mode(before) + "\nnew mode " + mode(after) + "\n");
+            }
+            append(diff, (unchangedBlob ? "" : patch) + "\n");
+        }
+        if (!covered.equals(expected)) throw new IntegrationException("GitHub diff is incomplete compared with commit trees");
+        return new GitCommit(meta.sha(), meta.author(), meta.authorEmail(), meta.message(), diff.toString(),
+                bodyFiles == 0 ? "METADATA_ONLY" : "FULL", coverage(bodyFiles == 0
+                        ? "AI 본문 검토 없음. 경로·권한·파일 유형 변경은 수동 확인이 필요합니다.\n"
+                        : "본문 diff와 함께 다음 경로·권한·파일 유형 변경을 전달했습니다.\n", metadataDetails));
+    }
+
+    private static void validateGithubTreeChange(GithubFile file, String before, String after,
+            Map<String, String> parent, Map<String, String> current) {
+        boolean samePath = file.oldPath().equals(file.path());
+        boolean shapeMatches = switch (file.status()) {
+            case "added" -> samePath && before == null && after != null;
+            case "removed" -> samePath && before != null && after == null;
+            case "modified", "changed" -> samePath && before != null && after != null;
+            case "renamed" -> !samePath && before != null && after != null
+                    && !current.containsKey(file.oldPath()) && !parent.containsKey(file.path());
+            default -> false;
+        };
+        if (!shapeMatches || (before != null && !blobMode(mode(before))) || (after != null && !blobMode(mode(after)))) {
+            throw new IntegrationException("GitHub diff change kind or file type does not match immutable trees");
+        }
+    }
+
+    private Map<String, String> githubTree(RepositoryUrl repository, String base, String treeSha) {
+        Page response = get(repository, base + "/git/trees/" + treeSha + "?recursive=1");
+        JsonNode body = response.body();
+        if (!sha(body, "sha").equals(treeSha)) throw new IntegrationException("GitHub returned an unexpected tree");
+        if (!body.path("truncated").isBoolean() || body.path("truncated").asBoolean() || response.next()) {
+            throw new IntegrationException("GitHub tree is incomplete or truncated");
+        }
+        JsonNode entries = body.path("tree");
+        requireArray(entries);
+        Map<String, String> tree = new HashMap<>();
+        Set<String> seen = new HashSet<>();
+        long bytes = 0;
+        for (JsonNode entry : entries) {
+            String path = filePath(entry, "path"), type = field(entry, "type", 20), mode = field(entry, "mode", 10);
+            bytes += path.getBytes(StandardCharsets.UTF_8).length + 128L;
+            if (bytes > 16L * 1024 * 1024 || seen.size() >= 100000) throw new IntegrationException("GitHub tree exceeds the memory safety budget");
+            if (!seen.add(path)) throw new IntegrationException("GitHub returned duplicate tree entries");
+            String objectSha = sha(entry, "sha");
+            if (type.equals("tree") && mode.equals("040000")) continue;
+            if (!(type.equals("blob") && blobMode(mode)) && !(type.equals("commit") && mode.equals("160000"))) {
+                throw new IntegrationException("GitHub returned inconsistent tree type or mode");
+            }
+            tree.put(path, objectSha + ":" + mode);
+        }
+        return Map.copyOf(tree);
+    }
+
+    private record GithubFile(String oldPath, String path, String status, String blob, String patch, int additions, int deletions) { }
 
     private GitCommit gitlabCommit(RepositoryUrl repository, String base, CommitMeta meta,
             Map<String, Map<String, String>> trees) {

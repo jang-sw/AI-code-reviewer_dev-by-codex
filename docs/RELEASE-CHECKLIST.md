@@ -17,6 +17,7 @@
 - [x] Git 작성자 origin/email 관리자 매핑·배정 근거, 실제 PostgreSQL 동작 검증
 - [x] 복수 비공개 호스트 credential 구성·격리 fixture·회전 절차
 - [x] 큰 merge 그룹의 여러 배치 처리·저장 SHA 재사용·명시적 안전 checkpoint 회귀 검증
+- [x] GitHub 동일 blob rename/mode/type 후보의 고정 tree·전체 변경 경로 검증,40개 반례/정상 fixture
 - [x] 실행/커밋 기록 페이지 처리·안전한 원본 커밋 링크·실제 HTTP 권한 검증
 - [x] 프로젝트/사용자 검색·페이지, 이슈25건 요약/권한 상세, 필터 유지·예약 SQL 조회 상한
 - [ ] 바이너리/rename/mode-only·큰 소스 변경 처리와 검토 제외 범위 표시
