@@ -30,7 +30,9 @@ class GitRepositoryClientTest {
             }
             return detail(request.path().substring(request.path().lastIndexOf('/') + 1));
         };
-        assertThat(client().commits(GITHUB, null, null, 2)).extracting(GitCommit::sha).containsExactly(A, B);
+        List<GitCommit> firstBatch = client().commits(GITHUB, null, null, 2);
+        assertThat(firstBatch).extracting(GitCommit::sha).containsExactly(A, B);
+        assertThat(firstBatch).extracting(GitCommit::authorEmail).containsOnly("developer@example.com");
         assertThat(client().commits(GITHUB, null, B, 2)).extracting(GitCommit::sha).containsExactly(C);
         assertThat(server.requests).allSatisfy(request -> assertThat(request.header("Authorization")).isEqualTo("Bearer fixture-token"));
     }
@@ -79,6 +81,7 @@ class GitRepositoryClientTest {
         List<GitCommit> result = client().commits(repository, "main", null, 5);
         assertThat(result).hasSize(1);
         assertThat(result.getFirst().authorLogin()).isNull();
+        assertThat(result.getFirst().authorEmail()).isEqualTo("author@example.com");
         assertThat(result.getFirst().diff()).contains("+one");
         assertThat(server.requests).allSatisfy(request -> {
             assertThat(request.path()).startsWith("/api/v4/projects/group%2Fsub%2Frepo/");
@@ -138,6 +141,52 @@ class GitRepositoryClientTest {
             assertThatThrownBy(() -> scoped.commits(otherPort, null, null, 5)).hasMessageContaining("credential origin");
             assertThat(untrusted.requests).isEmpty();
         }
+    }
+
+    @Test void selectsDifferentTokensForTwoExplicitOriginsOnTheSameHost() throws Exception {
+        gitlab(false, false);
+        try (HttpFixture other = new HttpFixture()) {
+            other.handler = server.handler;
+            GitCredentialProperties configured = GitCredentialPropertiesTest.properties(
+                    GitCredentialPropertiesTest.credential(server.url(), "first-origin-fixture-secret"),
+                    GitCredentialPropertiesTest.credential(other.url(), "second-origin-fixture-secret"));
+            GitRepositoryClient multiple = new GitRepositoryClient(Set.of("127.0.0.1"), server.url(), "", "github.com", "",
+                    2, 10, 65536, 262144, 300, configured);
+            multiple.commits(RepositoryUrl.parse(server.url() + "/group/sub/repo", Set.of("127.0.0.1")), null, null, 5);
+            multiple.commits(RepositoryUrl.parse(other.url() + "/group/sub/repo", Set.of("127.0.0.1")), null, null, 5);
+            assertThat(server.requests).isNotEmpty().allSatisfy(request ->
+                    assertThat(request.header("PRIVATE-TOKEN")).isEqualTo("first-origin-fixture-secret"));
+            assertThat(other.requests).isNotEmpty().allSatisfy(request ->
+                    assertThat(request.header("PRIVATE-TOKEN")).isEqualTo("second-origin-fixture-secret"));
+        }
+    }
+
+    @Test void malformedAuthorEmailIsIgnoredWithoutChangingReviewIdentity() {
+        for (Object value : List.of("", "   ", "a\nb@example.com", "a".repeat(321), 42)) {
+            Map<String, Object> commit = new java.util.HashMap<>(gh(A));
+            commit.put("commit", Map.of("message", "Commit", "author", Map.of("email", value)));
+            graph(List.of(commit), A);
+            GitCommit result = client().commits(GITHUB, null, null, 5).getFirst();
+            assertThat(result.authorLogin()).isEqualTo("developer");
+            assertThat(result.authorEmail()).isNull();
+
+            gitlab(false, false);
+            var usual = server.handler;
+            server.handler = request -> request.path().endsWith("/repository/commits")
+                    ? ok(List.of(Map.of("id", A, "parent_ids", List.of(), "message", "Root", "author_email", value)))
+                    : usual.apply(request);
+            RepositoryUrl repository = RepositoryUrl.parse(server.url() + "/group/sub/repo", Set.of("127.0.0.1"));
+            assertThat(client().commits(repository, null, null, 5).getFirst().authorEmail()).isNull();
+        }
+    }
+
+    @Test void acceptsAuthorEmailAtTheMappingColumnBoundaryAndKeepsFourArgumentCompatibility() {
+        String email = "a".repeat(308) + "@example.com";
+        Map<String, Object> commit = new java.util.HashMap<>(gh(A));
+        commit.put("commit", Map.of("message", "Commit", "author", Map.of("email", email)));
+        graph(List.of(commit), A);
+        assertThat(client().commits(GITHUB, null, null, 5).getFirst().authorEmail()).isEqualTo(email).hasSize(320);
+        assertThat(new GitCommit(A, "developer", "message", "diff").authorEmail()).isNull();
     }
 
     @Test void tokenNeverReachesHttpWhenHttpsOriginWasConfigured() {
@@ -213,7 +262,8 @@ class GitRepositoryClientTest {
     }
     private Map<String, Object> gh(String sha, String... parents) {
         return Map.of("sha", sha, "parents", java.util.Arrays.stream(parents).map(parent -> Map.of("sha", parent)).toList(),
-                "commit", Map.of("message", "Commit " + sha.charAt(0)), "author", Map.of("login", "developer"));
+                "commit", Map.of("message", "Commit " + sha.charAt(0), "author", Map.of("email", " Developer@Example.COM ")),
+                "author", Map.of("login", "developer"));
     }
     private HttpFixture.Reply detail(String sha) {
         return ok(Map.of("sha", sha, "stats", Map.of("additions", 1, "deletions", 0), "files", List.of(
@@ -221,7 +271,8 @@ class GitRepositoryClientTest {
     }
     private void gitlab(boolean missingFile, boolean collapsed) {
         server.handler = request -> {
-            if (request.path().endsWith("/repository/commits")) return ok(List.of(Map.of("id", A, "parent_ids", List.of(), "message", "Root", "author_name", "unverified-display-name")));
+            if (request.path().endsWith("/repository/commits")) return ok(List.of(Map.of("id", A, "parent_ids", List.of(), "message", "Root",
+                    "author_name", "unverified-display-name", "author_email", " Author@Example.COM ")));
             if (request.path().endsWith("/repository/commits/" + A)) return ok(Map.of("id", A, "stats", Map.of("additions", 1, "deletions", 0)));
             if (request.path().endsWith("/tree")) return ok(missingFile ? List.of(tree("a.java"), tree("binary.png")) : List.of(tree("a.java")));
             if (request.path().endsWith("/diff")) return ok(List.of(Map.of("old_path", "a.java", "new_path", "a.java", "collapsed", collapsed,

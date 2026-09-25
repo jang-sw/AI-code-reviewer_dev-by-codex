@@ -1,4 +1,4 @@
-# 구현 계약 (1차 개발)
+# 구현 계약
 
 - Java 25, Spring Boot 4.0.8, Maven, PostgreSQL 17, Spring JDBC, Flyway, Spring Security, JSP/JSTL, executable WAR.
 - 기본 패키지 `com.aicreviewer`. 서버 시각은 UTC `Instant`, DB `timestamptz`.
@@ -21,6 +21,10 @@
 
 `audit_event`: id bigint identity PK, actor_id bigint nullable FK app_user, action varchar(80), target_type varchar(40), target_id bigint nullable, detail varchar(1000), created_at timestamptz.
 
+V3 `git_author_mapping`: id bigint identity PK, user_id FK app_user, repository_origin varchar(512), author_email varchar(320), created_at timestamptz, unique(repository_origin,author_email). 관리자만 생성/삭제하며 정확한 origin과 정규화된 전체 이메일을 사용한다.
+
+V4 `reviewed_commit.author_email` varchar(320) nullable, `review_issue.assignment_reason` varchar(32) default LEGACY: GITHUB_ACCOUNT/GIT_EMAIL_MAPPING/PROJECT_OWNER_FALLBACK/LEGACY. 배정 시점의 근거를 보존하며 일반 화면에 이메일 원문을 노출하지 않는다.
+
 ## 모듈 경계
 
 ### identity/project (agent)
@@ -31,14 +35,14 @@
 
 ### integrations (agent)
 - package `git`: `RepositoryUrl` record `(String normalizedUrl, String provider, String host, String path)`, static parse(String, Set<String>) allowing HTTPS/explicit configured HTTP self-hosted hosts, no credentials/query/fragment; hosts exact allow-list. GitHub host github.com default; other configured hosts GitLab.
-- `GitRepositoryClient` Spring bean method `List<GitCommit> commits(RepositoryUrl repository, String branch, String lastReviewedSha, int limit)` returns oldest-first new commits, initial null cursor enumerates full history and returns the oldest batch up to limit. Existing cursor returns the oldest next batch up to limit. Pin history to immutable head; paginated full history must not silently skip commits. Fail closed if cursor missing/history rewritten/safety page budget exceeded. `GitCommit` record `(String sha, String authorLogin, String message, String diff)`.
+- `GitRepositoryClient` Spring bean method `List<GitCommit> commits(RepositoryUrl repository, String branch, String lastReviewedSha, int limit)` returns oldest-first new commits, initial null cursor enumerates full history and returns the oldest batch up to limit. Existing cursor returns the oldest next batch up to limit. Pin history to immutable head; paginated full history must not silently skip commits. Fail closed if cursor missing/history rewritten/safety page budget exceeded. `GitCommit` record `(String sha, String authorLogin, String authorEmail, String message, String diff)` (기존 4인자 생성자는 이메일 null로 호환). `RepositoryOrigin.normalize(origin, allowedHosts)`와 `fromRepositoryUrl(url)`로 scheme/host/port를 정규화하고 자격증명 목록과 작성자 매핑이 같은 기준을 쓴다.
 - package `ai`: `AiReviewClient` Spring bean method `ReviewResult review(GitCommit commit)`; records `ReviewResult(String summary, List<ReviewFinding> findings)`, `ReviewFinding(String severity, String title, String filePath, Integer lineNumber, String description, String suggestion)`. Validate bounds, output schema, failures; treat diff as untrusted. No silent success if response invalid or diff too large.
 - Use Java HTTP client (no redirects), Jackson 3 (`tools.jackson.databind`) from Boot; injected configuration via @Value or private @ConfigurationProperties.
 - meaningful HTTP fixtures tests, no live external calls.
 
 ### review/issues (agent)
 - package `review`: scheduled execution default every hour conditional app.review.enabled, manual POST `/projects/{id}/review` restricted owner/admin approved only. PostgreSQL advisory lock on dedicated connection covers full run across instances, unlock in finally. JDBC transactions persist commit+issues atomically; only checkpoint cursor when whole batch succeeds. On failure retain previous safe batch cursor and deduplicate saved commits on retry. Use GitRepositoryClient and AiReviewClient contracts.
-- unique reviewed_commit prevents duplicates. Assign to enabled user with lower(git_username)=lower(authorLogin); else project owner (explicit fallback in UI/docs).
+- unique reviewed_commit prevents duplicates. github.com의 authorLogin과 활성 사용자 Git 계정이 맞으면 우선 배정한다. 그 외에는 정확한 origin/email 관리자 매핑의 활성 사용자, 없으면 프로젝트 소유자 순서다. GitLab 사용자명으로 GitHub 계정 namespace를 매칭하지 않는다.
 - package `issue`: GET `/issues` visibility assignee or admin, POST `/issues/{id}/status` bound status/ownership. `/` dashboard and project detail review data can be separate `/reviews?projectId=...` route. JSP owned by this agent for dashboard/issues/reviews.
 - All record fields for JSP need JavaBean getters or map view models; ensure escaping and CSRF inputs.
 

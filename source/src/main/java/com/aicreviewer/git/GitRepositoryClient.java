@@ -14,6 +14,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import tools.jackson.databind.JsonNode;
@@ -26,8 +27,7 @@ public class GitRepositoryClient {
     private static final int PAGE_SIZE = 100;
     private final Set<String> allowedHosts;
     private final URI githubApi;
-    private final String token;
-    private final URI tokenOrigin;
+    private final GitCredentialRegistry credentials;
     private final int maxPages;
     private final int maxDiffBytes;
     private final int operationTimeoutSeconds;
@@ -36,6 +36,7 @@ public class GitRepositoryClient {
     private final JsonMapper json = JsonMapper.builder().enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
             .enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION).build();
 
+    @Autowired
     public GitRepositoryClient(@Value("${app.git.allowed-hosts:github.com}") Set<String> allowedHosts,
             @Value("${app.git.github-api-url:https://api.github.com}") String githubApi,
             @Value("${app.git.token:}") String token,
@@ -45,12 +46,11 @@ public class GitRepositoryClient {
             @Value("${app.git.max-history-pages:1000}") int maxPages,
             @Value("${app.git.max-diff-bytes:262144}") int maxDiffBytes,
             @Value("${app.git.max-response-bytes:2097152}") int maxResponseBytes,
-            @Value("${app.git.operation-timeout-seconds:300}") int operationTimeoutSeconds) {
+            @Value("${app.git.operation-timeout-seconds:300}") int operationTimeoutSeconds,
+            GitCredentialProperties credentialProperties) {
         this.allowedHosts = Set.copyOf(allowedHosts);
         this.githubApi = SafeHttpTransport.baseUri(githubApi);
-        this.token = SafeHttpTransport.credential(token);
-        this.tokenOrigin = credentialOrigin(tokenOrigin.isBlank()
-                ? "https://" + tokenHost.strip().toLowerCase(java.util.Locale.ROOT) : tokenOrigin);
+        this.credentials = new GitCredentialRegistry(this.allowedHosts, token, tokenHost, tokenOrigin, credentialProperties);
         if (maxPages < 1 || maxPages > 10000 || maxDiffBytes < 1024 || maxDiffBytes > 4 * 1024 * 1024) {
             throw new IllegalArgumentException("Invalid Git pagination or diff size limit");
         }
@@ -59,6 +59,13 @@ public class GitRepositoryClient {
         if (operationTimeoutSeconds < 1 || operationTimeoutSeconds > 3600) throw new IllegalArgumentException("Invalid Git operation time limit");
         this.operationTimeoutSeconds = operationTimeoutSeconds;
         this.http = new SafeHttpTransport(Duration.ofSeconds(timeoutSeconds), maxResponseBytes);
+    }
+
+    public GitRepositoryClient(Set<String> allowedHosts, String githubApi, String token, String tokenHost,
+            String tokenOrigin, int timeoutSeconds, int maxPages, int maxDiffBytes, int maxResponseBytes,
+            int operationTimeoutSeconds) {
+        this(allowedHosts, githubApi, token, tokenHost, tokenOrigin, timeoutSeconds, maxPages, maxDiffBytes,
+                maxResponseBytes, operationTimeoutSeconds, new GitCredentialProperties());
     }
 
     public List<GitCommit> commits(RepositoryUrl repository, String branch, String lastReviewedSha, int limit) {
@@ -73,7 +80,7 @@ public class GitRepositoryClient {
     private List<GitCommit> collectCommits(RepositoryUrl repository, String branch, String lastReviewedSha, int limit) {
         RepositoryUrl checked = RepositoryUrl.parse(repository.normalizedUrl(), allowedHosts);
         if (!checked.equals(repository)) throw new IllegalArgumentException("Repository metadata does not match its URL");
-        credentialAllowed(repository);
+        credentials.tokenFor(repository);
         if (limit < 1 || limit > 1000) throw new IllegalArgumentException("Commit batch limit must be between 1 and 1000");
         if (lastReviewedSha != null && !validSha(lastReviewedSha)) throw new IllegalArgumentException("Invalid review cursor");
         if (branch != null && (branch.isBlank() || branch.length() > 255 || branch.chars().anyMatch(Character::isISOControl))) {
@@ -100,6 +107,7 @@ public class GitRepositoryClient {
             for (JsonNode node : response.body()) {
                 CommitMeta meta = metadata(node, github);
                 metadataBytes += meta.message().getBytes(StandardCharsets.UTF_8).length + 128L + meta.parents().size() * 64L;
+                if (meta.authorEmail() != null) metadataBytes += meta.authorEmail().getBytes(StandardCharsets.UTF_8).length;
                 if (metadataBytes > 32L * 1024 * 1024) throw new IntegrationException("Git history metadata exceeds the memory safety budget");
                 if (graph.putIfAbsent(meta.sha(), meta) != null) throw new IntegrationException("Git returned duplicate commits across history pages");
             }
@@ -170,7 +178,7 @@ public class GitRepositoryClient {
         if (additions != expectedAdds || deletions != expectedDeletes) {
             throw new IntegrationException("GitHub diff is incomplete compared with commit statistics");
         }
-        return new GitCommit(meta.sha(), meta.author(), meta.message(), diff.toString());
+        return new GitCommit(meta.sha(), meta.author(), meta.authorEmail(), meta.message(), diff.toString());
     }
 
     private GitCommit gitlabCommit(RepositoryUrl repository, String base, CommitMeta meta,
@@ -217,7 +225,7 @@ public class GitRepositoryClient {
         if (!covered.containsAll(expected) || actualAdds != additions || actualDeletes != deletions) {
             throw new IntegrationException("GitLab diff is incomplete compared with commit trees or statistics");
         }
-        return new GitCommit(meta.sha(), null, meta.message(), diff.toString());
+        return new GitCommit(meta.sha(), null, meta.authorEmail(), meta.message(), diff.toString());
     }
 
     private Map<String, String> gitlabTree(RepositoryUrl repository, String base, String sha) {
@@ -280,14 +288,16 @@ public class GitRepositoryClient {
         String author = github && node.path("author").path("login").isString()
                 ? field(node.path("author"), "login", 100) : null;
         String message = field(github ? node.path("commit") : node, "message", 32768);
-        return new CommitMeta(sha, author, message, List.copyOf(parentIds));
+        JsonNode email = github ? node.path("commit").path("author").path("email") : node.path("author_email");
+        return new CommitMeta(sha, author, authorEmail(email), message, List.copyOf(parentIds));
     }
 
     private Page get(RepositoryUrl repository, String url) {
         if (System.nanoTime() >= operationDeadline.get()) throw new IntegrationException("Git operation exceeded its time budget");
         HttpRequest.Builder request = HttpRequest.newBuilder(URI.create(url)).GET().header("Accept", "application/json");
         if (github(repository)) request.header("X-GitHub-Api-Version", "2022-11-28");
-        if (credentialAllowed(repository)) {
+        String token = credentials.tokenFor(repository);
+        if (token != null) {
             if (github(repository)) request.header("Authorization", "Bearer " + token);
             else request.header("PRIVATE-TOKEN", token);
         }
@@ -308,25 +318,11 @@ public class GitRepositoryClient {
         return source.getScheme() + "://" + source.getRawAuthority() + "/api/v4/projects/" + encode(repository.path());
     }
 
-    private boolean credentialAllowed(RepositoryUrl repository) {
-        if (token.isBlank() || !repository.host().equalsIgnoreCase(tokenOrigin.getHost())) return false;
-        URI actual = URI.create(repository.normalizedUrl());
-        if (!actual.getScheme().equalsIgnoreCase(tokenOrigin.getScheme()) || effectivePort(actual) != effectivePort(tokenOrigin)) {
-            throw new IntegrationException("Repository origin does not match the configured Git credential origin; configure its trusted scheme, host and port explicitly");
-        }
-        return true;
-    }
-
-    private static URI credentialOrigin(String value) {
-        URI origin = SafeHttpTransport.baseUri(value);
-        if (origin.getPath() != null && !origin.getPath().isEmpty()) {
-            throw new IllegalArgumentException("Git credential origin must contain only scheme, host and optional port");
-        }
-        return origin;
-    }
-
-    private static int effectivePort(URI uri) {
-        return uri.getPort() != -1 ? uri.getPort() : (uri.getScheme().equalsIgnoreCase("https") ? 443 : 80);
+    private static String authorEmail(JsonNode value) {
+        if (!value.isString()) return null;
+        String email = value.asText().strip().toLowerCase(java.util.Locale.ROOT);
+        if (email.isBlank() || email.length() > 320 || email.codePoints().anyMatch(Character::isISOControl)) return null;
+        return email;
     }
 
     private void append(StringBuilder target, String value) {
@@ -384,7 +380,7 @@ public class GitRepositoryClient {
     private static void requireArray(JsonNode value) { if (value == null || !value.isArray()) throw new IntegrationException("Git returned an invalid list response"); }
     private static String encode(String value) { return URLEncoder.encode(value, StandardCharsets.UTF_8).replace("+", "%20"); }
     private static boolean github(RepositoryUrl repository) { return repository.provider().equals("GITHUB"); }
-    private record CommitMeta(String sha, String author, String message, List<String> parents) { }
+    private record CommitMeta(String sha, String author, String authorEmail, String message, List<String> parents) { }
     private record Visit(String sha, boolean expanded) { }
     private record Page(JsonNode body, boolean next) { }
 }

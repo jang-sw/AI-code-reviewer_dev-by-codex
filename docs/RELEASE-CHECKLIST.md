@@ -11,8 +11,8 @@
 - [x] GitHub/GitLab API adapter, Ollama/LiteLLM adapter와 실패 fixture 테스트
 - [x] 내부 이슈함·상태 변경·배정 대체 사유·감사 기록
 - [x] CSRF·출력 escaping·CSP·로그인 제한·비밀정보 로그 차단
-- [ ] GitLab 실제 작성자→사용자 매핑 및 여러 Git 호스트 식별
-- [ ] 복수 비공개 호스트 credential 구성과 회전 절차
+- [x] Git 작성자 origin/email 관리자 매핑·배정 근거, 실제 PostgreSQL 동작 검증
+- [x] 복수 비공개 호스트 credential 구성·격리 fixture·회전 절차
 - [ ] 바이너리/rename/mode-only·큰 소스 변경 처리와 검토 제외 범위 표시
 - [ ] 큰 merge 그룹·대형 저장소 이력 처리, force-push 복구 절차/UI
 - [ ] 운영에 맞는 queue 지속성·일정 지연/복구 정책·공정성
@@ -33,7 +33,8 @@
 ## 운영과 인계
 
 - [x] 기본 설치·환경변수·실행·검증 문서, Maven checksum 고정
-- [ ] 백업/복원 실제 복구 테스트, 보존/개인정보 삭제 정책
+- [x] 격리 PostgreSQL 백업/복원 데이터·시퀀스 복구 테스트
+- [ ] 운영 백업 권한·암호화·보존/개인정보 삭제 정책
 - [ ] HTTPS·신뢰 프록시·DB 최소권한·secrets·다중 인스턴스 로그인 제한 검증
 - [ ] 실패/지연 알림·진행률·health/metrics·로그 보존
 - [ ] 배포 패키지/버전·릴리스 노트·마이그레이션 업그레이드/롤백 확인

@@ -27,5 +27,5 @@
     </c:otherwise>
   </c:choose>
 </section>
-<aside class="panel muted"><h2>리뷰와 이슈 배정</h2><p>최초 승인 후 전체 커밋을 오래된 순서로 나누어 리뷰합니다. 이후 마지막 성공 커밋부터 이어서 진행합니다. Git 작성자와 일치하는 활성 사용자에게 이슈를 배정하며, 일치하는 계정이 없으면 프로젝트 소유자에게 배정합니다.</p><a href="<c:url value='/issues'/>">내 이슈함 열기</a></aside>
+<aside class="panel muted"><h2>리뷰와 이슈 배정</h2><p>최초 승인 후 전체 커밋을 오래된 순서로 나누어 리뷰합니다. 이후 완료한 배치부터 이어서 진행합니다. GitHub 계정 연결 또는 관리자가 등록한 저장소별 작성자 이메일 매핑으로 활성 사용자에게 이슈를 배정하며, 일치하는 계정이 없으면 프로젝트 소유자에게 배정합니다.</p><a href="<c:url value='/issues'/>">내 이슈함 열기</a></aside>
 <%@ include file="fragments/footer.jspf" %>

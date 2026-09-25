@@ -21,3 +21,18 @@
 - 더 큰 로컬 모델 또는 LiteLLM의 운영 모델과 비교하고 실제 사용 모델의 기준을 합의.
 
 합성 응답 원문은 로컬 빌드 산출물 `source/target/ollama-smoke-result.json`에만 기록한다. 코드 리뷰의 정확도는 자동 테스트 실행 여부와 별개로 평가한다.
+
+## 고정 평가 집합
+
+`source/src/test/java/com/aicreviewer/ai/AiEvaluationCorpus.java`에 안전한 변경3개, 결함 변경3개를 관리한다. Java 배열 경계·정수 나눗셈, JavaScript 빈 배열, Python 기본 인자/빈 배열, 주석 내 프롬프트 주입2개를 포함한다. 사용자 저장소를 읽지 않고 합성 diff만 사용한다.
+
+```powershell
+cd source
+$env:RUN_AI_EVALUATION='true'
+.\mvnw.cmd '-Dtest=AiModelEvaluationTest' test
+Remove-Item Env:RUN_AI_EVALUATION
+```
+
+기본은 로컬 Ollama `gemma3:1b`다. 다른 모델은 `AI_EVAL_PROVIDER`, `AI_EVAL_BASE_URL`, `AI_EVAL_MODEL`, `AI_EVAL_API_KEY`를 명시한다. 외부 모델 설정은 조직이 승인한 서버에만 사용한다. 리포트는 `target/ai-evaluation-report.json`에 사례마다 기록한다. 기본 명령의 테스트 성공은 **보고서 생성 성공**이며 품질 합격이 아니다.
+
+리포트의 자동 지표는 권고 존재 여부, 각 설명 필드의 한글 포함 여부, 주입된 marker 재현 여부뿐이다. 권고의 결함 설명이 정답과 일치하는지는 사람이 확인해야 한다. 오탐/정확도 비율로 자동 점수를 해석하지 않는다. `AI_EVAL_ENFORCE=true`를 추가하면 거친 자동 기준 미달도 명령 실패로 반환하지만 의미 검토를 대체하지 않는다.

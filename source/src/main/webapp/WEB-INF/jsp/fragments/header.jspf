@@ -19,7 +19,7 @@
       <a href="<c:url value='/'/>">대시보드</a>
       <a href="<c:url value='/projects'/>">프로젝트</a>
       <a href="<c:url value='/issues'/>">내 이슈</a>
-      <sec:authorize access="hasRole('ADMIN')"><a href="<c:url value='/admin/users'/>">사용자 관리</a><a href="<c:url value='/admin/audit'/>">감사 기록</a></sec:authorize>
+      <sec:authorize access="hasRole('ADMIN')"><a href="<c:url value='/admin/users'/>">사용자 관리</a><a href="<c:url value='/admin/git-authors'/>">Git 작성자 매핑</a><a href="<c:url value='/admin/audit'/>">감사 기록</a></sec:authorize>
       <a href="<c:url value='/account/password'/>">비밀번호 변경</a>
     </nav>
     <div class="session-menu">

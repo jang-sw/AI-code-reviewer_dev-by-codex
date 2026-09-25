@@ -1,0 +1,3 @@
+ALTER TABLE reviewed_commit ADD COLUMN author_email VARCHAR(320);
+ALTER TABLE review_issue ADD COLUMN assignment_reason VARCHAR(32) NOT NULL DEFAULT 'LEGACY'
+    CHECK (assignment_reason IN ('GITHUB_ACCOUNT', 'GIT_EMAIL_MAPPING', 'PROJECT_OWNER_FALLBACK', 'LEGACY'));

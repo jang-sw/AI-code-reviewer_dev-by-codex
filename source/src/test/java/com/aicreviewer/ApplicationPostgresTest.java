@@ -51,6 +51,7 @@ class ApplicationPostgresTest {
         registry.add("app.bootstrap.password", () -> PASSWORD);
         registry.add("app.bootstrap.git-username", () -> "pgadmin");
         registry.add("app.review.enabled", () -> false);
+        registry.add("app.git.allowed-hosts", () -> "github.com,gitlab.example.test");
     }
 
     @LocalServerPort int port;
@@ -218,6 +219,49 @@ class ApplicationPostgresTest {
         var limited = post(session, "/log%69n", Map.of("username", writer, "password", "wrong-password", "_csrf", token));
         assertThat(limited.statusCode()).isEqualTo(429);
         assertThat(limited.headers().firstValue("Retry-After")).isPresent();
+    }
+
+    @Test
+    void adminAuthorMappingAssignsGitlabIssuesWithoutGrantingProjectAccess() throws Exception {
+        long authorId = jdbc.queryForObject("select id from app_user where username=?", Long.class, outsider);
+        String email = outsider + "@example.test";
+        String origin = "https://gitlab.example.test";
+        long gitlabProject = projects.request(writer, "GitLab 작성자 배정", origin + "/team/" + writer, "");
+        projects.transition("pgadmin", gitlabProject, "approve");
+        HttpClient ownerSession = login(writer);
+        HttpClient authorSession = login(outsider);
+        HttpClient adminSession = login("pgadmin");
+        assertThat(get(ownerSession, "/admin/git-authors").statusCode()).isEqualTo(403);
+        assertThat(post(ownerSession, "/admin/git-authors", Map.of("_csrf", csrf(get(ownerSession, "/issues").body()),
+                "userId", Long.toString(authorId), "repositoryOrigin", origin, "authorEmail", email)).statusCode()).isEqualTo(403);
+        assertThat(post(adminSession, "/admin/git-authors", Map.of("userId", Long.toString(authorId),
+                "repositoryOrigin", origin, "authorEmail", email)).statusCode()).isEqualTo(403);
+        var mappingPage = get(adminSession, "/admin/git-authors");
+        assertThat(mappingPage.statusCode()).isEqualTo(200);
+        String token = csrf(mappingPage.body());
+        assertThat(post(adminSession, "/admin/git-authors", Map.of("_csrf", token, "userId", Long.toString(authorId),
+                "repositoryOrigin", origin.toUpperCase() + ":443/", "authorEmail", " " + email.toUpperCase() + " ")).statusCode()).isEqualTo(302);
+        long mappingId = jdbc.queryForObject("select id from git_author_mapping where repository_origin=? and author_email=?", Long.class, origin, email);
+        assertThat(get(adminSession, "/admin/git-authors").body()).contains(email);
+        GitCommit first = new GitCommit("1".repeat(40), writer, email, "GitLab claimed author", "diff --git a/A.java b/A.java\n@@ -0,0 +1 @@\n+bad();");
+        when(git.commits(any(), any(), any(), anyInt())).thenReturn(List.of(first));
+        when(ai.review(first)).thenReturn(finding("A.java"));
+        assertThat(reviews.reviewProject(gitlabProject, writer)).isEqualTo(ReviewCoordinator.Outcome.SUCCEEDED);
+        long issueId = jdbc.queryForObject("select id from review_issue where project_id=?", Long.class, gitlabProject);
+        assertThat(jdbc.queryForObject("select assignee_id from review_issue where id=?", Long.class, issueId)).isEqualTo(authorId);
+        assertThat(jdbc.queryForObject("select assignment_reason from review_issue where id=?", String.class, issueId)).isEqualTo("GIT_EMAIL_MAPPING");
+        assertThat(get(authorSession, "/issues").body()).contains("/issues/" + issueId + "/status");
+        assertThat(get(ownerSession, "/issues").body()).doesNotContain("/issues/" + issueId + "/status");
+        assertThat(get(authorSession, "/projects/" + gitlabProject).statusCode()).isEqualTo(404);
+        assertThat(post(adminSession, "/admin/git-authors/" + mappingId + "/delete", Map.of("_csrf", token)).statusCode()).isEqualTo(302);
+        assertThat(jdbc.queryForObject("select count(*) from git_author_mapping where id=?", Integer.class, mappingId)).isZero();
+        GitCommit second = new GitCommit("2".repeat(40), outsider, email, "Deleted mapping", "diff --git a/B.java b/B.java\n@@ -0,0 +1 @@\n+bad();");
+        when(git.commits(any(), any(), any(), anyInt())).thenReturn(List.of(second));
+        when(ai.review(second)).thenReturn(finding("B.java"));
+        assertThat(reviews.reviewProject(gitlabProject, writer)).isEqualTo(ReviewCoordinator.Outcome.SUCCEEDED);
+        assertThat(jdbc.queryForObject("select assignment_reason from review_issue where project_id=? order by id desc limit 1", String.class, gitlabProject))
+                .isEqualTo("PROJECT_OWNER_FALLBACK");
+        assertThat(jdbc.queryForObject("select assignee_id from review_issue where id=?", Long.class, issueId)).isEqualTo(authorId);
     }
 
     private ReviewResult finding(String file) {

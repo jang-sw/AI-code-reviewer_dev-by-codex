@@ -49,9 +49,20 @@ Java 25 / Spring Boot 4.0.8 / Maven Wrapper 3.9.11 / PostgreSQL 17 / JSP·JSTL�
 
 저장소 ID는 입력하지 않는다. GitHub는 `/owner/repository`, GitLab은 `/group/subgroup/repository`를 자동 해석하고 GitLab API의 project path를 인코딩한다. `.git`과 마지막 `/`를 정규화한다. URL 안의 계정·토큰, query, fragment를 거부한다. HTTP GitLab은 명시적으로 허용된 호스트에서만 가능하며 운영에서는 HTTPS를 권장한다. HTTP 리다이렉트는 따라가지 않는다.
 
-현재 토큰 하나를 한 호스트에 지정하는 구성이며, 여러 비공개 호스트의 동시 토큰 관리는 아직 보완이 필요하다. 토큰은 설정한 scheme·host·port가 일치할 때만 전달하고 같은 호스트의 다른 origin이면 요청 전에 실패한다. GitHub Enterprise와 URL 하위 경로에 설치한 GitLab은 아직 지원 검증 대상이다.
+여러 비공개 Git 서버는 `app.git.credentials` 목록으로 구성한다. 예를 들어 Git에서 제외한 `application-local.properties`에 아래처럼 환경변수 참조를 적는다. Spring의 환경변수 바인딩으로 `APP_GIT_CREDENTIALS_0_ORIGIN`, `APP_GIT_CREDENTIALS_0_TOKEN`도 사용할 수 있다.
 
-GitHub 작성자 계정을 사용자 Git 계정과 매칭한다. GitLab 커밋 API는 검증된 사용자명을 반환하지 않아 현재 프로젝트 소유자에게 배정한다. GitLab 작성자 매핑은 릴리스 전에 별도 구현·검증해야 한다.
+```properties
+app.git.credentials[0].origin=https://github.com
+app.git.credentials[0].token=${GITHUB_READ_TOKEN}
+app.git.credentials[1].origin=https://gitlab.example.com:8443
+app.git.credentials[1].token=${GITLAB_READ_TOKEN}
+```
+
+각 호스트는 `GIT_ALLOWED_HOSTS`에 있어야 한다. 목록은 최대100개이며 같은 origin의 중복 설정은 시작 시 거부한다. 기존 단일 `GIT_TOKEN` 설정도 지원하지만 같은 origin을 목록과 동시에 설정하지 않는다. 토큰은 scheme·host·port가 일치할 때만 전달하고, 토큰이 설정된 호스트의 다른 origin이면 요청 전에 실패한다. 다른 호스트의 공개 저장소에는 토큰을 보내지 않는다. 회전 시 secret을 교체하고 프로세스를 재시작한 후 권한 있는 사용자로 리뷰를 재실행한다. 런타임 자동 reload는 지원하지 않는다. GitHub Enterprise와 URL 하위 경로에 설치한 GitLab은 아직 지원 검증 대상이다.
+
+GitHub 작성자 계정을 활성 사용자의 Git 계정과 먼저 매칭한다. GitLab 또는 GitHub 계정 매칭이 없는 커밋은 관리자의 **Git 작성자 매핑**에서 설정한 정확한 서버 origin + 전체 작성자 이메일로 배정한다. 이메일은 trim/소문자 정규화하며 이름이나 `@` 앞부분으로 추정하지 않는다. 매핑이 없거나 대상 계정이 비활성화되면 프로젝트 소유자에게 배정하고 이슈에 근거를 표시한다.
+
+커밋 이메일은 작성자가 넣은 메타데이터이며 인증된 신원을 뜻하지 않는다. 관리자는 저장소 팀 구성과 대조해 매핑을 등록해야 한다. 매핑은 이슈 배정에만 사용하며 프로젝트 열람이나 계정 권한을 부여하지 않는다. 변경하려면 삭제 후 다시 등록하고, 이미 생성한 이슈의 담당자/배정 근거는 유지한다. 이메일 원문은 관리자 매핑 화면과 DB에만 저장·표시하며 일반 이슈 화면·감사 메시지에는 넣지 않는다.
 
 ## AI 연결
 
@@ -100,6 +111,9 @@ cd source
 
 # 저장소 루트: 독립 로컬 PostgreSQL 클러스터 생성/시작, 전체 검증, 종료
 .\scripts\test-postgres.ps1
+
+# 같은 격리 테스트 후 pg_dump/pg_restore와 테이블 내용/identity 시퀀스 검증
+.\scripts\test-postgres.ps1 -BackupRestore
 
 # source: 로컬 Ollama에 합성 코드만 보내는 선택 검증
 $env:RUN_OLLAMA_SMOKE='true'

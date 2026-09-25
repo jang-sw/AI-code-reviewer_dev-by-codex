@@ -92,7 +92,8 @@ public class ReviewCoordinator {
         Set<String> seen = new HashSet<>();
         for (GitCommit commit : commits) {
             if (commit == null || commit.sha() == null || !commit.sha().matches("[0-9a-f]{40,64}") || !seen.add(commit.sha()) ||
-                    commit.message() == null || commit.diff() == null || (commit.authorLogin() != null && commit.authorLogin().length() > 100)) {
+                    commit.message() == null || commit.diff() == null || (commit.authorLogin() != null && commit.authorLogin().length() > 100) ||
+                    (commit.authorEmail() != null && (commit.authorEmail().length() > 320 || commit.authorEmail().chars().anyMatch(Character::isISOControl)))) {
                 throw new IllegalArgumentException("Invalid commit data");
             }
         }

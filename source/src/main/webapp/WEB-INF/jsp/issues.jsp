@@ -7,7 +7,8 @@
     <div class="section-heading"><div><span class="badge"><c:out value="${issue.severity}"/></span> <span class="badge"><c:out value="${issue.status}"/></span></div><span class="muted">#<c:out value="${issue.id}"/> · <c:out value="${issue.project_name}"/></span></div>
     <h2><c:out value="${issue.title}"/></h2>
     <p class="muted">담당: <c:out value="${issue.assignee_username}"/> · Git 작성자: <c:out value="${issue.author_login}" default="미확인"/></p>
-    <c:if test="${issue.fallback_assignment}"><p class="notice">Git 작성자와 일치하는 활성 계정이 없어 프로젝트 소유자에게 배정된 이슈입니다.</p></c:if>
+    <p class="muted">배정 근거: <c:choose><c:when test="${issue.assignment_reason == 'GITHUB_ACCOUNT'}">GitHub 계정 연결</c:when><c:when test="${issue.assignment_reason == 'GIT_EMAIL_MAPPING'}">관리자가 등록한 저장소 이메일 매핑</c:when><c:when test="${issue.assignment_reason == 'PROJECT_OWNER_FALLBACK'}">프로젝트 소유자 대체 배정</c:when><c:otherwise>기존 이슈 (배정 근거 미기록)</c:otherwise></c:choose></p>
+    <c:if test="${issue.assignment_reason == 'PROJECT_OWNER_FALLBACK' or issue.fallback_assignment}"><p class="notice">Git 작성자와 일치하는 활성 계정이나 저장소 이메일 매핑이 없어 프로젝트 소유자에게 배정된 이슈입니다.</p></c:if>
     <p><code class="commit-sha"><c:out value="${issue.commit_sha}"/></code></p>
     <p><code class="file-path"><c:out value="${issue.file_path}"/><c:if test="${not empty issue.line_number}">:<c:out value="${issue.line_number}"/></c:if></code></p>
     <h3>검토 내용</h3><p class="preserve-lines"><c:out value="${issue.description}"/></p>

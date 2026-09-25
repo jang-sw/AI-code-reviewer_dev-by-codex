@@ -14,6 +14,7 @@ public record RepositoryUrl(String normalizedUrl, String provider, String host, 
         final URI uri;
         try { uri = URI.create(input); }
         catch (IllegalArgumentException ex) { throw new IllegalArgumentException("Invalid repository URL"); }
+        String origin = RepositoryOrigin.fromRepositoryUrl(input);
         String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase(Locale.ROOT);
         String host = uri.getHost() == null ? "" : uri.getHost().toLowerCase(Locale.ROOT);
         Set<String> allowed = allowedHosts.stream().map(s -> s.strip().toLowerCase(Locale.ROOT))
@@ -44,9 +45,6 @@ public record RepositoryUrl(String normalizedUrl, String provider, String host, 
             }
         }
         if (github) path = path.toLowerCase(Locale.ROOT);
-        int port = uri.getPort();
-        String authority = host + ((port == -1 || (scheme.equals("https") && port == 443)
-                || (scheme.equals("http") && port == 80)) ? "" : ":" + port);
-        return new RepositoryUrl(scheme + "://" + authority + "/" + path, github ? "GITHUB" : "GITLAB", host, path);
+        return new RepositoryUrl(origin + "/" + path, github ? "GITHUB" : "GITLAB", host, path);
     }
 }

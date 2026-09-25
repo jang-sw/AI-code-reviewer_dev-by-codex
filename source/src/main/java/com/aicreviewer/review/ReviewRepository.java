@@ -3,6 +3,7 @@ package com.aicreviewer.review;
 import com.aicreviewer.ai.ReviewFinding;
 import com.aicreviewer.ai.ReviewResult;
 import com.aicreviewer.git.GitCommit;
+import com.aicreviewer.git.RepositoryOrigin;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
@@ -76,24 +77,50 @@ public class ReviewRepository {
             throw new IllegalStateException("Review cursor changed during the run");
         }
         if (alreadyReviewed(current.id(), commit.sha())) return false;
-        long commitId = insert("insert into reviewed_commit(project_id, commit_sha, author_login, summary, reviewed_at) values (?, ?, ?, ?, ?)",
-                current.id(), commit.sha(), commit.authorLogin(), review.summary(), Timestamp.from(now));
-        List<Long> candidates = commit.authorLogin() == null || commit.authorLogin().isBlank() ? List.of() :
-                jdbc.queryForList("select id from app_user where enabled = true and lower(git_username) = ?", Long.class,
-                        commit.authorLogin().strip().toLowerCase(Locale.ROOT));
-        long assignee = candidates.size() == 1 ? candidates.getFirst() : current.ownerId();
-        if (candidates.size() != 1 && !review.findings().isEmpty()) {
+        String email = commit.authorEmail() == null || commit.authorEmail().isBlank() ? null : commit.authorEmail().strip().toLowerCase(Locale.ROOT);
+        long commitId = insert("insert into reviewed_commit(project_id, commit_sha, author_login, author_email, summary, reviewed_at) values (?, ?, ?, ?, ?, ?)",
+                current.id(), commit.sha(), commit.authorLogin(), email, review.summary(), Timestamp.from(now));
+        Assignment assignment = resolveAssignment(current, commit.authorLogin(), email);
+        if (!review.findings().isEmpty()) {
+            // The commit's email is personal metadata: only IDs and the assignment reason
+            // belong in the audit stream. Issue readers do not receive raw author emails.
+            audit(null, "ISSUES_ASSIGNED", "REVIEWED_COMMIT", commitId,
+                    "reason=" + assignment.reason() + "; assignee=" + assignment.userId() +
+                            (assignment.mappingId() == null ? "" : "; mapping=" + assignment.mappingId()), now);
+        }
+        if ("PROJECT_OWNER_FALLBACK".equals(assignment.reason()) && !review.findings().isEmpty()) {
             audit(null, "ISSUE_ASSIGNEE_FALLBACK", "REVIEWED_COMMIT", commitId,
-                    "Git 작성자와 일치하는 활성 계정이 없어 프로젝트 소유자에게 배정했습니다. assignee=" + assignee, now);
+                    "Git 작성자와 일치하는 활성 계정이나 매핑이 없어 프로젝트 소유자에게 배정했습니다. assignee=" + assignment.userId(), now);
         }
         for (ReviewFinding finding : review.findings()) {
-            insert("insert into review_issue(project_id, reviewed_commit_id, assignee_id, severity, title, file_path, line_number, description, suggestion, status, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?)",
-                    current.id(), commitId, assignee, finding.severity(), finding.title(), finding.filePath(), finding.lineNumber(),
-                    finding.description(), finding.suggestion(), Timestamp.from(now), Timestamp.from(now));
+            insert("insert into review_issue(project_id, reviewed_commit_id, assignee_id, severity, title, file_path, line_number, description, suggestion, assignment_reason, status, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?)",
+                    current.id(), commitId, assignment.userId(), finding.severity(), finding.title(), finding.filePath(), finding.lineNumber(),
+                    finding.description(), finding.suggestion(), assignment.reason(), Timestamp.from(now), Timestamp.from(now));
         }
         jdbc.update("update review_run set reviewed_commits = reviewed_commits + 1 where id = ? and status = 'RUNNING'", runId);
         return true;
     }
+
+    private Assignment resolveAssignment(ReviewProject project, String authorLogin, String authorEmail) {
+        // Only github.com has this globally scoped account namespace. A GitLab server may
+        // have an unrelated account with the same username; it must use an origin mapping.
+        if ("GITHUB".equals(project.provider()) && "github.com".equals(project.repositoryHost()) &&
+                authorLogin != null && !authorLogin.isBlank()) {
+            List<Long> accounts = jdbc.queryForList("select id from app_user where enabled = true and lower(git_username) = ?", Long.class,
+                    authorLogin.strip().toLowerCase(Locale.ROOT));
+            if (accounts.size() == 1) return new Assignment(accounts.getFirst(), "GITHUB_ACCOUNT", null);
+        }
+        if (authorEmail != null) {
+            String origin = RepositoryOrigin.fromRepositoryUrl(project.repositoryUrl());
+            List<Assignment> mappings = jdbc.query("select m.id, m.user_id from git_author_mapping m join app_user u on u.id = m.user_id " +
+                            "where m.repository_origin = ? and m.author_email = ? and u.enabled = true",
+                    (rs, row) -> new Assignment(rs.getLong("user_id"), "GIT_EMAIL_MAPPING", rs.getLong("id")), origin, authorEmail);
+            if (mappings.size() == 1) return mappings.getFirst();
+        }
+        return new Assignment(project.ownerId(), "PROJECT_OWNER_FALLBACK", null);
+    }
+
+    private record Assignment(long userId, String reason, Long mappingId) { }
 
     /** The Git adapter returns only batches ending at a safe first-parent boundary. */
     public void completeBatch(long runId, ReviewProject original, String checkpoint, Instant now) {

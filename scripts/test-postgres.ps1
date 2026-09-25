@@ -1,6 +1,7 @@
 param(
     [string]$PgBin = 'C:\Program Files\PostgreSQL\17\bin',
-    [ValidateRange(1024, 65535)][int]$Port = 55439
+    [ValidateRange(1024, 65535)][int]$Port = 55439,
+    [switch]$BackupRestore
 )
 $ErrorActionPreference = 'Stop'
 $workspace = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -47,6 +48,9 @@ try {
     $env:TEST_IDENTITY_DATABASE_URL = "jdbc:postgresql://127.0.0.1:$Port/identity_security"
     Push-Location (Join-Path $workspace 'source')
     try { Invoke-Checked '.\mvnw.cmd' @('-B','-ntp','verify') } finally { Pop-Location }
+    if ($BackupRestore) {
+        & (Join-Path $PSScriptRoot 'verify-test-backup.ps1') -PgBin $PgBin -Port $Port
+    }
 } finally {
     foreach ($name in $environmentNames) { [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], 'Process') }
     if ($startedHere) { Invoke-Checked $pgCtl @('-D', $cluster, '-m', 'fast', '-w', 'stop') }
