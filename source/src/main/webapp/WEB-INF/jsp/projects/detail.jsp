@@ -1,28 +1,17 @@
 <%@ page pageEncoding="UTF-8" %>
 <%@ include file="/WEB-INF/jsp/fragments/header.jspf" %>
-<section class="page-heading"><p class="eyebrow">PROJECT DETAIL</p><h1><c:out value="${project.name}"/></h1><p><c:out value="${project.repositoryUrl}"/></p></section>
-<section class="card">
-  <h2>리뷰 설정</h2>
-  <dl class="detail-grid"><dt>소유자</dt><dd><c:out value="${project.ownerUsername}"/></dd>
-    <dt>저장소 제공자</dt><dd><c:out value="${project.provider}"/></dd>
-    <dt>상태</dt><dd><span class="badge status-${project.status}"><c:choose><c:when test="${project.status == 'PENDING'}">관리자 승인 대기</c:when><c:when test="${project.status == 'APPROVED'}">리뷰 활성</c:when><c:when test="${project.status == 'PAUSED'}">일시 중지</c:when><c:otherwise>반려</c:otherwise></c:choose></span></dd>
-    <dt>브랜치</dt><dd><c:out value="${project.reviewBranch}" default="저장소 기본 브랜치"/></dd>
-    <dt>리뷰 주기</dt><dd>매시간 · 최초 전체 커밋 이력부터 순차 처리</dd>
-    <dt>마지막 성공 커밋</dt><dd><c:out value="${project.lastReviewedSha}" default="아직 없음"/></dd>
-    <dt>등록 시각 (UTC)</dt><dd><c:out value="${project.createdAt}"/></dd>
-  </dl>
-  <p class="muted">Git 작성자 계정이 등록된 사용자와 일치하면 해당 사용자에게 이슈를 배정합니다. 일치하지 않으면 프로젝트 소유자에게 배정합니다.</p>
-  <div class="actions">
-    <a class="button secondary" href="${pageContext.request.contextPath}/reviews?projectId=${project.id}">리뷰 실행 기록</a>
-    <c:if test="${project.approved}"><form method="post" action="${pageContext.request.contextPath}/projects/${project.id}/review"><input type="hidden" name="${_csrf.parameterName}" value="${_csrf.token}"><button type="submit" class="button primary">지금 리뷰 실행</button></form></c:if>
-    <a href="${pageContext.request.contextPath}/projects">프로젝트 목록</a>
-  </div>
+<c:url var="projectListUrl" value="/projects"/><c:url var="reviewsUrl" value="/reviews"><c:param name="projectId" value="${project.id}"/></c:url>
+<section class="page-heading"><a href="<c:out value='${projectListUrl}'/>">← 프로젝트 목록</a><h1><c:out value="${project.name}"/></h1><p class="project-meta"><c:out value="${project.repositoryUrl}"/></p></section>
+<section class="card" aria-labelledby="project-state-heading">
+  <h2 id="project-state-heading"><c:choose><c:when test="${project.status == 'PENDING'}">승인을 기다리고 있어요</c:when><c:when test="${project.status == 'APPROVED'}"><c:choose><c:when test="${scheduledReviewEnabled}">자동 리뷰가 켜져 있어요</c:when><c:otherwise>프로젝트가 승인되었어요</c:otherwise></c:choose></c:when><c:when test="${project.status == 'PAUSED'}">리뷰가 일시 중지되었어요</c:when><c:otherwise>등록이 승인되지 않았어요</c:otherwise></c:choose></h2>
+  <p><c:choose><c:when test="${project.status == 'PENDING'}"><c:choose><c:when test="${scheduledReviewEnabled}">관리자가 승인하면 예약 일정에 따라 과거 변경부터 순서대로 리뷰합니다.</c:when><c:otherwise>관리자가 승인하면 ‘지금 리뷰하기’를 눌러 과거 변경부터 검토할 수 있습니다. 현재 자동 리뷰는 꺼져 있습니다.</c:otherwise></c:choose></c:when><c:when test="${project.status == 'APPROVED'}"><c:choose><c:when test="${scheduledReviewEnabled}">예약 일정에 따라 코드 변경을 확인합니다. 기다리지 않고 지금 리뷰를 요청할 수도 있습니다.</c:when><c:otherwise>현재 자동 리뷰는 꺼져 있습니다. 아래 ‘지금 리뷰하기’를 눌러 검토를 시작하세요.</c:otherwise></c:choose></c:when><c:when test="${project.status == 'PAUSED'}">지금은 새로운 리뷰를 시작하지 않습니다. <c:if test="${not isAdmin}">재개하려면 관리자에게 요청해 주세요.</c:if></c:when><c:otherwise>저장소 주소와 접근 권한을 확인하고 관리자에게 문의해 주세요.</c:otherwise></c:choose></p>
+  <c:if test="${not empty project.reviewStatus}"><p class="project-next-action">최근 리뷰: <c:choose><c:when test="${project.reviewStatus == 'RUNNING'}">진행 중입니다. 잠시 후 리뷰 기록에서 결과를 확인하세요.</c:when><c:when test="${project.reviewStatus == 'FAILED'}">완료하지 못했습니다. 리뷰 기록에서 원인을 확인한 뒤 다시 요청해 주세요.</c:when><c:otherwise>이번 실행이 완료되었습니다. 리뷰 기록에서 결과를 확인하세요.</c:otherwise></c:choose></p></c:if>
+  <div class="actions"><c:if test="${project.approved}"><c:url var="reviewAction" value="/projects/${project.id}/review"/><form method="post" action="<c:out value='${reviewAction}'/>"><input type="hidden" name="<c:out value='${_csrf.parameterName}'/>" value="<c:out value='${_csrf.token}'/>"><button type="submit">지금 리뷰하기</button></form></c:if><c:if test="${project.approved or not empty project.approvedAt}"><a href="<c:out value='${reviewsUrl}'/>">리뷰 기록 보기</a></c:if></div>
 </section>
-<c:if test="${isAdmin}"><section class="card"><h2>관리자 승인</h2><p>승인하면 예약 리뷰가 활성화됩니다. 저장소의 전체 이력은 오래된 커밋부터 여러 실행에 걸쳐 처리됩니다.</p>
-  <div class="actions">
-    <c:if test="${not project.approved}"><form method="post" action="${pageContext.request.contextPath}/admin/projects/${project.id}/approve"><input type="hidden" name="${_csrf.parameterName}" value="${_csrf.token}"><button type="submit" class="button primary"><c:choose><c:when test="${project.status == 'PAUSED'}">리뷰 재개</c:when><c:otherwise>승인</c:otherwise></c:choose></button></form></c:if>
-    <c:if test="${project.status == 'PENDING'}"><form method="post" action="${pageContext.request.contextPath}/admin/projects/${project.id}/reject"><input type="hidden" name="${_csrf.parameterName}" value="${_csrf.token}"><button type="submit" class="button secondary">반려</button></form></c:if>
-    <c:if test="${project.approved}"><form method="post" action="${pageContext.request.contextPath}/admin/projects/${project.id}/pause"><input type="hidden" name="${_csrf.parameterName}" value="${_csrf.token}"><button type="submit" class="button secondary">리뷰 일시 중지</button></form></c:if>
-  </div>
-</section></c:if>
+<c:if test="${isAdmin}"><section class="card"><h2><c:choose><c:when test="${project.status == 'PENDING'}">등록 승인</c:when><c:otherwise>리뷰 관리</c:otherwise></c:choose></h2><p>저장소 주소와 등록자를 확인해 주세요. <c:choose><c:when test="${scheduledReviewEnabled}">승인하면 예약 일정에 따라 리뷰를 시작합니다.</c:when><c:otherwise>승인하면 사용자가 직접 리뷰를 요청할 수 있습니다.</c:otherwise></c:choose></p><div class="actions">
+  <c:if test="${not project.approved}"><c:url var="approveAction" value="/admin/projects/${project.id}/approve"/><form method="post" action="<c:out value='${approveAction}'/>"><input type="hidden" name="<c:out value='${_csrf.parameterName}'/>" value="<c:out value='${_csrf.token}'/>"><button type="submit"><c:choose><c:when test="${project.status == 'PAUSED'}">리뷰 재개</c:when><c:otherwise>프로젝트 승인</c:otherwise></c:choose></button></form></c:if>
+  <c:if test="${project.status == 'PENDING'}"><c:url var="rejectAction" value="/admin/projects/${project.id}/reject"/><form method="post" action="<c:out value='${rejectAction}'/>"><input type="hidden" name="<c:out value='${_csrf.parameterName}'/>" value="<c:out value='${_csrf.token}'/>"><button type="submit" class="button-secondary">등록 반려</button></form></c:if>
+  <c:if test="${project.approved}"><c:url var="pauseAction" value="/admin/projects/${project.id}/pause"/><form method="post" action="<c:out value='${pauseAction}'/>"><input type="hidden" name="<c:out value='${_csrf.parameterName}'/>" value="<c:out value='${_csrf.token}'/>"><button type="submit" class="button-secondary">리뷰 일시 중지</button></form></c:if>
+</div></section></c:if>
+<section class="card"><h2>프로젝트 정보</h2><dl><dt>등록자</dt><dd><c:out value="${project.ownerUsername}"/></dd><dt>저장소</dt><dd><c:out value="${project.provider}"/> · <c:out value="${project.repositoryPath}"/></dd><dt>리뷰 브랜치</dt><dd><c:out value="${project.reviewBranch}" default="저장소 기본 브랜치"/></dd><dt>리뷰 실행</dt><dd><c:choose><c:when test="${scheduledReviewEnabled}">예약 일정 또는 직접 요청</c:when><c:otherwise>직접 요청 (자동 리뷰 꺼짐)</c:otherwise></c:choose></dd><dt>등록 시각 (UTC)</dt><dd><c:out value="${project.createdAt}"/></dd></dl><p class="muted">수정 권고는 작성자와 연결된 계정의 이슈함으로 전달합니다. 연결된 계정이 없으면 프로젝트 등록자에게 전달합니다.</p></section>
 <%@ include file="/WEB-INF/jsp/fragments/footer.jspf" %>

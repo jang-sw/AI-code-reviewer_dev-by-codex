@@ -5,7 +5,14 @@ import java.time.Instant;
 public record Project(long id, String name, String repositoryUrl, String provider, String repositoryHost,
                       String repositoryPath, long ownerId, String ownerUsername, String status,
                       String reviewBranch, String lastReviewedSha, Instant approvedAt,
-                      Instant createdAt, Instant updatedAt) {
+                      Instant createdAt, Instant updatedAt, String reviewStatus) {
+    public Project(long id, String name, String repositoryUrl, String provider, String repositoryHost,
+                   String repositoryPath, long ownerId, String ownerUsername, String status,
+                   String reviewBranch, String lastReviewedSha, Instant approvedAt,
+                   Instant createdAt, Instant updatedAt) {
+        this(id, name, repositoryUrl, provider, repositoryHost, repositoryPath, ownerId, ownerUsername,
+                status, reviewBranch, lastReviewedSha, approvedAt, createdAt, updatedAt, null);
+    }
     public long getId() { return id; }
     public String getName() { return name; }
     public String getRepositoryUrl() { return repositoryUrl; }
@@ -20,6 +27,7 @@ public record Project(long id, String name, String repositoryUrl, String provide
     public Instant getApprovedAt() { return approvedAt; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
+    public String getReviewStatus() { return reviewStatus; }
     public boolean approved() { return "APPROVED".equals(status); }
     public boolean isApproved() { return approved(); }
 }

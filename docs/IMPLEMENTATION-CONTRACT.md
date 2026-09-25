@@ -4,7 +4,7 @@
 - 기본 패키지 `com.aicreviewer`. 서버 시각은 UTC `Instant`, DB `timestamptz`.
 - 인증은 세션 + CSRF, 역할 ADMIN/USER. JSP 출력은 c:out, JSP Java scriptlet 금지.
 - 기본 리뷰는 내부 이슈이며 외부 Git 이슈 작성은 아직 하지 않는다. 사용자 확정: 첫 승인 후 전체 커밋 이력을 오래된 순서로 배치 리뷰한다.
-- 구성: `app.ai.provider=ollama|litellm`, `app.ai.base-url`, `app.ai.model`, `app.ai.api-key`, `app.ai.timeout-seconds`; `app.git.allowed-hosts` (쉼표 구분), `app.git.github-api-url`, `app.git.token`, `app.git.timeout-seconds`; `app.review.enabled`, `app.review.cron=0 0 * * * *`, `app.review.max-commits=100`.
+- 구성: `app.ai.provider=ollama|litellm|openai`, `app.ai.base-url`, `app.ai.model`, `app.ai.api-key`, `app.ai.timeout-seconds`; OpenAI 전용 `app.ai.openai-model`/환경변수 `OPENAI_API_KEY`; `app.git.allowed-hosts` (쉼표 구분), `app.git.github-api-url`, `app.git.token`, `app.git.timeout-seconds`; `app.review.enabled`, `app.review.cron=0 0 * * * *`, `app.review.max-commits=100`.
 - root 담당: 빌드, 공통 SQL, 설정, 통합, 운영 문서. agents는 본인 모듈과 테스트만 수정. commit은 root가 수행.
 
 ## 데이터 계약
@@ -30,6 +30,10 @@ V5 `reviewed_commit.coverage_type` varchar(20) default FULL, `coverage_details` 
 V6 `reviewed_commit(project_id,id DESC)`, `review_run(project_id,id DESC)` 페이지 조회 인덱스. `/reviews`의 `commitPage`와 `runPage`는 각각0부터10000까지, 페이지당50건이다. 프로젝트 권한 검사 후 두 기록을 독립 조회한다.
 
 ## 모듈 경계
+
+V7 `app_user.approval_status` PENDING/APPROVED/REJECTED(default APPROVED), approval_decided_at/approval_reason. 비승인 계정은 enabled=false CHECK. 공개 `/signup`는 USER/PENDING만 생성하고 관리자 승인 후 로그인 가능하다. V8 프로젝트 소유자/상태별 id 페이지 인덱스, V9 이슈 담당자/상태별 id 페이지 인덱스.
+
+`/projects`는 q/status/page, `/admin/users`는 search/status/page, `/issues`는 status/page로 제한된 목록을 조회한다. page는0..10000이며 lookahead 한 건으로 다음 페이지 여부를 판단한다. 이슈 상세 `/issues/{id}`도 담당자/관리자만 조회하며 관련 없는 사용자는 존재하지 않는 이슈와 같은404를 받는다.
 
 ### identity/project (agent)
 - `identity` package: Spring Security UserDetails lookup, security configuration, admin bootstrap env properties `app.bootstrap.username`, `app.bootstrap.password`, `app.bootstrap.git-username`; no default password. User admin UI and password change.

@@ -45,7 +45,7 @@ public class ReviewCoordinator {
         ReviewRepository.requireApproved(repository.authorizedProject(projectId, repository.actor(username)));
     }
 
-    public List<Long> scheduledProjects() { return repository.approvedProjectIds(); }
+    public List<Long> scheduledProjects(int limit) { return repository.approvedProjectIds(limit); }
 
     /** Null username identifies the trusted scheduler; web callers always supply a principal. */
     public Outcome reviewProject(long projectId, String username) {

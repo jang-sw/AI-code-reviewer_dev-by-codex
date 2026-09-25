@@ -38,7 +38,7 @@ public class GitAuthorMappingService {
 
     public List<GitAuthorMapping> list(String actorName, int page) {
         users.requireAdmin(actorName);
-        if (page < 0 || page > 1_000_000) throw new ResponseStatusException(HttpStatus.BAD_REQUEST);
+        if (page < 0 || page > 10000) throw new ResponseStatusException(HttpStatus.BAD_REQUEST);
         return jdbc.query("""
                 SELECT m.id, m.user_id, u.username, u.enabled, m.repository_origin, m.author_email, m.created_at
                 FROM git_author_mapping m JOIN app_user u ON u.id = m.user_id

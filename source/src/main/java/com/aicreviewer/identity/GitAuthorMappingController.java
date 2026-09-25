@@ -21,7 +21,7 @@ public class GitAuthorMappingController {
         var results = mappings.list(principal.getName(), page);
         var options = mappings.userOptions(principal.getName(), userSearch);
         model.addAttribute("mappings", results.size() > 50 ? results.subList(0, 50) : results);
-        model.addAttribute("hasNext", results.size() > 50);
+        model.addAttribute("hasNext", results.size() > 50 && page < 10000);
         model.addAttribute("page", page);
         model.addAttribute("userOptions", options.size() > 50 ? options.subList(0, 50) : options);
         model.addAttribute("hasMoreUsers", options.size() > 50);

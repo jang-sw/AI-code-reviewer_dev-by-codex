@@ -9,7 +9,7 @@
 - Java 25, Spring Boot 4.0.8, Maven Wrapper 3.9.11, PostgreSQL 17.
 - JSP/JSTL 웹 화면. JSP Java scriptlet을 사용하지 않는다. 실행 가능한 WAR.
 - Spring Security 세션/CSRF/BCrypt, Spring JDBC, Flyway SQL migration.
-- Ollama 직접 연결 또는 LiteLLM. 기본 `gemma3:1b` (기존 문서의 Gemma3.1b), properties/환경변수로 변경 가능.
+- Ollama, LiteLLM 또는 OpenAI Responses API 직접 연결. 로컬 기본 `gemma3:1b`; OpenAI는 전용 `OPENAI_MODEL`/`OPENAI_API_KEY` 명시 설정.
 - `source/src/main/java/com/aicreviewer/` 아래 identity(계정), project(승인), git(수집), ai(모델 연결), review(예약/잠금/저장), issue(이슈함), web(감사/오류) 모듈.
 - `source/src/main/resources/` 아래 application.properties, db/migration, static/css.
 - `source/src/main/webapp/WEB-INF/jsp/` JSP·공통 fragment. `source/src/test/` 자동 테스트.
@@ -17,12 +17,13 @@
 
 ## 구현된 흐름
 
-1. 초기 관리자를 명시적 설정으로 생성한다. 관리자가 사용자 ID·비밀번호·Git 사용자명을 등록한다.
+1. 초기 관리자를 명시적 설정으로 생성한다. 사용자가 ID·비밀번호·Git 사용자명으로 회원가입을 신청하면 관리자가 승인·반려한다. 승인 전 로그인은 차단한다.
 2. 사용자는 저장소 HTTP(S) URL로 프로젝트를 신청한다. 프로젝트 ID는 입력하지 않는다. 관리자가 승인·반려·일시정지/재개한다.
 3. 기본 매 정시 또는 수동으로 승인 프로젝트를 백그라운드 리뷰한다. 첫 실행은 **전체 이력**을 부모 커밋이 앞서는 순서의 배치로 처리한다.
 4. Git API의 누락·잘림을 검사하고 AI에 전체 지원 diff를 전달한다. JSON 스키마/파일/행/크기·시간·context 예산을 검증한다.
 5. 커밋별 결과/이슈를 원자적으로 저장하고 배치 전체 성공 시 진행 지점을 갱신한다. 재시도 시 저장된 SHA를 건너뛴다.
 6. GitHub 계정 연결 또는 관리자가 등록한 서버 origin/작성자 이메일 매핑으로 내부 이슈를 배정한다. 매칭 실패 시 프로젝트 소유자에게 배정하고 이슈마다 근거를 남긴다. 여러 비공개 서버의 토큰은 origin별로 분리한다.
+7. 프로젝트·사용자·리뷰 기록은 페이지당50건, 이슈는25건을 조회한다. 이슈 목록은 짧은 요약만 보여주고 상세 화면에서 전체 권고를 읽는다. 필터·권한은 각 조회와 상태 변경에 적용한다.
 
 ## 실행·검증
 

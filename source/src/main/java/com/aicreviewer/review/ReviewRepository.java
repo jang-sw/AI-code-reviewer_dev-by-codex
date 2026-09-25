@@ -56,8 +56,11 @@ public class ReviewRepository {
         return project;
     }
 
-    public List<Long> approvedProjectIds() {
-        return jdbc.queryForList("select p.id from project p where p.status = 'APPROVED' order by (select max(r.started_at) from review_run r where r.project_id = p.id) asc nulls first, p.id", Long.class);
+    public List<Long> approvedProjectIds(int limit) {
+        if (limit < 1 || limit > ReviewDispatcher.MAX_SCHEDULE_CANDIDATES) {
+            throw new IllegalArgumentException("Scheduled candidate limit exceeds dispatcher capacity");
+        }
+        return jdbc.queryForList("select p.id from project p where p.status = 'APPROVED' order by (select max(r.started_at) from review_run r where r.project_id = p.id) asc nulls first, p.id limit ?", Long.class, limit);
     }
 
     public long startRun(long projectId, Long actorId, Instant now) {

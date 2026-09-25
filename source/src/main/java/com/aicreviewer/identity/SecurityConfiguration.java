@@ -20,11 +20,12 @@ public class SecurityConfiguration {
     PasswordEncoder passwordEncoder() { return new BCryptPasswordEncoder(12); }
 
     @Bean
-    SecurityFilterChain securityFilterChain(HttpSecurity http, AccountUserDetailsService users, LoginAttemptLimiter limiter) throws Exception {
+    SecurityFilterChain securityFilterChain(HttpSecurity http, AccountUserDetailsService users, LoginAttemptLimiter limiter,
+                                           SignupAttemptLimiter signupLimiter) throws Exception {
         return http
                 .authorizeHttpRequests(authorize -> authorize
                         .dispatcherTypeMatchers(DispatcherType.FORWARD, DispatcherType.ERROR).permitAll()
-                        .requestMatchers("/login", "/error", "/assets/**", "/css/**", "/js/**", "/favicon.ico").permitAll()
+                        .requestMatchers("/login", "/signup", "/error", "/assets/**", "/css/**", "/js/**", "/favicon.ico").permitAll()
                         .requestMatchers("/admin/**").hasRole("ADMIN")
                         .anyRequest().authenticated())
                 .formLogin(login -> login.loginPage("/login").successHandler((request, response, authentication) -> {
@@ -48,6 +49,7 @@ public class SecurityConfiguration {
                 })
                 .addFilterAfter(new AccountSessionFilter(users), AnonymousAuthenticationFilter.class)
                 .addFilterBefore(new LoginThrottleFilter(limiter), UsernamePasswordAuthenticationFilter.class)
+                .addFilterBefore(new SignupThrottleFilter(signupLimiter), UsernamePasswordAuthenticationFilter.class)
                 .build();
     }
 }

@@ -1,0 +1,8 @@
+<%@ page pageEncoding="UTF-8" %>
+<c:url var="statusAction" value="/issues/${issue.id}/status"/>
+<form method="post" action="<c:out value='${statusAction}'/>" class="toolbar issue-status-form">
+  <input type="hidden" name="<c:out value='${_csrf.parameterName}'/>" value="<c:out value='${_csrf.token}'/>">
+  <input type="hidden" name="filterStatus" value="<c:out value='${filterStatus}'/>">
+  <input type="hidden" name="page" value="<c:out value='${page}'/>">
+  <label for="issue-status-${issue.id}">처리 상태</label><select id="issue-status-${issue.id}" name="status"><option value="OPEN" ${issue.status == 'OPEN' ? 'selected' : ''}>미처리</option><option value="RESOLVED" ${issue.status == 'RESOLVED' ? 'selected' : ''}>해결</option><option value="DISMISSED" ${issue.status == 'DISMISSED' ? 'selected' : ''}>검토 제외</option></select><button type="submit">상태 저장</button>
+</form>

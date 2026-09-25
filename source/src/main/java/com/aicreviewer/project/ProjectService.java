@@ -6,6 +6,8 @@ import com.aicreviewer.identity.UserAccount;
 import com.aicreviewer.identity.UserAccountService;
 import java.sql.Timestamp;
 import java.util.Arrays;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -22,7 +24,10 @@ import org.springframework.web.server.ResponseStatusException;
 
 @Service
 public class ProjectService {
-    private static final String SELECT = "SELECT p.*, u.username AS owner_username FROM project p JOIN app_user u ON u.id = p.owner_id";
+    public static final int PAGE_SIZE = 50;
+    public static final int MAX_PAGE = 10000;
+    private static final Set<String> STATUSES = Set.of("PENDING", "APPROVED", "REJECTED", "PAUSED");
+    private static final String SELECT = "SELECT p.*, u.username AS owner_username, (SELECT r.status FROM review_run r WHERE r.project_id = p.id ORDER BY r.id DESC LIMIT 1) AS review_status FROM project p JOIN app_user u ON u.id = p.owner_id";
     private static final RowMapper<Project> PROJECT = (rs, row) -> {
         Timestamp approvedAt = rs.getTimestamp("approved_at");
         return new Project(rs.getLong("id"), rs.getString("name"), rs.getString("repository_url"),
@@ -30,7 +35,7 @@ public class ProjectService {
                 rs.getLong("owner_id"), rs.getString("owner_username"), rs.getString("status"),
                 rs.getString("review_branch"), rs.getString("last_reviewed_sha"),
                 approvedAt == null ? null : approvedAt.toInstant(), rs.getTimestamp("created_at").toInstant(),
-                rs.getTimestamp("updated_at").toInstant());
+                rs.getTimestamp("updated_at").toInstant(), rs.getString("review_status"));
     };
     private final JdbcTemplate jdbc;
     private final UserAccountService users;
@@ -47,12 +52,40 @@ public class ProjectService {
     }
 
     public List<Project> list(String username, int page) {
-        UserAccount actor = users.requireAccount(username);
-        int offset = checkedPage(page) * 50;
-        return actor.isAdmin()
-                ? jdbc.query(SELECT + " ORDER BY p.created_at DESC, p.id DESC LIMIT 51 OFFSET ?", PROJECT, offset)
-                : jdbc.query(SELECT + " WHERE p.owner_id = ? ORDER BY p.created_at DESC, p.id DESC LIMIT 51 OFFSET ?", PROJECT, actor.id(), offset);
+        return load(users.requireAccount(username), "", "", checkedPage(page));
     }
+
+    public ProjectPage list(String username, String status, String query, int page) {
+        UserAccount actor = users.requireAccount(username);
+        checkedPage(page);
+        String filter = status == null ? "" : status.strip();
+        String search = query == null ? "" : query.strip();
+        if ((!filter.isEmpty() && !STATUSES.contains(filter)) || search.length() > 120 || search.codePoints().anyMatch(Character::isISOControl)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "프로젝트 검색 조건을 확인해 주세요.");
+        }
+        List<Project> rows = load(actor, filter, search, page);
+        return new ProjectPage(List.copyOf(rows.subList(0, Math.min(PAGE_SIZE, rows.size()))), page,
+                rows.size() > PAGE_SIZE && page < MAX_PAGE, filter, search);
+    }
+
+    private List<Project> load(UserAccount actor, String status, String query, int page) {
+        StringBuilder sql = new StringBuilder(SELECT).append(" WHERE 1 = 1");
+        var args = new ArrayList<Object>();
+        if (!actor.isAdmin()) { sql.append(" AND p.owner_id = ?"); args.add(actor.id()); }
+        if (!status.isEmpty()) { sql.append(" AND p.status = ?"); args.add(status); }
+        if (!query.isEmpty()) {
+            String pattern = "%" + query.toLowerCase(Locale.ROOT).replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%";
+            sql.append(" AND (LOWER(p.name) LIKE ? ESCAPE '!' OR LOWER(p.repository_url) LIKE ? ESCAPE '!')");
+            args.add(pattern);
+            args.add(pattern);
+        }
+        sql.append(" ORDER BY p.id DESC LIMIT ? OFFSET ?");
+        args.add(PAGE_SIZE + 1);
+        args.add((long) page * PAGE_SIZE);
+        return jdbc.query(sql.toString(), PROJECT, args.toArray());
+    }
+
+    public record ProjectPage(List<Project> projects, int page, boolean hasNext, String status, String query) { }
 
     public Project getVisible(String username, long id) {
         UserAccount actor = users.requireAccount(username);
@@ -64,14 +97,27 @@ public class ProjectService {
     @Transactional
     public long request(String username, String name, String repositoryUrl, String branch) {
         UserAccount actor = users.requireAccount(username);
-        if (repositoryUrl == null || repositoryUrl.length() > 2048) throw new IllegalArgumentException("저장소 URL은 2,048자 이하로 입력해 주세요.");
-        RepositoryUrl repository = RepositoryUrl.parse(repositoryUrl, allowedHosts);
-        String projectName = name == null ? "" : name.strip();
-        if (projectName.isEmpty()) projectName = repository.path().substring(repository.path().lastIndexOf('/') + 1);
-        if (projectName.length() > 120 || projectName.codePoints().anyMatch(Character::isISOControl)) {
-            throw new IllegalArgumentException("프로젝트 이름은 제어문자 없이 120자 이하로 입력해 주세요.");
+        var errors = new LinkedHashMap<String, String>();
+        RepositoryUrl repository = null;
+        if (repositoryUrl == null || repositoryUrl.isBlank()) errors.put("repositoryUrl", "Git 저장소 URL을 입력해 주세요.");
+        else if (repositoryUrl.length() > 2048) errors.put("repositoryUrl", "저장소 URL은 2,048자 이하로 입력해 주세요.");
+        else {
+            try { repository = RepositoryUrl.parse(repositoryUrl.strip(), allowedHosts); }
+            catch (IllegalArgumentException exception) {
+                errors.put("repositoryUrl", "등록 가능한 GitHub 또는 GitLab 저장소 주소를 입력해 주세요. 주소에 비밀번호·토큰을 넣을 수 없습니다.");
+            }
         }
-        String reviewBranch = validateBranch(branch);
+        String projectName = name == null ? "" : name.strip();
+        if (projectName.isEmpty() && repository != null) projectName = repository.path().substring(repository.path().lastIndexOf('/') + 1);
+        if (projectName.length() > 120 || projectName.codePoints().anyMatch(Character::isISOControl)) {
+            errors.put("name", "프로젝트 이름은 줄바꿈 없이 120자 이하로 입력해 주세요.");
+        }
+        String reviewBranch = null;
+        try { reviewBranch = validateBranch(branch); }
+        catch (IllegalArgumentException exception) { errors.put("reviewBranch", "브랜치 이름을 확인해 주세요. 공백이나 '..' 같은 문자는 사용할 수 없습니다."); }
+        if (!errors.isEmpty()) throw new ProjectValidationException(errors);
+        RepositoryUrl finalRepository = repository;
+        String finalBranch = reviewBranch;
         String finalName = projectName;
         GeneratedKeyHolder keys = new GeneratedKeyHolder();
         try {
@@ -82,16 +128,16 @@ public class ProjectService {
                         VALUES (?, ?, ?, ?, ?, ?, 'PENDING', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                         """, new String[] { "id" });
                 statement.setString(1, finalName);
-                statement.setString(2, repository.normalizedUrl());
-                statement.setString(3, repository.provider());
-                statement.setString(4, repository.host());
-                statement.setString(5, repository.path());
+                statement.setString(2, finalRepository.normalizedUrl());
+                statement.setString(3, finalRepository.provider());
+                statement.setString(4, finalRepository.host());
+                statement.setString(5, finalRepository.path());
                 statement.setLong(6, actor.id());
-                statement.setString(7, reviewBranch);
+                statement.setString(7, finalBranch);
                 return statement;
             }, keys);
         } catch (DuplicateKeyException exception) {
-            throw new IllegalArgumentException("이미 등록된 저장소입니다. 관리자에게 확인해 주세요.");
+            throw new ProjectValidationException(java.util.Map.of("repositoryUrl", "이미 등록된 저장소입니다. 관리자에게 확인해 주세요."));
         }
         Number key = keys.getKey();
         if (key == null) throw new IllegalStateException("프로젝트 등록 결과를 확인할 수 없습니다.");
@@ -131,7 +177,7 @@ public class ProjectService {
     }
 
     private static int checkedPage(int page) {
-        if (page < 0 || page > 1_000_000) throw new ResponseStatusException(HttpStatus.BAD_REQUEST);
+        if (page < 0 || page > MAX_PAGE) throw new ResponseStatusException(HttpStatus.BAD_REQUEST);
         return page;
     }
 

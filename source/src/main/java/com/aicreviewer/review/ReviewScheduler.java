@@ -20,7 +20,9 @@ public class ReviewScheduler {
     @Scheduled(cron = "${app.review.cron:0 0 * * * *}", zone = "UTC")
     public void reviewApprovedProjects() {
         if (!enabled) return;
-        for (long projectId : coordinator.scheduledProjects()) {
+        int candidateLimit = dispatcher.scheduledCandidateLimit();
+        if (candidateLimit == 0) return;
+        for (long projectId : coordinator.scheduledProjects(candidateLimit)) {
             if (dispatcher.submitScheduled(projectId) == ReviewDispatcher.Submission.CAPACITY_REACHED) {
                 LOG.log(System.Logger.Level.WARNING, "Review queue capacity reached; remaining projects will be considered at the next scheduled run");
                 break;

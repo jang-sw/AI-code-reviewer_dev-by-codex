@@ -29,7 +29,6 @@ public class IssueController {
         var result = service.list(actor, filter, page);
         model.addAttribute("pageTitle", "내부 이슈함");
         model.addAttribute("issues", result.issues());
-        model.addAttribute("total", result.total());
         model.addAttribute("page", result.page());
         model.addAttribute("hasNext", result.hasNext());
         model.addAttribute("filterStatus", filter);
@@ -37,10 +36,28 @@ public class IssueController {
         return "issues";
     }
 
+    @GetMapping("/issues/{id}")
+    public String detail(@PathVariable long id, @RequestParam(required = false) String filterStatus,
+                         @RequestParam(defaultValue = "0") int page, Principal principal, Model model) {
+        filterStatus = filterStatus == null ? "OPEN" : filterStatus;
+        IssueService.validateFilter(filterStatus, page);
+        model.addAttribute("issue", service.detail(id, reviews.actor(principal.getName())));
+        model.addAttribute("pageTitle", "수정 권고 확인");
+        model.addAttribute("filterStatus", filterStatus);
+        model.addAttribute("page", page);
+        return "issue-detail";
+    }
+
     @PostMapping("/issues/{id}/status")
-    public String changeStatus(@PathVariable long id, @RequestParam String status, Principal principal, RedirectAttributes redirect) {
+    public String changeStatus(@PathVariable long id, @RequestParam String status,
+                               @RequestParam(required = false) String filterStatus,
+                               @RequestParam(defaultValue = "0") int page, Principal principal, RedirectAttributes redirect) {
+        filterStatus = filterStatus == null ? "OPEN" : filterStatus;
+        IssueService.validateFilter(filterStatus, page);
         service.changeStatus(id, status, reviews.actor(principal.getName()));
         redirect.addFlashAttribute("message", "이슈 상태를 변경했습니다.");
+        redirect.addAttribute("status", filterStatus);
+        redirect.addAttribute("page", page);
         return "redirect:/issues";
     }
 }

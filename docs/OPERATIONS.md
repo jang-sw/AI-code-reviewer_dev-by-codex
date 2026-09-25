@@ -26,8 +26,8 @@ Java 25 / Spring Boot 4.0.8 / Maven Wrapper 3.9.11 / PostgreSQL 17 / JSP·JSTL�
 
 3. `source`에서 `.\mvnw.cmd verify`로 패키징한다.
 4. `java -jar target/ai-code-reviewer.war`로 실행한다. 시작 시 Flyway 마이그레이션이 자동 적용된다. 새 DB에서 초기 관리자 설정이 없으면 시작에 실패한다.
-5. 로그인 후 사용자 관리에서 계정을 생성한다. 일반 사용자가 저장소 URL을 등록하면 PENDING 상태가 되며, 관리자가 프로젝트 상세 화면에서 승인한다. 기본 브랜치 또는 입력한 한 브랜치를 리뷰한다.
-6. 승인 후 시간표가 실행되거나 `리뷰 실행`을 누르면 전체 이력을 오래된 순서로 처리한다. 사용자 생성 시 Git 계정은 관리자가 확인한다. 이슈는 AI의 권고이며 코드 수정 전에 사람이 검토한다.
+5. 사용자는 공개 `/signup` 화면에서 ID·비밀번호·Git 계정으로 가입을 신청한다. 관리자는 ‘가입 승인’에서 요청을 검토·승인한다. 승인된 사용자가 저장소 URL을 등록하면 프로젝트도 승인 대기가 된다. 관리자가 프로젝트 상세에서 승인하며 기본 브랜치 또는 입력한 한 브랜치를 리뷰한다.
+6. 승인 후 시간표가 실행되거나 `지금 리뷰 실행`을 누르면 전체 이력을 오래된 순서로 처리한다. 가입 승인 시 Git 계정의 실제 소유 관계는 관리자가 확인한다. 이슈는 AI의 권고이며 코드 수정 전에 사람이 검토한다.
 7. 최초 관리자 생성 뒤 bootstrap 환경변수는 제거한다. 기존 DB에서는 이 값으로 관리자 비밀번호를 덮어쓰지 않는다.
 
 설정 파일은 `source/src/main/resources/application.properties`이다. 추가 로컬 설정은 Git에서 제외된 `source/application-local.properties`를 만들고 `--spring.profiles.active=local`로 읽을 수 있다. `.env` 파일은 자동 로딩하지 않는다. secret 파일의 OS 접근 권한은 운영자가 제한한다.
@@ -68,10 +68,12 @@ GitHub 작성자 계정을 활성 사용자의 Git 계정과 먼저 매칭한다
 
 | 환경변수 | 기본값 |
 |---|---|
-| `AI_PROVIDER` | `ollama`, 다른 값은 `litellm` |
+| `AI_PROVIDER` | `ollama`, `litellm`, `openai` |
 | `AI_BASE_URL` | `http://127.0.0.1:11434` |
 | `AI_MODEL` | `gemma3:1b` |
 | `AI_API_KEY` | 없음; LiteLLM에서 필요시 설정 |
+| `OPENAI_MODEL` | 없음; OpenAI 사용 시 Responses/Structured Outputs 지원 모델을 명시 |
+| `OPENAI_API_KEY` | 없음; OpenAI 전용 서버 secret, 다른 공급자로 전송하지 않음 |
 | `AI_TIMEOUT_SECONDS` | 120 |
 | `AI_CONTEXT_TOKENS` | 32768 |
 | `AI_MAX_OUTPUT_TOKENS` | 4096 |
@@ -80,12 +82,15 @@ Ollama는 `<base-url>/api/chat`, LiteLLM은 `<base-url>/chat/completions`를 사
 
 모델 context와 출력 예산을 실제 모델 용량에 맞춘다. 입력은 byte 기반 보수적 예산 검사로 silent context truncation을 방지한다. 큰 diff를 임의로 잘라 성공 처리하지 않는다. 구조가 잘못된 JSON, 잘못된 파일/행, 생성 중단, 거부, 과대 응답은 실패로 기록한다.
 
+OpenAI는 고정된 공식 HTTPS Responses endpoint를 사용하며 `AI_BASE_URL`/`AI_API_KEY`를 재사용하지 않는다. `store:false`를 요청하지만 공급자의 로그 보존까지 없애는 설정은 아니다. 코드가 외부로 전송되므로 조직이 승인한 모델과 정책으로 구성한다. 상세 설정·검증 범위는 [OpenAI 연결](OPENAI-INTEGRATION.md), 커밋 검사 방법은 [비밀정보 보호](SECRET-HYGIENE.md)를 따른다. 실제 API 키를 커밋·브라우저 입력·테스트 fixture에 넣지 않는다.
+
 실제 `gemma3:1b`는 오탐·설명 품질 문제가 있었고, 설치된 `llama3.1:8b` 비교에서도6사례 중4개 시간 초과와 근거 문제가 있었다. [AI 검증 기록](AI-EVALUATION.md)을 확인한다. 모델·context 조정 후 품질 재평가 및 실제 LiteLLM 환경 검증이 남아 있다.
 
 ## 시간표와 복구
 
 - `REVIEW_ENABLED=true`가 기본값이며 `REVIEW_CRON=0 0 * * * *`는 UTC 기준 매 정시다. 스케줄러를 끄더라도 권한 있는 수동 실행은 가능하다.
 - `REVIEW_MAX_COMMITS=100`, `REVIEW_CONCURRENCY=2`가 기본이다. 작업 큐는 인스턴스당1000개로 제한된다. DB pool은 `2 * concurrency + 2` 이상이어야 하며 부족하면 시작에 실패한다.
+- 예약 후보는 미실행·최근 시도가 오래된 순서로 큐 전체 용량(1000+동시 실행 수, 최대1016)까지만 SQL 조회한다. 이미 대기 중인 프로젝트는 건너뛰고 빈 슬롯을 채운다. 큐 포화·종료 상태에서는 후보 조회를 생략한다. DB 정렬 비용·다중 인스턴스의 전체 공정성은 별도 부하 검증 대상이다.
 - 커밋/이슈/실행 성공 건수는 커밋 단위로 원자적으로 저장한다. 배치 전체 성공 뒤 first-parent 기준 안전한 경계로 진행 지점을 갱신한다.
 - 실패하면 이전 배치 경계를 유지하고 재실행 시 이미 저장된 SHA는 건너뛴다. AI 호출 실패를 빈 결과 성공으로 기록하지 않는다.
 - 리뷰 중 프로젝트가 일시정지되면 이후 DB 저장 단계에서 다시 상태를 검사한다. 이미 실행 중인 HTTP 호출은 시간 제한까지 걸릴 수 있다.
@@ -101,6 +106,10 @@ Ollama는 `<base-url>/api/chat`, LiteLLM은 `<base-url>/chat/completions`를 사
 ## 계정·보안
 
 세션 인증, CSRF, BCrypt12, CSP, 프레임 차단, 출력 escaping을 사용한다. 비밀번호 초기화/변경과 계정 활성 상태 변경 시 security version으로 기존 세션을 폐기한다. 마지막 활성 관리자는 비활성화할 수 없다.
+
+회원가입은 항상 일반 사용자·승인 대기·비활성 상태로 생성한다. 요청의 role/enabled 값으로 승인이나 관리자 권한을 선택할 수 없다. 중복 ID/Git 계정도 동일한 접수 안내를 반환한다. 승인·반려·반려 후 재검토는 관리자만 할 수 있으며 계정 활성화/비밀번호 초기화로 승인 상태를 우회할 수 없다. V7 적용 시 기존 계정은 승인 완료 상태를 유지한다.
+
+회원가입 요청은 로그인 제한과 별도인 IP 기준 기본15분10회, 최대10000개 버킷으로 제한한다. 성공한 요청도 할당량을 되돌리지 않는다. 인코딩된 URL도 동일한 제한과 CSRF 검사를 적용한다. 다중 인스턴스와 프록시 경계의 추가 제한은 로그인과 같은 운영 설정이 필요하다.
 
 로그인은 인스턴스별로 기본15분 동안 계정10회/IP100회로 제한한다. 버킷10000개 제한이며 가득 차면 새 키를 거부한다. 여러 인스턴스 운영에서는 프록시 계층의 공유 rate limit이 추가로 필요하다. `getRemoteAddr()`를 사용하며 임의의 전달 헤더를 신뢰하지 않는다. 프록시 구성에 따라 모든 요청이 프록시 IP로 제한될 수 있어 신뢰 가능한 프록시 경계 설정이 필요하다.
 

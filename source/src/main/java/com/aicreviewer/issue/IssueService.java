@@ -24,9 +24,7 @@ public class IssueService {
     public IssueService(JdbcTemplate jdbc) { this.jdbc = jdbc; }
 
     public IssuePage list(ReviewActor actor, String status, int page) {
-        if (page < 0 || page > 10000 || (status != null && !status.isBlank() && !STATUSES.contains(status))) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "이슈 조회 조건이 올바르지 않습니다.");
-        }
+        validateFilter(status, page);
         var args = new ArrayList<Object>();
         String filter = " where 1 = 1";
         if (!actor.admin()) {
@@ -37,17 +35,40 @@ public class IssueService {
             filter += " and i.status = ?";
             args.add(status);
         }
-        Long total = jdbc.queryForObject("select count(*) from review_issue i" + filter, Long.class, args.toArray());
-        args.add(PAGE_SIZE);
+        args.add(PAGE_SIZE + 1);
         args.add(page * PAGE_SIZE);
-        List<Map<String, Object>> issues = jdbc.queryForList("select i.*, p.name as project_name, p.repository_url, u.username as assignee_username, c.commit_sha, c.author_login, " +
+        List<Map<String, Object>> issues = jdbc.queryForList("select i.id, i.severity, i.status, i.title, i.file_path, i.line_number, i.assignment_reason, left(i.description, 240) as description_preview, p.name as project_name, p.repository_url, u.username as assignee_username, c.commit_sha, c.author_login, " +
                 "exists(select 1 from audit_event a where a.action = 'ISSUE_ASSIGNEE_FALLBACK' and a.target_type = 'REVIEWED_COMMIT' and a.target_id = c.id) as fallback_assignment " +
                 "from review_issue i join project p on p.id = i.project_id join app_user u on u.id = i.assignee_id join reviewed_commit c on c.id = i.reviewed_commit_id" +
                 filter + " order by i.id desc limit ? offset ?", args.toArray());
         for (var issue : issues) {
             issue.put("commit_url", GitCommitLink.from((String) issue.remove("repository_url"), (String) issue.get("commit_sha")));
         }
-        return new IssuePage(issues, total == null ? 0 : total, page);
+        boolean hasNext = issues.size() > PAGE_SIZE;
+        return new IssuePage(List.copyOf(issues.subList(0, Math.min(issues.size(), PAGE_SIZE))), page, hasNext);
+    }
+
+    public Map<String, Object> detail(long id, ReviewActor actor) {
+        var args = new ArrayList<Object>();
+        args.add(id);
+        String scope = " where i.id = ?";
+        if (!actor.admin()) {
+            scope += " and i.assignee_id = ?";
+            args.add(actor.id());
+        }
+        var issues = jdbc.queryForList("select i.*, p.name as project_name, p.repository_url, u.username as assignee_username, c.commit_sha, c.author_login, " +
+                "exists(select 1 from audit_event a where a.action = 'ISSUE_ASSIGNEE_FALLBACK' and a.target_type = 'REVIEWED_COMMIT' and a.target_id = c.id) as fallback_assignment " +
+                "from review_issue i join project p on p.id = i.project_id join app_user u on u.id = i.assignee_id join reviewed_commit c on c.id = i.reviewed_commit_id" + scope, args.toArray());
+        if (issues.isEmpty()) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "이슈를 찾을 수 없습니다.");
+        var issue = issues.getFirst();
+        issue.put("commit_url", GitCommitLink.from((String) issue.remove("repository_url"), (String) issue.get("commit_sha")));
+        return issue;
+    }
+
+    static void validateFilter(String status, int page) {
+        if (page < 0 || page > 10000 || (status != null && !status.isEmpty() && !STATUSES.contains(status))) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "이슈 조회 조건이 올바르지 않습니다.");
+        }
     }
 
     @Transactional
@@ -66,7 +87,5 @@ public class IssueService {
                 actor.id(), issueId, previous + " -> " + nextStatus, now);
     }
 
-    public record IssuePage(List<Map<String, Object>> issues, long total, int page) {
-        public boolean hasNext() { return (long) (page + 1) * PAGE_SIZE < total; }
-    }
+    public record IssuePage(List<Map<String, Object>> issues, int page, boolean hasNext) { }
 }

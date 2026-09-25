@@ -1,29 +1,38 @@
 <%@ page pageEncoding="UTF-8" %>
 <%@ include file="/WEB-INF/jsp/fragments/header.jspf" %>
-<section class="page-heading"><p class="eyebrow">REPOSITORIES</p><h1>프로젝트</h1><p>저장소 링크 하나로 등록하세요. 관리자 승인 후 전체 이력을 시작으로 매시간 새 커밋을 리뷰합니다.</p></section>
-<section class="card">
-  <h2>프로젝트 등록 요청</h2>
-  <form method="post" action="${pageContext.request.contextPath}/projects" class="form-grid">
-    <input type="hidden" name="${_csrf.parameterName}" value="${_csrf.token}">
-    <div class="field full-width"><label for="repositoryUrl">Git 저장소 URL</label><input id="repositoryUrl" name="repositoryUrl" type="url" required maxlength="2048" placeholder="https://github.com/team/repository.git" aria-describedby="urlHelp"></div>
-    <p id="urlHelp" class="muted">GitHub 또는 허용된 GitLab 호스트의 HTTP(S) 복제 URL을 입력하세요. 비밀번호나 토큰을 URL에 넣지 마세요.</p>
-    <div class="field"><label for="name">프로젝트 이름 (선택)</label><input id="name" name="name" maxlength="120" placeholder="비우면 저장소 이름 사용"></div>
-    <div class="field"><label for="reviewBranch">리뷰 브랜치 (선택)</label><input id="reviewBranch" name="reviewBranch" maxlength="255" placeholder="비우면 기본 브랜치 사용"></div>
-    <div><button type="submit" class="button primary">등록 요청</button></div>
+<section class="page-heading"><p class="eyebrow">PROJECTS</p><h1><c:choose><c:when test="${isAdmin}">프로젝트 관리</c:when><c:otherwise>내 프로젝트</c:otherwise></c:choose></h1><p><c:choose><c:when test="${scheduledReviewEnabled}">저장소 주소를 등록하면 승인 후 예약 일정에 따라 코드 변경을 리뷰합니다.</c:when><c:otherwise>저장소 주소를 등록하고 승인받은 뒤 원하는 때에 리뷰를 요청하세요. 현재 자동 리뷰는 꺼져 있습니다.</c:otherwise></c:choose></p><a class="button" href="#register">프로젝트 등록하기</a></section>
+<section class="card project-registration" id="register" aria-labelledby="register-heading">
+  <h2 id="register-heading">새 프로젝트 등록</h2><p>GitHub나 GitLab에서 복사한 저장소 주소를 붙여 넣으세요.</p>
+  <c:if test="${not empty projectErrors}"><div class="notice error" role="alert"><strong>입력한 내용을 확인해 주세요.</strong><ul><c:forEach items="${projectErrors}" var="fieldError"><li><a href="#<c:out value='${fieldError.key}'/>"><c:out value="${fieldError.value}"/></a></li></c:forEach></ul></div></c:if>
+  <c:url var="requestProjectUrl" value="/projects"/><form method="post" action="<c:out value='${requestProjectUrl}'/>">
+    <input type="hidden" name="<c:out value='${_csrf.parameterName}'/>" value="<c:out value='${_csrf.token}'/>">
+    <div class="field"><label for="repositoryUrl">Git 저장소 URL <span class="muted">(필수)</span></label><input id="repositoryUrl" name="repositoryUrl" type="url" required maxlength="2048" value="<c:out value='${projectForm.repositoryUrl}'/>" placeholder="https://github.com/team/repository.git" aria-describedby="urlHelp repositoryUrl-error" aria-invalid="${not empty projectErrors.repositoryUrl ? 'true' : 'false'}" autocomplete="off" spellcheck="false"><p id="urlHelp" class="help">비밀번호나 토큰이 없는 주소를 입력하세요. 회사 GitLab 주소가 등록되지 않으면 관리자에게 연결을 요청하세요.</p><p id="repositoryUrl-error" class="field-error"><c:out value="${projectErrors.repositoryUrl}"/><c:if test="${repositoryUrlCleared}"> 보안을 위해 저장소 주소를 다시 입력해 주세요.</c:if></p></div>
+    <details class="project-options" ${not empty projectForm.name or not empty projectForm.reviewBranch or not empty projectErrors.name or not empty projectErrors.reviewBranch ? 'open' : ''}>
+      <summary>이름과 리뷰 브랜치 지정 <span class="muted">(선택)</span></summary>
+      <div class="field"><label for="name">프로젝트 이름</label><input id="name" name="name" maxlength="120" value="<c:out value='${projectForm.name}'/>" placeholder="비우면 저장소 이름을 사용합니다" aria-describedby="name-error" aria-invalid="${not empty projectErrors.name ? 'true' : 'false'}"><p id="name-error" class="field-error"><c:out value="${projectErrors.name}"/></p></div>
+      <div class="field"><label for="reviewBranch">리뷰할 브랜치</label><input id="reviewBranch" name="reviewBranch" maxlength="255" value="<c:out value='${projectForm.reviewBranch}'/>" placeholder="비우면 저장소의 기본 브랜치를 사용합니다" aria-describedby="branchHelp reviewBranch-error" aria-invalid="${not empty projectErrors.reviewBranch ? 'true' : 'false'}" spellcheck="false"><p id="branchHelp" class="help">특정 브랜치만 리뷰하고 싶을 때 입력하세요.</p><p id="reviewBranch-error" class="field-error"><c:out value="${projectErrors.reviewBranch}"/></p></div>
+    </details>
+    <div class="actions"><button type="submit">등록하고 승인 요청</button><span class="muted"><c:choose><c:when test="${scheduledReviewEnabled}">승인 후 예약 실행에서 과거 변경부터 순서대로 리뷰합니다.</c:when><c:otherwise>승인 후 프로젝트에서 ‘지금 리뷰하기’를 눌러 시작하세요.</c:otherwise></c:choose></span></div>
   </form>
 </section>
-<section class="card">
-  <h2><c:choose><c:when test="${isAdmin}">전체 프로젝트 · 승인 관리</c:when><c:otherwise>내 프로젝트</c:otherwise></c:choose></h2>
-  <c:choose><c:when test="${empty projects}"><div class="empty-state"><h3>등록된 프로젝트가 없습니다</h3><p>위에서 Git 저장소 URL을 등록해 첫 리뷰를 준비하세요.</p></div></c:when><c:otherwise>
-  <div class="table-wrap"><table><thead><tr><th>프로젝트</th><th>저장소</th><th>소유자</th><th>상태</th><th>마지막 리뷰 커밋</th></tr></thead>
-    <tbody><c:forEach items="${projects}" var="project"><tr>
-      <td><a href="${pageContext.request.contextPath}/projects/${project.id}"><c:out value="${project.name}"/></a></td>
-      <td><span class="badge"><c:out value="${project.provider}"/></span> <c:out value="${project.repositoryPath}"/></td>
-      <td><c:out value="${project.ownerUsername}"/></td>
-      <td><span class="badge status-${project.status}"><c:choose><c:when test="${project.status == 'PENDING'}">승인 대기</c:when><c:when test="${project.status == 'APPROVED'}">리뷰 활성</c:when><c:when test="${project.status == 'PAUSED'}">일시 중지</c:when><c:otherwise>반려</c:otherwise></c:choose></span></td>
-      <td><c:choose><c:when test="${empty project.lastReviewedSha}"><span class="muted">리뷰 대기</span></c:when><c:otherwise><code><c:out value="${project.lastReviewedSha}"/></code></c:otherwise></c:choose></td>
-    </tr></c:forEach></tbody>
-  </table></div></c:otherwise></c:choose>
-  <nav class="pagination" aria-label="프로젝트 페이지"><c:if test="${page > 0}"><a href="${pageContext.request.contextPath}/projects?page=${page - 1}">이전</a></c:if><c:if test="${hasNext}"><a href="${pageContext.request.contextPath}/projects?page=${page + 1}">다음</a></c:if></nav>
+<section class="card" aria-labelledby="project-list-heading">
+  <h2 id="project-list-heading"><c:choose><c:when test="${isAdmin}">등록된 프로젝트</c:when><c:otherwise>등록한 프로젝트</c:otherwise></c:choose></h2>
+  <c:url var="projectListUrl" value="/projects"/><form method="get" action="<c:out value='${projectListUrl}'/>" class="filter-form">
+    <div class="field"><label for="project-query">프로젝트 검색</label><input id="project-query" name="q" type="search" maxlength="120" value="<c:out value='${query}'/>" placeholder="이름 또는 저장소 주소"></div>
+    <div class="field"><label for="project-status">승인 상태</label><select id="project-status" name="status"><option value="" ${filterStatus == '' ? 'selected' : ''}>전체 상태</option><option value="PENDING" ${filterStatus == 'PENDING' ? 'selected' : ''}>승인 대기</option><option value="APPROVED" ${filterStatus == 'APPROVED' ? 'selected' : ''}>승인 완료</option><option value="PAUSED" ${filterStatus == 'PAUSED' ? 'selected' : ''}>일시 중지</option><option value="REJECTED" ${filterStatus == 'REJECTED' ? 'selected' : ''}>반려</option></select></div>
+    <button type="submit">검색</button><c:if test="${not empty query or not empty filterStatus}"><a href="<c:out value='${projectListUrl}'/>">검색 초기화</a></c:if>
+  </form>
+  <c:choose><c:when test="${empty projects}"><div class="empty-state"><c:choose><c:when test="${not empty query or not empty filterStatus or page > 0}"><h3>조건에 맞는 프로젝트가 없습니다</h3><p>검색어나 상태를 바꾸거나 이전 페이지를 확인해 주세요.</p></c:when><c:otherwise><h3>첫 프로젝트를 등록해 보세요</h3><p>저장소 주소 하나면 시작할 수 있습니다.</p><a href="#register">프로젝트 등록하기</a></c:otherwise></c:choose></div></c:when><c:otherwise>
+    <div class="project-list"><c:forEach items="${projects}" var="project">
+      <c:url var="detailUrl" value="/projects/${project.id}"/><c:url var="reviewsUrl" value="/reviews"><c:param name="projectId" value="${project.id}"/></c:url>
+      <article class="project-item card"><div class="project-item-header"><h3><a href="<c:out value='${detailUrl}'/>"><c:out value="${project.name}"/></a></h3><span class="badge status-<c:out value='${project.status}'/>"><c:choose><c:when test="${project.status == 'PENDING'}">승인 대기</c:when><c:when test="${project.status == 'APPROVED'}">승인 완료</c:when><c:when test="${project.status == 'PAUSED'}">일시 중지</c:when><c:otherwise>반려</c:otherwise></c:choose></span></div>
+        <p class="project-meta"><c:out value="${project.repositoryUrl}"/><c:if test="${isAdmin}"><span>등록자: <c:out value="${project.ownerUsername}"/></span></c:if></p>
+        <p class="project-next-action"><c:choose><c:when test="${project.status == 'PENDING'}"><c:choose><c:when test="${isAdmin}">등록 요청을 확인하고 승인해 주세요.</c:when><c:otherwise>관리자 승인을 기다리고 있습니다.</c:otherwise></c:choose></c:when><c:when test="${project.status == 'REJECTED'}">등록이 승인되지 않았습니다. 관리자에게 확인해 주세요.</c:when><c:when test="${project.status == 'PAUSED'}">리뷰가 일시 중지되었습니다.</c:when><c:when test="${project.reviewStatus == 'RUNNING'}">코드 변경을 리뷰하고 있습니다.</c:when><c:when test="${project.reviewStatus == 'FAILED'}">최근 리뷰를 마치지 못했습니다. 리뷰 기록을 확인해 주세요.</c:when><c:when test="${project.reviewStatus == 'SUCCEEDED'}">최근 리뷰 실행이 완료되었습니다. <c:choose><c:when test="${scheduledReviewEnabled}">다음 예약 실행에서 이어서 확인합니다.</c:when><c:otherwise>이어서 검토하려면 프로젝트에서 리뷰를 다시 요청하세요.</c:otherwise></c:choose></c:when><c:otherwise><c:choose><c:when test="${scheduledReviewEnabled}">첫 예약 리뷰를 기다리고 있습니다. 지금 바로 시작할 수도 있습니다.</c:when><c:otherwise>프로젝트가 승인되었습니다. 프로젝트에서 ‘지금 리뷰하기’를 눌러 시작하세요.</c:otherwise></c:choose></c:otherwise></c:choose></p>
+        <div class="actions"><a href="<c:out value='${detailUrl}'/>"><c:choose><c:when test="${isAdmin and project.status == 'PENDING'}">승인 요청 확인</c:when><c:otherwise>프로젝트 보기</c:otherwise></c:choose></a><c:if test="${project.approved or not empty project.approvedAt}"><a href="<c:out value='${reviewsUrl}'/>">리뷰 기록 보기</a></c:if></div>
+      </article>
+    </c:forEach></div>
+  </c:otherwise></c:choose>
+  <nav class="pagination" aria-label="프로젝트 페이지"><c:if test="${page > 0}"><c:url var="previousPage" value="/projects"><c:param name="q" value="${query}"/><c:param name="status" value="${filterStatus}"/><c:param name="page" value="${page - 1}"/></c:url><a href="<c:out value='${previousPage}'/>">이전</a></c:if><span><c:out value="${page + 1}"/> 페이지</span><c:if test="${hasNext}"><c:url var="nextPage" value="/projects"><c:param name="q" value="${query}"/><c:param name="status" value="${filterStatus}"/><c:param name="page" value="${page + 1}"/></c:url><a href="<c:out value='${nextPage}'/>">다음</a></c:if></nav>
+  <c:if test="${page == maxPage}"><p class="muted">마지막 조회 페이지입니다. 검색 조건을 좁히면 다른 프로젝트를 찾을 수 있습니다.</p></c:if>
 </section>
 <%@ include file="/WEB-INF/jsp/fragments/footer.jspf" %>

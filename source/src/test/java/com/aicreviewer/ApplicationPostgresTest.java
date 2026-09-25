@@ -84,12 +84,13 @@ class ApplicationPostgresTest {
         assertThat(get(anonymous, "/projects").statusCode()).isEqualTo(302);
         HttpResponse<String> login = get(anonymous, "/login");
         assertThat(login.statusCode()).isEqualTo(200);
-        assertThat(login.body()).contains("lang=\"ko\"", "name=\"_csrf\"", "로그인", "계정 생성", "AI 리뷰는 수정 권고입니다.");
+        assertThat(login.body()).contains("lang=\"ko\"", "name=\"_csrf\"", "로그인", "/signup", "관리자", "AI 리뷰는 수정 권고입니다.");
         assertThat(login.headers().firstValue("Content-Security-Policy")).isPresent();
         HttpClient ownerSession = login(writer);
         HttpResponse<String> detail = get(ownerSession, "/projects/" + projectId);
         assertThat(detail.statusCode()).isEqualTo(200);
         assertThat(detail.body()).contains("&lt;script&gt;alert(1)&lt;/script&gt;").doesNotContain("<script>alert(1)</script>");
+        assertThat(detail.body()).contains("자동 리뷰 꺼짐").doesNotContain("매시간 새로운 변경", "자동 리뷰가 켜져");
         assertThat(get(ownerSession, "/admin/users").statusCode()).isEqualTo(403);
         assertThat(post(ownerSession, "/admin/projects/" + projectId + "/approve", Map.of("_csrf", csrf(detail.body()))).statusCode()).isEqualTo(403);
         assertThat(post(ownerSession, "/projects", Map.of("repositoryUrl", "https://github.com/example/csrf")).statusCode()).isEqualTo(403);
@@ -132,13 +133,18 @@ class ApplicationPostgresTest {
         HttpClient ownerSession = login(writer);
         HttpResponse<String> ownerIssues = get(ownerSession, "/issues");
         assertThat(ownerIssues.statusCode()).isEqualTo(200);
-        assertThat(ownerIssues.body()).contains("테스트 권고", "&lt;script&gt;").doesNotContain("<script>bad</script>");
+        assertThat(ownerIssues.body()).contains("테스트 권고", "&lt;script&gt;", "상태 저장", "처리 상태").doesNotContain("<script>bad</script>");
         String repositoryUrl = jdbc.queryForObject("select repository_url from project where id=?", String.class, projectId);
         assertThat(ownerIssues.body()).contains(repositoryUrl + "/commit/" + firstSha, "rel=\"noopener noreferrer\"");
         HttpClient unrelatedSession = login(outsider);
         HttpResponse<String> unrelatedIssues = get(unrelatedSession, "/issues");
         assertThat(unrelatedIssues.body()).doesNotContain("테스트 권고");
         long issueId = jdbc.queryForObject("select min(id) from review_issue where project_id=?", Long.class, projectId);
+        var issueDetail = get(ownerSession, "/issues/" + issueId);
+        assertThat(issueDetail.statusCode()).isEqualTo(200);
+        assertThat(issueDetail.body()).contains("수정 권고", "입력을 검증하세요.", "&lt;script&gt;bad&lt;/script&gt;")
+                .doesNotContain("<script>bad</script>");
+        assertThat(get(unrelatedSession, "/issues/" + issueId).statusCode()).isEqualTo(404);
         String statusPath = "/issues/" + issueId + "/status";
         assertThat(post(unrelatedSession, statusPath, Map.of("_csrf", csrf(unrelatedIssues.body()), "status", "RESOLVED")).statusCode()).isEqualTo(404);
         assertThat(post(ownerSession, statusPath, Map.of("status", "RESOLVED")).statusCode()).isEqualTo(403);
@@ -149,6 +155,54 @@ class ApplicationPostgresTest {
         HttpClient adminSession = login("pgadmin");
         assertThat(post(adminSession, statusPath, Map.of("_csrf", csrf(get(adminSession, "/issues").body()), "status", "DISMISSED")).statusCode()).isEqualTo(302);
         assertThat(jdbc.queryForObject("select status from review_issue where id=?", String.class, issueId)).isEqualTo("DISMISSED");
+    }
+
+    @Test
+    void publicSignupRequiresAdminApprovalBeforeLoginAndProjectRegistration() throws Exception {
+        String applicant = "join" + UUID.randomUUID().toString().replace("-", "").substring(0, 10);
+        HttpClient anonymous = client();
+        var signup = get(anonymous, "/signup");
+        assertThat(signup.statusCode()).isEqualTo(200);
+        assertThat(signup.body()).contains("회원가입", "confirmPassword", "gitUsername");
+        Map<String, String> fields = Map.of("username", applicant, "password", PASSWORD, "confirmPassword", PASSWORD,
+                "gitUsername", applicant, "role", "ADMIN", "enabled", "true", "approvalStatus", "APPROVED");
+        assertThat(post(anonymous, "/signup", fields).statusCode()).isEqualTo(403);
+        var signedFields = new java.util.HashMap<>(fields);
+        signedFields.put("_csrf", csrf(signup.body()));
+        var submitted = post(anonymous, "/signup", signedFields);
+        assertThat(submitted.statusCode()).isEqualTo(302);
+        assertThat(submitted.headers().firstValue("location").orElse("")).endsWith("/signup?submitted");
+        assertThat(post(anonymous, "/signup", signedFields).headers().firstValue("location"))
+                .isEqualTo(submitted.headers().firstValue("location"));
+        var account = jdbc.queryForMap("select id, role, enabled, approval_status from app_user where username=?", applicant);
+        assertThat(account).containsEntry("role", "USER").containsEntry("enabled", false).containsEntry("approval_status", "PENDING");
+        long id = ((Number) account.get("id")).longValue();
+        assertThat(post(anonymous, "/login", Map.of("username", applicant, "password", PASSWORD,
+                "_csrf", csrf(get(anonymous, "/login").body()))).headers().firstValue("location").orElse("")).endsWith("/login?error");
+        assertThat(get(anonymous, "/projects").statusCode()).isEqualTo(302);
+        HttpClient ordinary = login(writer);
+        assertThat(post(ordinary, "/admin/users/" + id + "/approve", Map.of("_csrf", csrf(get(ordinary, "/issues").body()))).statusCode()).isEqualTo(403);
+        HttpClient admin = login("pgadmin");
+        var queue = get(admin, "/admin/users?search=" + applicant);
+        assertThat(queue.statusCode()).isEqualTo(200);
+        assertThat(queue.body()).contains(applicant, "승인 대기");
+        assertThat(post(admin, "/admin/users/" + id + "/approve", Map.of("_csrf", csrf(queue.body()))).statusCode()).isEqualTo(302);
+        assertThat(jdbc.queryForMap("select enabled, approval_status from app_user where id=?", id))
+                .containsEntry("enabled", true).containsEntry("approval_status", "APPROVED");
+        assertThat(get(admin, "/admin/users?status=&search=" + applicant).body()).contains(applicant, "승인 완료");
+        HttpClient approved = login(applicant);
+        var projectsPage = get(approved, "/projects");
+        assertThat(projectsPage.statusCode()).isEqualTo(200);
+        var registration = post(approved, "/projects", Map.of("_csrf", csrf(projectsPage.body()),
+                "repositoryUrl", "https://github.com/example/" + applicant));
+        assertThat(registration.statusCode()).isEqualTo(302);
+        long created = jdbc.queryForObject("select id from project where owner_id=?", Long.class, id);
+        assertThat(jdbc.queryForObject("select status from project where id=?", String.class, created)).isEqualTo("PENDING");
+        String projectToken = csrf(get(approved, "/projects/" + created).body());
+        assertThat(post(approved, "/projects/" + created + "/review", Map.of("_csrf", projectToken)).statusCode()).isEqualTo(409);
+        assertThat(post(admin, "/admin/projects/" + created + "/approve", Map.of("_csrf", csrf(get(admin, "/projects/" + created).body()))).statusCode()).isEqualTo(302);
+        assertThat(jdbc.queryForObject("select status from project where id=?", String.class, created)).isEqualTo("APPROVED");
+        assertThat(get(approved, "/admin/users").statusCode()).isEqualTo(403);
     }
 
     @Test

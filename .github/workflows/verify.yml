@@ -42,6 +42,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Check tracked files for secrets
+        run: python3 scripts/check-secrets.py --tracked
       - name: Set up Java 25
         uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
@@ -58,7 +60,7 @@ jobs:
         run: |
           docker exec "$POSTGRES_SERVICE_ID" createdb -U reviewer_test reviewer_integration
           docker exec "$POSTGRES_SERVICE_ID" createdb -U reviewer_test identity_security
-      - name: Verify report gate fixtures
+      - name: Verify security and report gate fixtures
         run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
       - name: Build and run all local integration tests
         env:

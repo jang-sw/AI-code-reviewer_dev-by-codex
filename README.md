@@ -1,6 +1,6 @@
 # AI Code Reviewer
 
-GitHub·설치형 GitLab 저장소 주소를 등록하고, 승인된 프로젝트의 전체 커밋 이력과 새 변경을 매시간 AI로 리뷰하는 웹 애플리케이션입니다. Ollama 직접 연결과 LiteLLM을 지원하며, 수정 권고를 내부 사용자 이슈함에 배정합니다.
+GitHub·설치형 GitLab 저장소 주소를 등록하고, 승인된 프로젝트의 전체 커밋 이력과 새 변경을 매시간 AI로 리뷰하는 웹 애플리케이션입니다. Ollama, LiteLLM, OpenAI API 직접 연결을 지원하며, 수정 권고를 내부 사용자 이슈함에 배정합니다. 사용자가 회원가입과 프로젝트 등록을 신청하고 관리자가 승인합니다.
 
 **현재 상태: 개발 중. 운영 릴리스 전 필수 검증과 기능 보완이 남아 있습니다.**
 
@@ -9,6 +9,8 @@ GitHub·설치형 GitLab 저장소 주소를 등록하고, 승인된 프로젝�
 - [현재 진행 상태와 다음 작업](WORK.md)
 - [설정·운영 가이드](docs/OPERATIONS.md)
 - [AI 실제 검증 결과](docs/AI-EVALUATION.md)
+- [OpenAI 연결과 키 관리](docs/OPENAI-INTEGRATION.md)
+- [커밋 전 비밀정보 검사](docs/SECRET-HYGIENE.md)
 
 Java 25가 필요합니다. Maven은 wrapper로 내려받습니다.
 

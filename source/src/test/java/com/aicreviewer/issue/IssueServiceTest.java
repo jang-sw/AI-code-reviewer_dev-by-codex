@@ -34,11 +34,11 @@ class IssueServiceTest {
     @Test
     void ordinaryUsersSeeOnlyAssignedIssuesWhileAdminSeesAll() {
         var author = service.list(actor("author"), "OPEN", 0);
-        assertThat(author.total()).isEqualTo(1);
+        assertThat(author.issues()).hasSize(1);
         assertThat(author.issues().getFirst().get("title")).isEqualTo("Author finding");
-        assertThat(service.list(actor("owner"), "OPEN", 0).total()).isEqualTo(1);
+        assertThat(service.list(actor("owner"), "OPEN", 0).issues()).hasSize(1);
         assertThat(service.list(actor("other"), "", 0).issues()).isEmpty();
-        assertThat(service.list(actor("admin"), "", 0).total()).isEqualTo(2);
+        assertThat(service.list(actor("admin"), "", 0).issues()).hasSize(2);
     }
 
     @Test
@@ -125,10 +125,28 @@ class IssueServiceTest {
         var second = service.list(actor("author"), "OPEN", 1);
         assertThat(first.issues()).hasSize(25);
         assertThat(first.issues().getFirst().get("id")).isEqualTo(129L);
-        assertThat(first.total()).isEqualTo(29);
         assertThat(first.hasNext()).isTrue();
         assertThat(second.issues()).hasSize(4);
         assertThat(second.hasNext()).isFalse();
+        assertThat(second.issues()).extracting(issue -> issue.get("id"))
+                .doesNotContainAnyElementsOf(first.issues().stream().map(issue -> issue.get("id")).toList());
+    }
+
+    @Test
+    void listBoundsContentAndDetailRequiresAssigneeOrAdministrator() {
+        String description = "검토 내용".repeat(200);
+        String suggestion = "수정 권고".repeat(200);
+        db.jdbc.update("update review_issue set description = ?, suggestion = ? where id = 100", description, suggestion);
+        var preview = service.list(actor("author"), "OPEN", 0).issues().getFirst();
+        assertThat((String) preview.get("description_preview")).hasSize(240);
+        assertThat(preview).doesNotContainKeys("description", "suggestion", "author_email");
+        assertThat(service.detail(100, actor("author"))).containsEntry("description", description).containsEntry("suggestion", suggestion);
+        assertThat(service.detail(100, actor("admin"))).containsEntry("title", "Author finding");
+        for (long id : new long[]{100, 99999}) {
+            assertThatThrownBy(() -> service.detail(id, actor("owner")))
+                    .isInstanceOfSatisfying(ResponseStatusException.class, e -> assertThat(e.getStatusCode().value()).isEqualTo(404));
+        }
+        assertThatThrownBy(() -> service.list(actor("author"), " ", 0)).isInstanceOf(ResponseStatusException.class);
     }
 
     private ReviewActor actor(String username) { return reviews.actor(username); }

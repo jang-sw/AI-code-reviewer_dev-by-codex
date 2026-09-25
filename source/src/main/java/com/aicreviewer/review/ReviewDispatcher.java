@@ -17,6 +17,9 @@ import javax.sql.DataSource;
 /** Bounded background work keeps slow AI calls out of servlet request threads. */
 @Service
 public class ReviewDispatcher {
+    static final int QUEUE_CAPACITY = 1000;
+    static final int MAX_CONCURRENCY = 16;
+    static final int MAX_SCHEDULE_CANDIDATES = QUEUE_CAPACITY + MAX_CONCURRENCY;
     private static final System.Logger LOG = System.getLogger(ReviewDispatcher.class.getName());
     private final ReviewCoordinator coordinator;
     private final ThreadPoolExecutor executor;
@@ -32,13 +35,13 @@ public class ReviewDispatcher {
     }
 
     ReviewDispatcher(ReviewCoordinator coordinator, int concurrency, Integer connectionPoolSize) {
-        if (concurrency < 1 || concurrency > 16) throw new IllegalArgumentException("Review concurrency must be between 1 and 16");
+        if (concurrency < 1 || concurrency > MAX_CONCURRENCY) throw new IllegalArgumentException("Review concurrency must be between 1 and 16");
         if (connectionPoolSize != null && connectionPoolSize < 2 * concurrency + 2) {
             throw new IllegalArgumentException("JDBC pool must have at least 2 * app.review.concurrency + 2 connections for review locks, transactions and web requests");
         }
         this.coordinator = coordinator;
         this.executor = new ThreadPoolExecutor(concurrency, concurrency, 0L, TimeUnit.MILLISECONDS,
-                new ArrayBlockingQueue<>(1000), Thread.ofPlatform().name("project-review-", 0).factory(), new ThreadPoolExecutor.AbortPolicy());
+                new ArrayBlockingQueue<>(QUEUE_CAPACITY), Thread.ofPlatform().name("project-review-", 0).factory(), new ThreadPoolExecutor.AbortPolicy());
     }
 
     public Submission submitManual(long projectId, String username) {
@@ -68,6 +71,17 @@ public class ReviewDispatcher {
     }
 
     public boolean isQueued(long projectId) { return inFlight.contains(projectId); }
+
+    /**
+     * Query enough candidates to get past every locally queued project, while bounding JDBC allocation.
+     * Limiting to only the currently free slots would let old in-flight IDs hide eligible later IDs.
+     * Executor state can change after this snapshot; submit still handles saturation atomically.
+     */
+    int scheduledCandidateLimit() {
+        if (executor.isShutdown() || (executor.getQueue().remainingCapacity() == 0
+                && executor.getActiveCount() >= executor.getMaximumPoolSize())) return 0;
+        return QUEUE_CAPACITY + executor.getMaximumPoolSize();
+    }
 
     @PreDestroy
     public void close() {
