@@ -1,7 +1,7 @@
 # 구현 계약 (1차 개발)
 
 - Java 25, Spring Boot 4.0.8, Maven, PostgreSQL 17, Spring JDBC, Flyway, Spring Security, JSP/JSTL, executable WAR.
-- 기본 패키지 `com.aic reviewer`가 아니라 `com.aicreviewer`. 서버 시각은 UTC `Instant`, DB `timestamptz`.
+- 기본 패키지 `com.aicreviewer`. 서버 시각은 UTC `Instant`, DB `timestamptz`.
 - 인증은 세션 + CSRF, 역할 ADMIN/USER. JSP 출력은 c:out, JSP Java scriptlet 금지.
 - 기본 리뷰는 내부 이슈이며 외부 Git 이슈 작성은 아직 하지 않는다. 사용자 확정: 첫 승인 후 전체 커밋 이력을 오래된 순서로 배치 리뷰한다.
 - 구성: `app.ai.provider=ollama|litellm`, `app.ai.base-url`, `app.ai.model`, `app.ai.api-key`, `app.ai.timeout-seconds`; `app.git.allowed-hosts` (쉼표 구분), `app.git.github-api-url`, `app.git.token`, `app.git.timeout-seconds`; `app.review.enabled`, `app.review.cron=0 0 * * * *`, `app.review.max-commits=100`.
@@ -9,7 +9,7 @@
 
 ## 데이터 계약
 
-`app_user`: id bigint identity PK, username varchar(80) unique, password_hash varchar(255), git_username varchar(100), role varchar(10) ADMIN/USER, enabled boolean, created_at timestamptz. username와 git_username은 소문자 정규화, git_username unique.
+`app_user`: id bigint identity PK, username varchar(80) unique, password_hash varchar(255), git_username varchar(100), role varchar(10) ADMIN/USER, enabled boolean, created_at timestamptz, security_version bigint default 0 (V2). username와 git_username은 소문자 정규화, git_username unique.
 
 `project`: id bigint identity PK, name varchar(120), repository_url varchar(2048) unique, provider varchar(10) GITHUB/GITLAB, repository_host varchar(255), repository_path varchar(1024), owner_id bigint FK app_user, status varchar(20) PENDING/APPROVED/REJECTED/PAUSED, review_branch varchar(255) nullable (null이면 기본 브랜치), last_reviewed_sha varchar(64) nullable, approved_at timestamptz nullable, created_at timestamptz, updated_at timestamptz.
 
@@ -37,7 +37,7 @@
 - meaningful HTTP fixtures tests, no live external calls.
 
 ### review/issues (agent)
-- package `review`: scheduled execution default every hour conditional app.review.enabled, manual POST `/projects/{id}/review` restricted owner/admin approved only. PostgreSQL advisory lock on dedicated connection covers full run across instances, unlock in finally. JDBC transactions persist commit+issues+cursor atomically; fail run without advancing failed commit. Use GitRepositoryClient and AiReviewClient contracts.
+- package `review`: scheduled execution default every hour conditional app.review.enabled, manual POST `/projects/{id}/review` restricted owner/admin approved only. PostgreSQL advisory lock on dedicated connection covers full run across instances, unlock in finally. JDBC transactions persist commit+issues atomically; only checkpoint cursor when whole batch succeeds. On failure retain previous safe batch cursor and deduplicate saved commits on retry. Use GitRepositoryClient and AiReviewClient contracts.
 - unique reviewed_commit prevents duplicates. Assign to enabled user with lower(git_username)=lower(authorLogin); else project owner (explicit fallback in UI/docs).
 - package `issue`: GET `/issues` visibility assignee or admin, POST `/issues/{id}/status` bound status/ownership. `/` dashboard and project detail review data can be separate `/reviews?projectId=...` route. JSP owned by this agent for dashboard/issues/reviews.
 - All record fields for JSP need JavaBean getters or map view models; ensure escaping and CSRF inputs.

@@ -1,0 +1,5 @@
+<%@ page pageEncoding="UTF-8" %>
+</main>
+<footer class="site-footer"><span>Code Reviewer</span><span>AI 리뷰는 수정 권고입니다. 변경 전 코드와 근거를 확인하세요.</span></footer>
+</body>
+</html>

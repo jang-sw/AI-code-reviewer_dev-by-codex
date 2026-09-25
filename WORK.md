@@ -1,32 +1,41 @@
 # 현재 작업 상태
 
-- 작업: AI 소스코드 리뷰 시스템 신규 개발, 실사용 릴리스 목표.
-- 상태: 개발 진행 중. 릴리스 완료 아님.
-- 시작: 2026-09-25 22:32 KST. 이번 회차 상한 약 2시간 (00:32 KST).
-- 기준 브랜치/커밋: `main` / `2bf1762`. 시작 작업 트리 깨끗함, 기존 코드 없음.
-- 요구사항: `docs/REQUIREMENTS.md`. 확정: 내부 이슈함 우선, 첫 승인 후 전체 커밋 이력 리뷰.
+- 작업: 실사용 AI 소스코드 리뷰 시스템 신규 개발. **개발 중, 릴리스 완료 아님.**
+- 이번 회차: 2026-09-25 22:32 KST 시작, 상한 약 2시간 (09-26 00:32 KST).
+- 기준 브랜치/커밋: `main` / `5c115bd` (기획 커밋), 기능 변경 로컬 커밋 준비.
+- 확정 요구사항: `docs/REQUIREMENTS.md`. 내부 이슈함, 최초 전체 이력 리뷰, 기존 Java25/Spring/Maven/JSP/PostgreSQL 유지.
 
-## 이번 회차 완료 조건
+## 구현·검증된 1차 흐름
 
-1. 기존 Java 25/Spring Boot/Maven/JSP/PostgreSQL 제약으로 실행·테스트 기반 구축.
-2. 계정/프로젝트 승인, GitHub/GitLab 수집, Ollama/LiteLLM 연결, 시간별 리뷰/내부 이슈의 초기 흐름 구현.
-3. 보안·실패·재시도 조건을 자동 테스트하고, 가능한 실제 PostgreSQL 및 WAR 실행 검증.
-4. 검증한 단위 로컬 커밋, 남은 릴리스 조건 기록. main 푸시는 별도 승인 전 하지 않음.
+- Maven Wrapper + WAR, PostgreSQL Flyway V1/V2, JSP/JSTL 반응형 UI.
+- ADMIN 계정 생성·관리, USER 로그인/비밀번호, BCrypt12·CSRF·CSP·로그인 제한·영구 세션 폐기·동시 마지막 관리자 보호.
+- URL 프로젝트 신청·승인/반려/중지/재개, 소유권 검사.
+- GitHub/GitLab 전체 이력/페이지/부모 그래프 및 diff 완전성 검사, Ollama/LiteLLM 구조화 출력 검증.
+- 시간별/수동 백그라운드 리뷰, PG advisory lock, 커밋별 저장과 배치 성공 checkpoint, 재시도 중복 방지.
+- 내부 이슈함/상태/배정 사유, 감사 기록, 일반화된 오류 화면.
+- 실제 패키지에서 발견한 JSP forward/CSP/record property/UTF8 문제 수정.
+- 교차 리뷰로 발견한 encoded 로그인 경로 제한 우회·아이디 정규화 우회·Git token scheme/port 격리 수정.
 
-## 진행
+## 마지막 실제 검증
 
-- 관련 지침/문서, Git 상태, Java 25와 PostgreSQL 17 설치를 확인했다.
-- 기획/개발 계약 작성, 병렬 모듈 구현 시작. Maven 실행기 준비 중.
-- 구현: 미완료. 검증: 아직 미실행.
+- `scripts/test-postgres.ps1`: PostgreSQL17.9 격리 클러스터 생성/시작/종료 및 `mvnw verify` 성공. 총140건 중138통과, 외부 서비스 선택검증2건 skip.
+- 실제 PostgreSQL7개 HTTP/JSP/권한/배치/SQL오류 rollback 검사와 관리자 동시성1개 포함. 소유자 수동 POST→큐→리뷰→DB 저장 확인.
+- 공개 GitHub octocat/Hello-World 전체 이력·head 재개 smoke: 별도 실행 통과(1.86초).
+- 설치된 로컬 Ollama gemma3:1b smoke: JSON 프로토콜 통과(72.75초). 안전한 변경에 오탐·영어 응답 확인, 품질 합격 아님 (`docs/AI-EVALUATION.md`).
+- 실행 WAR의 브라우저 로그인·빈 대시보드·프로젝트 URL 등록/승인 확인. 390/1280 viewport에서 page 가로 넘침 없음. 모든 화면/키보드 전체 검증은 남음.
+- 실패했던 테스트/실행 문제는 수정 후 위 검증으로 재확인. 외부 GitLab/LiteLLM·운영 배포·부하·복원·취약점 검사는 미실행.
+- 커밋 전 교차 검토의 이슈 전체 필터·diff 문자열 오인 문제를 수정하고 HTTP 및 adapter 회귀 검증 통과.
 
-## 다음 할 일
+## 다음 작업
 
-- 빌드/DB 스키마/구성 및 공통 화면 작성.
-- 모듈 통합, 권한·커서/트랜잭션·API/AI 오류 테스트 실행.
-- 실제 PostgreSQL 격리 환경 검증과 패키지 화면 실행.
+1. 1차 구현 staged diff 전체 검토 후 로컬 커밋.
+2. GitLab 이메일/호스트별 작성자 매핑과 복수 비공개 호스트 자격증명 보완.
+3. 큰/binary/rename 변경 처리, 모델 품질 평가, 운영 검증은 릴리스 체크리스트 기준으로 이어서 진행.
 
-## 문제·미확인
+## 재개·운영 메모
 
-- 실제 Git/AI 자격증명·설치 모델·운영 연결 미검증.
-- 테스트용 DB는 운영 DB와 분리해 임시 로컬 클러스터로 준비할 예정.
-- 전체 릴리스 점검은 docs/REQUIREMENTS.md 기준; 이번 회차에서 미달하면 다음 회차로 기록.
+- 원격 origin: jang-sw/code-reviewer_by-codex. main 직접 푸시 별도 승인 없음 → 로컬 커밋만, 푸시/배포 없음.
+- `.local/pg-test` 개발검증 PG는127.0.0.1:55432, 운영 설치 DB와 분리. `.local/pg-validation` 스크립트 PG는55439, 스크립트가 종료함.
+- 격리 UI 테스트 WAR는127.0.0.1:18080, 리뷰 스케줄 비활성. 종료 전 상태를 정리한다. `.local`은 Git 제외.
+- 현재 GitLab 작성자 사용자명 부재→소유자 fallback. token 한 origin만 구성 가능. Binary/일부rename/mode-only, oversized diff·merge는 안전하게 실패함.
+- `docs/RELEASE-CHECKLIST.md` 미완료 항목이 남으면 완료라고 보고하지 않는다. 사용자가 `이어서 진행`하면 실제 Git/코드/문서를 대조하고 계속한다.
