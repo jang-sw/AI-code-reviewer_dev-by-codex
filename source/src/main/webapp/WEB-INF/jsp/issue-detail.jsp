@@ -11,7 +11,7 @@
   <dt>커밋</dt><dd><code class="commit-sha"><c:out value="${issue.commit_sha}"/></code><c:if test="${not empty issue.commit_url}"> · <a href="<c:out value='${issue.commit_url}'/>" target="_blank" rel="noopener noreferrer">원본 커밋 보기</a></c:if></dd>
 </dl><c:if test="${issue.assignment_reason == 'PROJECT_OWNER_FALLBACK' or issue.fallback_assignment}"><p class="notice assignment-notice">Git 작성자와 일치하는 활성 계정이나 작성자 매핑이 없어 프로젝트 소유자에게 배정했습니다. 연결이 필요하면 관리자에게 문의하세요.</p></c:if></section>
 <c:choose><c:when test="${issue.issue_kind == 'MANUAL_REVIEW'}">
-<section class="panel"><h2>직접 확인이 필요한 파일</h2><p class="notice">AI가 결함을 발견했다는 뜻이 아닙니다. 이 커밋의 AI 검토를 완료하지 못해 파일별 수동 확인 업무로 남겼습니다.</p><p><strong>확인 사유:</strong> <c:out value="${issue.manual_reason_label}"/></p><p class="preserve-lines"><c:out value="${issue.description}"/></p><h2>확인 방법</h2><p class="preserve-lines"><c:out value="${issue.suggestion}"/></p>
+<section class="panel"><h2>직접 확인이 필요한 파일</h2><p class="notice">AI 본문 검토 없이 배정된 파일별 수동 확인 업무입니다. 아래 사유와 변경 영향을 직접 확인해 주세요.</p><p><strong>확인 사유:</strong> <c:out value="${issue.manual_reason_label}"/></p><p class="preserve-lines"><c:out value="${issue.description}"/></p><h2>확인 방법</h2><p class="preserve-lines"><c:out value="${issue.suggestion}"/></p>
   <h2>파일 변경 확인 근거</h2><p>변경 전·후의 고정된 Git 파일 목록을 대조한 기록입니다. 파일 본문의 AI 검토 완료를 뜻하지 않습니다.</p><dl>
     <dt>이전 파일 객체</dt><dd><code><c:out value="${issue.manual_old_object_sha}" default="없음"/></code></dd>
     <dt>변경 후 파일 객체</dt><dd><code><c:out value="${issue.manual_new_object_sha}" default="없음"/></code></dd>

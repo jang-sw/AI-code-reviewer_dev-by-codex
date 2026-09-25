@@ -325,23 +325,36 @@ class ApplicationPostgresTest {
     }
 
     @Test
-    void verifiedEmptyAndMetadataOnlyCommitsPersistExplicitCoverageWithoutAiClaims() throws Exception {
+    void verifiedEmptyCommitAndMetadataManualTasksPersistWithoutAiClaims() throws Exception {
         projects.transition("pgadmin", projectId, "approve");
         GitCommit empty = new GitCommit("3".repeat(40), writer, null, "empty", "", "EMPTY", "파일 변경 없음");
         GitCommit metadata = new GitCommit("4".repeat(40), writer, null, "metadata", "", "METADATA_ONLY",
                 "<script>alert(1)</script> 경로 및 실행권한 변경: 100644 -> 100755");
+        GitCommit manual = new GitCommit(metadata.sha(), writer, null, metadata.message(), "", "MANUAL_ONLY", metadata.coverageDetails(),
+                List.of(new ManualReviewFile("run.sh", "6".repeat(40), "6".repeat(40), "100644", "100755", "METADATA_CHANGE")));
+        when(git.manualMetadataFallback(any(), eq(metadata))).thenReturn(manual);
         stubBatch(List.of(empty, metadata), metadata.sha());
         assertThat(reviews.reviewProject(projectId, writer)).isEqualTo(ReviewCoordinator.Outcome.SUCCEEDED);
         verifyNoInteractions(ai);
         assertThat(cursor()).isEqualTo(metadata.sha());
         assertThat(count("reviewed_commit")).isEqualTo(2);
-        assertThat(count("review_issue")).isZero();
+        assertThat(count("review_issue")).isEqualTo(1);
+        assertThat(count("manual_review_file")).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select reason_code from manual_review_file where project_id=?", String.class, projectId)).isEqualTo("METADATA_CHANGE");
         assertThat(jdbc.queryForList("select coverage_type from reviewed_commit where project_id=? order by id", String.class, projectId))
-                .containsExactly("EMPTY", "METADATA_ONLY");
-        var response = get(login(writer), "/reviews?projectId=" + projectId);
+                .containsExactly("EMPTY", "MANUAL_ONLY");
+        var owner = login(writer);
+        var response = get(owner, "/reviews?projectId=" + projectId);
         assertThat(response.statusCode()).isEqualTo(200);
-        assertThat(response.body()).contains("AI 본문 검토 없음", "수동 확인 필요", "&lt;script&gt;alert(1)&lt;/script&gt;")
+        assertThat(response.body()).contains("AI 본문 검토 없음", "수동 확인 이슈 배정", "&lt;script&gt;alert(1)&lt;/script&gt;")
                 .doesNotContain("<script>alert(1)</script>");
+        long manualIssueId = jdbc.queryForObject("select id from review_issue where project_id=?", Long.class, projectId);
+        var issue = get(owner, "/issues/" + manualIssueId);
+        assertThat(issue.statusCode()).isEqualTo(200);
+        assertThat(issue.body()).contains("run.sh", "100644", "100755", "수동 확인");
+        assertThat(reviews.reviewProject(projectId, writer)).isEqualTo(ReviewCoordinator.Outcome.SUCCEEDED);
+        assertThat(count("review_issue")).isEqualTo(1);
+        verify(git, times(1)).manualMetadataFallback(any(), eq(metadata));
     }
 
     @Test

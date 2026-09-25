@@ -69,6 +69,7 @@ public class IssueService {
                 case "SOURCE_DIFF_UNAVAILABLE" -> "Git 서비스에서 AI 검토에 필요한 전체 변경 내용을 확보하지 못했습니다.";
                 case "GIT_DIFF_BUDGET" -> "변경 내용이 수집 범위 또는 크기 제한을 초과했습니다.";
                 case "AI_INPUT_LIMIT" -> "변경 내용이 AI 입력 크기 제한을 초과했습니다.";
+                case "METADATA_CHANGE" -> "경로·권한·파일 유형 또는 검증된 빈 파일의 생성·삭제를 직접 확인해야 합니다.";
                 default -> "AI 검토를 완료하지 못해 직접 확인이 필요합니다.";
             });
         }

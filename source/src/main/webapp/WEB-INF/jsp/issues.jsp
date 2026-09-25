@@ -9,7 +9,7 @@
     <h2><a href="<c:out value='${detailUrl}'/>"><c:out value="${issue.title}"/></a></h2>
     <p class="muted">담당: <c:out value="${issue.assignee_username}"/> · <code class="file-path"><c:out value="${issue.file_path}"/><c:if test="${not empty issue.line_number}">:<c:out value="${issue.line_number}"/></c:if></code></p>
     <p class="preserve-lines"><c:out value="${issue.description_preview}"/></p>
-    <c:if test="${issue.issue_kind == 'MANUAL_REVIEW'}"><p class="hint">AI 검토를 완료하지 못한 파일의 수동 확인 업무입니다. AI가 결함을 발견했다는 뜻이 아닙니다.</p></c:if>
+    <c:if test="${issue.issue_kind == 'MANUAL_REVIEW'}"><p class="hint">AI 본문 검토 없이 배정된 수동 확인 업무입니다. 변경 영향을 직접 확인해 주세요.</p></c:if>
     <c:if test="${issue.assignment_reason == 'PROJECT_OWNER_FALLBACK' or issue.fallback_assignment}"><p class="hint">작성자 계정을 연결할 수 없어 프로젝트 소유자에게 배정했습니다.</p></c:if>
     <div class="actions"><a class="button button-secondary" href="<c:out value='${detailUrl}'/>"><c:choose><c:when test="${issue.issue_kind == 'MANUAL_REVIEW'}">수동 확인 내용 읽기</c:when><c:otherwise>수정 권고 읽기</c:otherwise></c:choose></a><c:if test="${not empty issue.commit_url}"><a href="<c:out value='${issue.commit_url}'/>" target="_blank" rel="noopener noreferrer">원본 커밋 보기</a></c:if></div>
     <%@ include file="fragments/issue-status.jspf" %>

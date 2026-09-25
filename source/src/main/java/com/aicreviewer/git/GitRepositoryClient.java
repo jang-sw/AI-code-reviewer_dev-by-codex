@@ -91,8 +91,23 @@ public class GitRepositoryClient {
 
     /** Re-proves the entire pinned change before converting an AI preflight limit into manual work. */
     public GitCommit manualFallback(RepositoryUrl repository, GitCommit original) {
-        if (original == null || original.sha() == null || !validSha(original.sha()) || !"FULL".equals(original.coverageType())) {
+        return manualFallback(repository, original, "FULL", "AI_INPUT_LIMIT");
+    }
+
+    /** New metadata-only work requires per-path evidence; stored historical results are never rewritten. */
+    public GitCommit manualMetadataFallback(RepositoryUrl repository, GitCommit original) {
+        return manualFallback(repository, original, "METADATA_ONLY", "METADATA_CHANGE");
+    }
+
+    private GitCommit manualFallback(RepositoryUrl repository, GitCommit original, String expectedCoverage, String reason) {
+        if (original == null || original.sha() == null || !validSha(original.sha()) || !expectedCoverage.equals(original.coverageType())) {
             throw new IllegalArgumentException("Manual AI fallback requires a complete pinned commit");
+        }
+        if (expectedCoverage.equals("METADATA_ONLY") && (original.diff() == null || original.coverageDetails() == null
+                || original.coverageDetails().isBlank() || original.coverageDetails().length() > 16000
+                || original.diff().lines().anyMatch(line -> line.startsWith("@@")
+                || (line.startsWith("+") && !line.startsWith("+++ ")) || (line.startsWith("-") && !line.startsWith("--- "))))) {
+            throw new IllegalArgumentException("Metadata manual fallback requires validated bodyless coverage");
         }
         RepositoryUrl checked = RepositoryUrl.parse(repository.normalizedUrl(), allowedHosts);
         if (!checked.equals(repository)) throw new IllegalArgumentException("Repository metadata does not match its URL");
@@ -107,7 +122,7 @@ public class GitRepositoryClient {
                 throw new IntegrationException("Git returned inconsistent pinned commit metadata");
             }
             return manualCommit(repository, base, new CommitMeta(meta.sha(), original.authorLogin(), original.authorEmail(),
-                    original.message(), meta.parents()), "AI_INPUT_LIMIT");
+                    original.message(), meta.parents()), reason);
         } finally {
             operationDeadline.remove();
         }
@@ -161,6 +176,7 @@ public class GitRepositoryClient {
                 }
                 String patch = optionalManualPatch(file, "patch");
                 boolean bodyless = manualBodyless(before, after, oldPath, path, meta.sha().length());
+                requireMetadataOnlyEvidence(reason, bodyless);
                 if (bodyless) validateBodylessPatch(patch, adds, deletes);
                 else if (patch != null && !patch.isBlank() && !binaryPatch(patch)) {
                     // A large complete patch may be unsuitable for AI, but its reported statistics must still agree.
@@ -220,6 +236,7 @@ public class GitRepositoryClient {
                 boolean unavailable = collapsed || tooLarge;
                 String patch = optionalManualPatch(file, "diff");
                 boolean bodyless = manualBodyless(before, after, oldPath, path, meta.sha().length());
+                requireMetadataOnlyEvidence(reason, bodyless);
                 if (bodyless) {
                     if (unavailable) throw new IntegrationException("GitLab unavailable diff contradicts unchanged blob or empty-file proof");
                     validateBodylessPatch(patch, 0, 0);
@@ -279,6 +296,12 @@ public class GitRepositoryClient {
     private static boolean manualBodyless(String before, String after, String oldPath, String path, int shaLength) {
         return (before != null && after != null && blob(before).equals(blob(after)) && blobMode(mode(before)) && blobMode(mode(after)))
                 || emptyFileChange(before, after, oldPath, path, shaLength);
+    }
+
+    private static void requireMetadataOnlyEvidence(String reason, boolean bodyless) {
+        if (reason.equals("METADATA_CHANGE") && !bodyless) {
+            throw new IntegrationException("Metadata manual evidence includes an unproven file body change");
+        }
     }
 
     private static void rejectInvalidEmptyObject(String before, String after, int shaLength) {
@@ -386,7 +409,9 @@ public class GitRepositoryClient {
                     before == null ? null : mode(before), after == null ? null : mode(after), reason);
         }).toList();
         String details = "AI 본문 검토 없음. 고정 커밋과 첫 부모의 전체 트리로 변경 경로 " + files.size()
-                + "개를 확인했습니다. 일부 파일의 본문 또는 입력 한도 때문에 지원 가능한 파일도 포함하여 커밋 전체를 수동 확인해야 합니다."
+                + "개를 확인했습니다. " + (reason.equals("METADATA_CHANGE")
+                ? "본문이 같은 파일의 경로·권한·파일 유형 변경 또는 검증된 빈 파일 생성·삭제입니다. 모든 변경 경로를 수동 확인해야 합니다."
+                : "일부 파일의 본문 또는 입력 한도 때문에 지원 가능한 파일도 포함하여 커밋 전체를 수동 확인해야 합니다.")
                 + (unknownLineCounts ? " GitLab이 제공하지 않은 본문의 추가·삭제 행수는 검증할 수 없습니다. 제공된 본문의 통계 모순은 검사했습니다." : "");
         if (System.nanoTime() >= operationDeadline.get()) throw new IntegrationException("Git operation exceeded its time budget");
         return new GitCommit(meta.sha(), meta.author(), meta.authorEmail(), meta.message(), "", "MANUAL_ONLY", details, files);

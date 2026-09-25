@@ -6,7 +6,7 @@
   <c:url var="projectUrl" value="/projects/${projectId}"/><a href="<c:out value='${projectUrl}'/>">프로젝트로 돌아가기</a>
   <c:if test="${projectStatus == 'APPROVED'}"><c:url var="reviewAction" value="/projects/${projectId}/review"/><form method="post" action="<c:out value='${reviewAction}'/>"><input type="hidden" name="<c:out value='${_csrf.parameterName}'/>" value="<c:out value='${_csrf.token}'/>"><button type="submit">지금 리뷰 실행</button></form></c:if>
 </div>
-<section class="panel"><h2>검토가 완료된 이력의 기준 커밋</h2><c:choose><c:when test="${empty cursor}"><p>아직 모든 선행 변경의 검토가 완료된 기준 커밋이 없습니다. 이미 저장된 커밋 리뷰는 다음 실행에서 재사용합니다.</p></c:when><c:otherwise><code class="commit-sha"><c:out value="${cursor}"/></code></c:otherwise></c:choose></section>
+<section class="panel"><h2>리뷰 처리가 진행된 기준 커밋</h2><c:choose><c:when test="${empty cursor}"><p>아직 모든 선행 변경의 리뷰 처리를 마친 기준 커밋이 없습니다. 이미 저장된 커밋 리뷰는 다음 실행에서 재사용합니다.</p></c:when><c:otherwise><code class="commit-sha"><c:out value="${cursor}"/></code></c:otherwise></c:choose><p class="hint">수동 확인 이슈를 배정한 커밋도 진행 기준에 포함됩니다. 담당자의 확인 완료 여부는 이슈함에서 확인하세요.</p></section>
 <section class="panel" id="runs"><h2>실행 기록</h2><p class="muted">최신순 · 페이지당 50건</p>
   <c:choose><c:when test="${empty runs}"><p class="empty-state"><c:choose><c:when test="${runPage > 0}">이 페이지에는 실행 기록이 없습니다. 이전 페이지를 확인하세요.</c:when><c:otherwise>리뷰 실행 기록이 없습니다. 승인 후 예약 실행 또는 지금 리뷰 실행으로 시작하세요.</c:otherwise></c:choose></p></c:when><c:otherwise>
   <p id="review-history-scroll-hint" class="hint review-history-scroll-hint">표를 좌우로 이동해 확인하세요. 키보드는 표를 선택한 뒤 좌우 방향키를 사용하세요.</p>

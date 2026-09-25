@@ -35,6 +35,8 @@ V7 `app_user.approval_status` PENDING/APPROVED/REJECTED(default APPROVED), appro
 
 V10은 기존 coverage 값을 유지하며 `MANUAL_ONLY`를 추가한다. `manual_review_file`은 프로젝트·커밋·변경 경로·old/new 객체 SHA/모드·reason_code(SOURCE_DIFF_UNAVAILABLE/GIT_DIFF_BUDGET/AI_INPUT_LIMIT)·evidence_kind(PINNED_TREES)를 저장한다. 커밋당 최대1000개, 경로 UNIQUE. `review_issue.issue_kind`는 기존/기본AI_FINDING 또는MANUAL_REVIEW, 후자는 severity/line_number NULL 및 manual_file_id 필수다. 프로젝트/커밋 포함 복합FK와 manual_file_id UNIQUE로 교차 연결/중복을 방지한다. `resolution_note` 최대1000자, 수동 상태 변경의5..1000자 사유와 감사 저장은 원자적이다. `audit_event.detail`은1200자로 확장한다.
 
+V11은 기존 증거와 이슈를 보존하며 reason_code에 `METADATA_CHANGE`를 추가한다. 새 `METADATA_ONLY` 커밋은 `manualMetadataFallback(repository,original)`로 고정 tree·변경 목록·본문 없음 근거를 재검증하고 수동 업무로 저장한다. 이미 저장한 과거 결과에 이슈를 소급 생성하지 않는다.
+
 `/projects`는 q/status/page, `/admin/users`는 search/status/page, `/issues`는 status/page로 제한된 목록을 조회한다. page는0..10000이며 lookahead 한 건으로 다음 페이지 여부를 판단한다. 이슈 상세 `/issues/{id}`도 담당자/관리자만 조회하며 관련 없는 사용자는 존재하지 않는 이슈와 같은404를 받는다.
 
 ### identity/project (agent)
@@ -57,7 +59,7 @@ V10은 기존 coverage 값을 유지하며 `MANUAL_ONLY`를 추가한다. `manua
 ### review/issues (agent)
 - package `review`: scheduled execution default every hour conditional app.review.enabled, manual POST `/projects/{id}/review` restricted owner/admin approved only. PostgreSQL advisory lock on dedicated connection covers full run across instances, unlock in finally. JDBC transactions persist commit+issues atomically; only checkpoint cursor when whole batch succeeds. On failure retain previous safe batch cursor and deduplicate saved commits on retry. Use GitRepositoryClient and AiReviewClient contracts.
 - 관리자 복구 POST `/admin/projects/{id}/review-progress/reset`: PAUSED 프로젝트의 정확한 repositoryUrl/expectedCursor와 reason5..500자를 확인한다. 서비스는 외부 트랜잭션 없이 advisory lease를 획득한 뒤 새 트랜잭션에서 권한/row lock/상태를 재검사한다. last_reviewed_sha=NULL + 감사 기록 commit/rollback 후 lease를 닫는다. 기존 runs/commits/issues와 PAUSED는 보존한다.
-- `METADATA_ONLY`에는 같은 blob의 경로·모드 변경과, 고정 tree 및 canonical Git 빈 blob으로 증명한 정규 빈 파일 생성·삭제가 포함된다. AI 본문 검토 및 자동 이슈 생성은 없으며 수동 확인 범위를 표시한다. 본문 diff와 섞이면 FULL로 전달한다.
+- Git adapter의 `METADATA_ONLY`에는 같은 blob의 경로·모드 변경과 canonical 빈 파일 생성·삭제가 포함된다. coordinator는 신규 결과를 재증명한 뒤 `METADATA_CHANGE` 사유의 `MANUAL_ONLY` 업무로 배정한다. 파일 변경 자체가 없는 `EMPTY`는 업무가 없고, 본문 diff와 섞인 `FULL`은 메타데이터 header도 AI에 전달한다. 과거 저장된 `METADATA_ONLY`는 그대로 표시한다.
 - `MANUAL_ONLY`는 AI 본문 검토 없이 전체 파일별 수동 이슈·근거·배정 감사·실행 건수를 커밋과 함께 저장한다. 다음 커밋 진행과 사람의 확인 완료는 별개다. 수동 이슈 닫기는 reviewed_commit 범위나 cursor를 바꾸지 않는다.
 - unique reviewed_commit prevents duplicates. github.com의 authorLogin과 활성 사용자 Git 계정이 맞으면 우선 배정한다. 그 외에는 정확한 origin/email 관리자 매핑의 활성 사용자, 없으면 프로젝트 소유자 순서다. GitLab 사용자명으로 GitHub 계정 namespace를 매칭하지 않는다.
 - package `issue`: GET `/issues` visibility assignee or admin, POST `/issues/{id}/status` bound status/ownership. `/` dashboard and project detail review data can be separate `/reviews?projectId=...` route. JSP owned by this agent for dashboard/issues/reviews.

@@ -1,11 +1,12 @@
 # 검토 범위 확장 설계안 — 부분 구현 / 나머지 PROPOSED
 
-작성·갱신: 2026-09-26. 기준: `GitRepositoryClient`, `AiReviewClient`, `ReviewCoordinator`, `ReviewRepository`, 내부 이슈 화면 및 V1~V10 스키마.
+작성·갱신: 2026-09-26. 기준: `GitRepositoryClient`, `AiReviewClient`, `ReviewCoordinator`, `ReviewRepository`, 내부 이슈 화면 및 V1~V11 스키마.
 
-**사용자가 미검토 변경의 수동 이슈 배정 후 다음 커밋 진행을 확정했다.** 동일 blob/빈 파일 증명에 더해 V10 수동 이슈·고정 tree 증거와 파일 경계 AI 분할을 구현 중이며 검증 결과는 WORK.md에 기록한다. 아래는 초기 설계와 후속 확장 제안을 보존한 문서이고, 실제 구현은 다음 범위로 한정한다. 확정 요구사항은 [REQUIREMENTS.md](REQUIREMENTS.md), 현재 계약은 [IMPLEMENTATION-CONTRACT.md](IMPLEMENTATION-CONTRACT.md)를 따른다.
+**사용자가 미검토 변경의 수동 이슈 배정 후 다음 커밋 진행을 확정했다.** V10 수동 이슈·고정 tree 증거와 파일 경계 AI 분할을 검증했고 V11에서 신규 메타데이터-only의 업무 배정도 보완·검증했다. 최신 검증은 WORK.md에 기록한다. 아래는 초기 설계와 후속 확장 제안을 보존한 문서이고, 실제 구현은 다음 범위로 한정한다. 확정 요구사항은 [REQUIREMENTS.md](REQUIREMENTS.md), 현재 계약은 [IMPLEMENTATION-CONTRACT.md](IMPLEMENTATION-CONTRACT.md)를 따른다.
 
 - 미제공 diff·수집/모델 입력 한도에서 전체 변경 목록과 현재/첫 부모 tree를 검증하면 커밋 전체를 `MANUAL_ONLY`로 저장한다. 혼합 커밋의 지원 가능한 text도 이번 구현에서는 수동 이슈에 포함한다. 경로당 업무1개, 최대1000개이며 초과하면 실패한다.
 - 수동 이슈는 AI 결함 권고와 분리하고 처리 사유를 필수로 기록한다. 기존 `FULL/EMPTY/METADATA_ONLY`와 이슈는 유지하며 소급 생성하지 않는다. raw blob 내용 무결성이나 binary 형식을 확인했다고 주장하지 않는다.
+- 새 `METADATA_ONLY`도 변경 경로/모드·canonical 빈 파일의 영향을 확인하도록 재증명 후 `METADATA_CHANGE` 수동 이슈를 배정한다. `EMPTY`는 업무가 없고, 본문과 섞인 `FULL`은 해당 메타데이터 header까지 AI 검토에 포함한다.
 - context 초과 시 완전한 파일 경계로 사전 분할하며 총 호출/시간/집계 상한을 적용한다. 한 파일 내부의 hunk 분할, 원본 blob 기반 diff 복원, 일부 AI/일부 수동 혼합 저장은 미구현이다.
 - API/응답/트리·목록 불완전성/통계 모순은 여전히 실패다. GitLab 미제공 본문의 행수는 검증 불가임을 명시한다. 수동 업무 생성과 사람이 확인을 완료한 상태는 구분한다.
 

@@ -94,22 +94,29 @@ public class ReviewCoordinator {
     }
 
     private PreparedReview prepareReview(ReviewProject project, GitCommit commit) {
+        if ("METADATA_ONLY".equals(commit.coverageType())) {
+            return verifiedManualReview(commit, git.manualMetadataFallback(project.repository(), commit), "METADATA_CHANGE");
+        }
         try {
             return new PreparedReview(commit, reviewContent(commit));
         } catch (AiInputLimitException limit) {
             // Only a known, preflight input limit can become manual work. HTTP, timeout,
             // refusal and malformed output still fail the run and cannot move its cursor.
             if (!"FULL".equals(commit.coverageType())) throw limit;
-            GitCommit manual = git.manualFallback(project.repository(), commit);
-            if (manual == null || !"MANUAL_ONLY".equals(manual.coverageType()) || !commit.sha().equals(manual.sha())
-                    || !java.util.Objects.equals(commit.authorLogin(), manual.authorLogin())
-                    || !java.util.Objects.equals(commit.authorEmail(), manual.authorEmail())
-                    || !commit.message().equals(manual.message())) {
-                throw new IntegrationException("Manual review evidence does not match the original commit");
-            }
-            validateBatch(new GitReviewBatch(List.of(manual), manual.sha()), Set.of());
-            return new PreparedReview(manual, reviewContent(manual));
+            return verifiedManualReview(commit, git.manualFallback(project.repository(), commit), "AI_INPUT_LIMIT");
         }
+    }
+
+    private PreparedReview verifiedManualReview(GitCommit commit, GitCommit manual, String reason) {
+        if (manual == null || !"MANUAL_ONLY".equals(manual.coverageType()) || !commit.sha().equals(manual.sha())
+                || !java.util.Objects.equals(commit.authorLogin(), manual.authorLogin())
+                || !java.util.Objects.equals(commit.authorEmail(), manual.authorEmail())
+                || !commit.message().equals(manual.message())
+                || manual.manualFiles().stream().anyMatch(file -> !reason.equals(file.reasonCode()))) {
+            throw new IntegrationException("Manual review evidence does not match the original commit or reason");
+        }
+        validateBatch(new GitReviewBatch(List.of(manual), manual.sha()), Set.of());
+        return new PreparedReview(manual, reviewContent(manual));
     }
 
     private record PreparedReview(GitCommit commit, ReviewResult result) { }
@@ -117,7 +124,6 @@ public class ReviewCoordinator {
     private ReviewResult reviewContent(GitCommit commit) {
         return switch (commit.coverageType()) {
             case "EMPTY" -> new ReviewResult("AI 본문 검토 없음: Git 저장소에서 파일 변경이 없는 커밋임을 확인했습니다.", List.of());
-            case "METADATA_ONLY" -> new ReviewResult("AI 본문 검토 없음: 검증된 빈 파일 생성·삭제 또는 본문이 같은 파일의 경로·모드 변경입니다. 파일 존재 여부와 경로·권한·파일 유형 변경 수동 확인 필요.", List.of());
             case "MANUAL_ONLY" -> new ReviewResult("AI 본문 검토 없음: 이 커밋의 전체 변경 경로 " + commit.manualFiles().size()
                     + "개를 수동 확인 이슈로 배정했습니다. 이슈 처리는 별도로 필요하며 다음 커밋 리뷰는 계속 진행합니다.", List.of());
             case "FULL" -> ai.review(commit);

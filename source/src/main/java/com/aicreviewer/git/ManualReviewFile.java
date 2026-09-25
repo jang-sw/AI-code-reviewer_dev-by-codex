@@ -8,7 +8,7 @@ import java.util.Set;
 public record ManualReviewFile(String filePath, String oldObjectSha, String newObjectSha,
         String oldMode, String newMode, String reasonCode) {
     public static final int MAX_FILES = 1000;
-    public static final Set<String> REASONS = Set.of("SOURCE_DIFF_UNAVAILABLE", "GIT_DIFF_BUDGET", "AI_INPUT_LIMIT");
+    public static final Set<String> REASONS = Set.of("SOURCE_DIFF_UNAVAILABLE", "GIT_DIFF_BUDGET", "AI_INPUT_LIMIT", "METADATA_CHANGE");
 
     public ManualReviewFile {
         if (filePath == null || filePath.isBlank() || filePath.length() > 1024 || filePath.startsWith("/")
@@ -33,6 +33,7 @@ public record ManualReviewFile(String filePath, String oldObjectSha, String newO
             case "SOURCE_DIFF_UNAVAILABLE" -> "Git에서 일부 파일의 검토 가능한 본문 diff를 제공하지 않았습니다.";
             case "GIT_DIFF_BUDGET" -> "커밋 변경량이 Git diff 수집 한도를 초과했습니다.";
             case "AI_INPUT_LIMIT" -> "커밋이 파일 분할 후에도 AI 입력 또는 호출 수 한도를 초과했습니다.";
+            case "METADATA_CHANGE" -> "경로·권한·파일 유형 또는 검증된 빈 파일의 생성·삭제를 수동 확인해야 합니다.";
             default -> throw new IllegalStateException("Unknown manual review reason");
         };
     }

@@ -6,6 +6,7 @@ import com.aicreviewer.git.GitCommit;
 import com.aicreviewer.git.GitRepositoryClient;
 import com.aicreviewer.git.GitReviewBatch;
 import com.aicreviewer.git.IntegrationException;
+import com.aicreviewer.git.ManualReviewFile;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -58,18 +59,22 @@ class ReviewCoverageTest {
     }
 
     @Test
-    void metadataOnlyPersistsManualCheckNoticeAndDetailsWithoutCreatingAnIssue() {
+    void metadataOnlyPersistsEveryManualPathInsteadOfAnUnassignedNotice() {
         String details = "경로: old.sh → <script>new.sh</script>\n실행권한: 100644 → 100755";
         GitCommit commit = commit("METADATA_ONLY", details, "diff --git a/old.sh b/new.sh\nold mode 100644\nnew mode 100755\n");
         batch(commit);
+        metadataProof(commit, List.of(new ManualReviewFile("old.sh", "b".repeat(40), null, "100644", null, "METADATA_CHANGE"),
+                new ManualReviewFile("new.sh", null, "b".repeat(40), null, "100755", "METADATA_CHANGE")));
 
         assertThat(coordinator.reviewProject(10, "owner")).isEqualTo(ReviewCoordinator.Outcome.SUCCEEDED);
 
         verifyNoInteractions(ai);
-        assertThat(db.count("review_issue")).isZero();
+        assertThat(db.count("review_issue")).isEqualTo(2);
+        assertThat(db.count("manual_review_file")).isEqualTo(2);
         assertThat(db.jdbc.queryForObject("select summary from reviewed_commit", String.class))
-                .contains("AI 본문 검토 없음", "경로·권한·파일 유형 변경 수동 확인 필요");
-        assertThat(repository.reviewedCommits(10).getFirst()).containsEntry("coverage_type", "METADATA_ONLY").containsEntry("coverage_details", details);
+                .contains("AI 본문 검토 없음", "수동 확인 이슈", "2개");
+        assertThat(repository.reviewedCommits(10).getFirst()).containsEntry("coverage_type", "MANUAL_ONLY").containsEntry("coverage_details", details);
+        assertThat(db.jdbc.queryForList("select reason_code from manual_review_file", String.class)).containsOnly("METADATA_CHANGE");
         assertThat(db.cursor()).isEqualTo(commit.sha());
     }
 
@@ -78,14 +83,15 @@ class ReviewCoverageTest {
         String details = "이전 경로: config, 모드: 100644 → 새 경로: config, 모드: 120000 (동일 blob; 본문 변경 없음)";
         GitCommit commit = commit("METADATA_ONLY", details, "diff --git a/config b/config\nold mode 100644\nnew mode 120000\n");
         batch(commit);
+        metadataProof(commit, List.of(new ManualReviewFile("config", "b".repeat(40), "b".repeat(40), "100644", "120000", "METADATA_CHANGE")));
 
         assertThat(coordinator.reviewProject(10, "owner")).isEqualTo(ReviewCoordinator.Outcome.SUCCEEDED);
 
         verifyNoInteractions(ai);
-        assertThat(db.count("review_issue")).isZero();
+        assertThat(db.count("review_issue")).isEqualTo(1);
         assertThat(db.jdbc.queryForObject("select summary from reviewed_commit", String.class))
-                .contains("AI 본문 검토 없음", "파일 유형 변경 수동 확인 필요");
-        assertThat(repository.reviewedCommits(10).getFirst()).containsEntry("coverage_type", "METADATA_ONLY")
+                .contains("AI 본문 검토 없음", "수동 확인 이슈");
+        assertThat(repository.reviewedCommits(10).getFirst()).containsEntry("coverage_type", "MANUAL_ONLY")
                 .containsEntry("coverage_details", details);
         assertThat(db.cursor()).isEqualTo(commit.sha());
     }
@@ -143,7 +149,10 @@ class ReviewCoverageTest {
 
     @Test
     void fileHeadersAreAllowedForVerifiedMetadataOnlyCoverage() {
-        batch(commit("METADATA_ONLY", "rename a.sh → b.sh", "diff --git a/a.sh b/b.sh\n--- a/a.sh\n+++ b/b.sh\nrename from a.sh\nrename to b.sh\n"));
+        GitCommit commit = commit("METADATA_ONLY", "rename a.sh → b.sh", "diff --git a/a.sh b/b.sh\n--- a/a.sh\n+++ b/b.sh\nrename from a.sh\nrename to b.sh\n");
+        batch(commit);
+        metadataProof(commit, List.of(new ManualReviewFile("a.sh", "b".repeat(40), null, "100644", null, "METADATA_CHANGE"),
+                new ManualReviewFile("b.sh", null, "b".repeat(40), null, "100644", "METADATA_CHANGE")));
 
         assertThat(coordinator.reviewProject(10, "owner")).isEqualTo(ReviewCoordinator.Outcome.SUCCEEDED);
         verifyNoInteractions(ai);
@@ -152,7 +161,9 @@ class ReviewCoverageTest {
     @Test
     void maximumCoverageDetailsLengthIsAcceptedWithoutTruncation() {
         String details = "x".repeat(16000);
-        batch(commit("METADATA_ONLY", details, "metadata headers"));
+        GitCommit commit = commit("METADATA_ONLY", details, "metadata headers");
+        batch(commit);
+        metadataProof(commit, List.of(new ManualReviewFile("a.sh", "b".repeat(40), "b".repeat(40), "100644", "100755", "METADATA_CHANGE")));
 
         assertThat(coordinator.reviewProject(10, "owner")).isEqualTo(ReviewCoordinator.Outcome.SUCCEEDED);
 
@@ -175,15 +186,26 @@ class ReviewCoverageTest {
 
     @Test
     void retryOfStoredMetadataDoesNotCreateDuplicateCommitOrCallAi() {
-        batch(commit("METADATA_ONLY", "old mode 100644 → new mode 100755", "metadata headers"));
+        GitCommit old = commit("METADATA_ONLY", "old mode 100644 → new mode 100755", "metadata headers");
+        db.jdbc.update("insert into reviewed_commit(project_id,commit_sha,summary,coverage_type,coverage_details) values(10,?,'Existing metadata notice','METADATA_ONLY',?)", old.sha(), old.coverageDetails());
+        batch(old);
 
         assertThat(coordinator.reviewProject(10, "owner")).isEqualTo(ReviewCoordinator.Outcome.SUCCEEDED);
         assertThat(coordinator.reviewProject(10, "owner")).isEqualTo(ReviewCoordinator.Outcome.SUCCEEDED);
 
         assertThat(db.count("reviewed_commit")).isEqualTo(1);
         assertThat(db.count("review_issue")).isZero();
-        assertThat(db.jdbc.queryForList("select reviewed_commits from review_run order by id", Integer.class)).containsExactly(1, 0);
+        assertThat(db.count("manual_review_file")).isZero();
+        assertThat(db.jdbc.queryForObject("select coverage_type from reviewed_commit", String.class)).isEqualTo("METADATA_ONLY");
+        assertThat(db.jdbc.queryForObject("select summary from reviewed_commit", String.class)).isEqualTo("Existing metadata notice");
+        assertThat(db.jdbc.queryForList("select reviewed_commits from review_run order by id", Integer.class)).containsExactly(0, 0);
+        verify(git, never()).manualMetadataFallback(any(), any());
         verifyNoInteractions(ai);
+    }
+
+    private void metadataProof(GitCommit original, List<ManualReviewFile> files) {
+        when(git.manualMetadataFallback(any(), eq(original))).thenReturn(new GitCommit(original.sha(), original.authorLogin(), original.authorEmail(),
+                original.message(), "", "MANUAL_ONLY", original.coverageDetails(), files));
     }
 
     private GitCommit commit(String coverage, String details, String diff) {

@@ -130,6 +130,48 @@ class GitManualCoverageTest {
     }
 
     @ParameterizedTest @ValueSource(strings = {"github", "gitlab"})
+    void metadataFallbackReProvesUnchangedBlobAndPreservesItsOwnReason(String provider) {
+        configure(provider, null);
+        before.removeLast();
+        after.clear();
+        after.add(entry("image.bin", OLD, "100755"));
+        files.removeLast();
+        details.put("stats", Map.of("additions", 0, "deletions", 0));
+        if (provider.equals("github")) files.getFirst().put("sha", OLD);
+        else files.getFirst().put("b_mode", "100755");
+        GitCommit original = new GitCommit(HEAD, "alice", null, "Change",
+                "diff --git a/image.bin b/image.bin\nold mode 100644\nnew mode 100755\n", "METADATA_ONLY", "동일 blob의 실행권한 변경");
+        GitCommit result = client(65536, 30).manualMetadataFallback(repository(), original);
+        assertThat(result.coverageType()).isEqualTo("MANUAL_ONLY");
+        assertThat(result.diff()).isEmpty();
+        assertThat(result.manualFiles()).containsExactly(new ManualReviewFile("image.bin", OLD, OLD, "100644", "100755", "METADATA_CHANGE"));
+        assertThat(result.coverageDetails()).contains("본문이 같은 파일", "모든 변경 경로를 수동 확인")
+                .doesNotContain("입력 한도", "미제공", "검증할 수 없습니다");
+    }
+
+    @ParameterizedTest @ValueSource(strings = {"github", "gitlab"})
+    void metadataLabelCannotConvertActuallyChangedBlobContentsIntoMetadataEvidence(String provider) {
+        configure(provider, null);
+        GitCommit original = new GitCommit(HEAD, "alice", null, "Change", "metadata headers", "METADATA_ONLY", "Claimed metadata");
+        assertThatThrownBy(() -> client(65536, 30).manualMetadataFallback(repository(), original))
+                .hasMessage("Metadata manual evidence includes an unproven file body change");
+    }
+
+    @ParameterizedTest @ValueSource(strings = {"github", "gitlab"})
+    void metadataFallbackRejectsWrongCoverageOrPatchBodyBeforeRequests(String provider) {
+        configure(provider, null);
+        GitRepositoryClient client = client(65536, 30);
+        assertThatThrownBy(() -> client.manualMetadataFallback(repository(), new GitCommit(HEAD, null, "Change", "full diff")))
+                .isInstanceOf(IllegalArgumentException.class);
+        for (String diff : List.of("@@ -1 +1 @@", "+body", "-body")) {
+            GitCommit original = new GitCommit(HEAD, null, null, "Change", diff, "METADATA_ONLY", "Claimed metadata");
+            assertThatThrownBy(() -> client.manualMetadataFallback(repository(), original))
+                    .hasMessage("Metadata manual fallback requires validated bodyless coverage");
+        }
+        assertThat(server.requests).isEmpty();
+    }
+
+    @ParameterizedTest @ValueSource(strings = {"github", "gitlab"})
     void rootCreationAndDeletionHaveExactOneSidedObjectAndModeEvidence(String provider) {
         for (boolean created : List.of(true, false)) {
             configure(provider, null);

@@ -131,6 +131,57 @@ class ManualReviewCoordinatorTest {
         assertThat(db.count("reviewed_commit")).isZero();
     }
 
+    @Test void newMetadataCreatesManualWorkThenContinuesAndRetriesWithoutDuplicates() {
+        GitCommit metadata = metadata();
+        batch(metadata);
+        when(git.manualMetadataFallback(any(), eq(metadata))).thenReturn(metadataProof());
+        assertThat(coordinator.reviewProject(10, "owner")).isEqualTo(ReviewCoordinator.Outcome.SUCCEEDED);
+        assertThat(db.cursor()).isEqualTo(next.sha());
+        assertThat(db.count("reviewed_commit")).isEqualTo(2);
+        assertThat(db.count("manual_review_file")).isEqualTo(1);
+        assertThat(db.count("review_issue")).isEqualTo(2);
+        assertThat(db.jdbc.queryForObject("select reason_code from manual_review_file", String.class)).isEqualTo("METADATA_CHANGE");
+        assertThat(coordinator.reviewProject(10, "owner")).isEqualTo(ReviewCoordinator.Outcome.SUCCEEDED);
+        assertThat(db.count("manual_review_file")).isEqualTo(1);
+        assertThat(db.count("review_issue")).isEqualTo(2);
+        verify(git, times(1)).manualMetadataFallback(any(), eq(metadata));
+        verify(git, never()).manualFallback(any(), any());
+        verify(ai, never()).review(metadata);
+        verify(ai, times(1)).review(next);
+    }
+
+    @Test void metadataProofHttpFailureStopsBeforeIssuesOrCursorAndDoesNotCallAi() {
+        GitCommit metadata = metadata();
+        batch(metadata);
+        when(git.manualMetadataFallback(any(), eq(metadata))).thenThrow(new IntegrationException("Git returned HTTP 503"));
+        assertThat(coordinator.reviewProject(10, "owner")).isEqualTo(ReviewCoordinator.Outcome.FAILED);
+        assertThat(db.count("reviewed_commit")).isZero();
+        assertThat(db.count("manual_review_file")).isZero();
+        assertThat(db.count("review_issue")).isZero();
+        assertThat(db.cursor()).isNull();
+        verifyNoInteractions(ai);
+    }
+
+    @Test void metadataConversionCannotSubstituteADifferentManualReason() {
+        GitCommit metadata = metadata();
+        batch(metadata);
+        when(git.manualMetadataFallback(any(), eq(metadata))).thenReturn(manual("AI_INPUT_LIMIT"));
+        assertThat(coordinator.reviewProject(10, "owner")).isEqualTo(ReviewCoordinator.Outcome.FAILED);
+        assertThat(db.count("reviewed_commit")).isZero();
+        assertThat(db.cursor()).isNull();
+        verifyNoInteractions(ai);
+    }
+
+    private GitCommit metadata() {
+        return new GitCommit(full.sha(), full.authorLogin(), full.authorEmail(), full.message(),
+                "diff --git a/script.sh b/script.sh\nold mode 100644\nnew mode 100755\n", "METADATA_ONLY", "실행권한 변경");
+    }
+
+    private GitCommit metadataProof() {
+        return new GitCommit(full.sha(), full.authorLogin(), full.authorEmail(), full.message(), "", "MANUAL_ONLY", "고정 tree로 실행권한 변경 확인",
+                List.of(new ManualReviewFile("script.sh", "c".repeat(40), "c".repeat(40), "100644", "100755", "METADATA_CHANGE")));
+    }
+
     @Test void evidenceCannotAttachToOtherProjectOrCloseWithoutHumanReason() {
         batch(manual("SOURCE_DIFF_UNAVAILABLE"));
         assertThat(coordinator.reviewProject(10, null)).isEqualTo(ReviewCoordinator.Outcome.SUCCEEDED);
