@@ -1,0 +1,12 @@
+# Local runtime and secrets
+.env
+.env.*
+!.env.example
+.tools/
+.local/
+*.log
+source/target/
+source/application-local.properties
+.idea/
+.vscode/
+*.iml
