@@ -529,7 +529,7 @@ class ApplicationPostgresTest {
         var admin = login("pgadmin");
         var failed = get(admin, "/admin/operations?filter=FAILED");
         assertThat(failed.statusCode()).isEqualTo(200);
-        assertThat(failed.body()).contains("운영 현황", "최근 실행 실패", "/projects/" + projectId, "자동 리뷰가 꺼져")
+        assertThat(failed.body()).contains("운영 현황", "최근 실행 실패", "/projects/" + projectId, "새 예약 요청 생성이 꺼져")
                 .doesNotContain("operation-secret-fixture", "<script>alert(1)</script>");
         assertThat(get(login(writer), "/admin/operations").statusCode()).isEqualTo(403);
         assertThat(get(client(), "/admin/operations").statusCode()).isEqualTo(302);

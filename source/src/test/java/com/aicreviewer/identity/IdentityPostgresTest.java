@@ -36,7 +36,7 @@ class IdentityPostgresTest {
     @Test
     void concurrentDisablesPreserveOneActiveAdministrator() throws Exception {
         // This database belongs exclusively to this test; no shared integration/UI fixtures are touched.
-        jdbc.execute("TRUNCATE TABLE audit_event, review_issue, manual_review_file, reviewed_commit, review_run, project, git_author_mapping, app_user RESTART IDENTITY");
+        jdbc.execute("TRUNCATE TABLE audit_event, review_issue, manual_review_file, reviewed_commit, review_run, review_request, project, git_author_mapping, app_user RESTART IDENTITY");
         jdbc.update("""
                 INSERT INTO app_user(username,password_hash,git_username,role,enabled)
                 VALUES ('firstadmin','unused-hash','firstadmin','ADMIN',TRUE),

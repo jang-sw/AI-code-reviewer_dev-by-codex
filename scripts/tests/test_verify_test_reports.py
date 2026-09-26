@@ -27,11 +27,18 @@ class PostgreSQLReportGateTest(unittest.TestCase):
             root.set({"skipped": "skipped", "failure": "failures", "error": "errors"}[status], "1")
         ET.ElementTree(root).write(self.directory / f"TEST-{suite}.xml", encoding="utf-8")
 
-    def test_accepts_both_successful_real_database_suites(self):
+    def test_accepts_all_successful_real_database_suites(self):
         MODULE.verify_reports(self.directory)
 
     def test_missing_suite_fails_instead_of_treating_database_tests_as_optional(self):
         (self.directory / f"TEST-{MODULE.REQUIRED_SUITES[1]}.xml").unlink()
+        with self.assertRaisesRegex(ValueError, "Missing or invalid"):
+            MODULE.verify_reports(self.directory)
+
+    def test_queue_recovery_suite_is_mandatory(self):
+        suite = "com.aicreviewer.review.ReviewRequestPostgresTest"
+        self.assertIn(suite, MODULE.REQUIRED_SUITES)
+        (self.directory / f"TEST-{suite}.xml").unlink()
         with self.assertRaisesRegex(ValueError, "Missing or invalid"):
             MODULE.verify_reports(self.directory)
 

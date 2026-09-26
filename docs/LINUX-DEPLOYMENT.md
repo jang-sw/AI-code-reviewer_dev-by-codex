@@ -48,7 +48,7 @@ DB 관리자는 전용 `ai_reviewer` 로그인 role을 생성하되 SUPERUSER/CR
 
 릴리스 디렉터리는 **아직 없는 이름**으로 생성한다. `/opt/ai-reviewer/releases/<release-id>`에 검증된 WAR를0644로 복사하고 부모를0755/root 소유로 유지한다. 승인된 Java25 디렉터리를 가리키는 `/opt/ai-reviewer/java`와 릴리스를 가리키는 `current` 링크를 만든다. 처음 설치할 때는 기존 링크를 덮어쓰는 `-f` 옵션을 사용하지 않는다.
 
-환경파일도 최초에는 기존 파일이 없는지 확인하고 `reviewer.env.example`을0600/root 소유로 복사한 뒤 `sudoedit /etc/ai-reviewer/reviewer.env`로 설정한다. `DB_PASSWORD`와 bootstrap 세 값은 비워 둔 채 시작하지 않는다. 실제 비밀값은 이 저장소 밖에서만 입력한다. 모델은 [운영 설정](OPERATIONS.md)을 따라 정하고 `REVIEW_ENABLED=false`로 첫 실행한다. 기본 `gemma3:1b`를 운영 품질 승인으로 해석하지 않는다.
+환경파일도 최초에는 기존 파일이 없는지 확인하고 `reviewer.env.example`을0600/root 소유로 복사한 뒤 `sudoedit /etc/ai-reviewer/reviewer.env`로 설정한다. `DB_PASSWORD`와 bootstrap 세 값은 비워 둔 채 시작하지 않는다. 실제 비밀값은 이 저장소 밖에서만 입력한다. 모델은 [운영 설정](OPERATIONS.md)을 따라 정하고 `REVIEW_ENABLED=false`, `REVIEW_WORKER_ENABLED=false`로 첫 실행한다. 기본 `gemma3:1b`를 운영 품질 승인으로 해석하지 않는다.
 
 ```bash
 # 검토한 단위 파일만 설치. 기존 단위가 있으면 먼저 차이를 검토한다.
@@ -59,7 +59,7 @@ sudo systemctl start ai-reviewer
 sudo systemctl status ai-reviewer --no-pager
 ```
 
-`systemctl start` 성공은 DB/화면 준비 완료의 증명이 아니다. `Type=exec`는 Java 실행 여부까지만 확인한다. journal을 제한된 권한으로 확인하고 로그인 화면, 최초 관리자 로그인, 가입 승인, 프로젝트 신청·승인, 합성/허용된 저장소의 수동 리뷰를 검증한다. `/actuator/health`는 인증이 필요하므로 익명302응답을 건강 상태로 세지 않는다. 서비스 자동 재시작은 반복 실패 시 제한되므로 원인 수정 후 필요할 때 `systemctl reset-failed ai-reviewer`를 사용한다. [systemd 서비스 문서](https://github.com/systemd/systemd/blob/main/man/systemd.service.xml)
+`systemctl start` 성공은 DB/화면 준비 완료의 증명이 아니다. `Type=exec`는 Java 실행 여부까지만 확인한다. journal을 제한된 권한으로 확인하고 로그인 화면, 최초 관리자 로그인, 가입 승인, 프로젝트 신청·승인, 수동 요청이 DB 대기 상태로 접수되는지 확인한다. Git·AI 검증 준비가 끝나면 `REVIEW_WORKER_ENABLED=true`로 재시작해 합성/허용된 저장소의 수동 리뷰를 검증한다. `/actuator/health`는 인증이 필요하므로 익명302응답을 건강 상태로 세지 않는다. 서비스 자동 재시작은 반복 실패 시 제한되므로 원인 수정 후 필요할 때 `systemctl reset-failed ai-reviewer`를 사용한다. [systemd 서비스 문서](https://github.com/systemd/systemd/blob/main/man/systemd.service.xml)
 
 최초 관리자 생성이 확인되면 bootstrap 세 변수를 환경파일에서 제거하고 계획한 재시작을 한다. 기존 DB에서 bootstrap 값을 지워도 기존 관리자는 유지된다. TLS/권한/모델 검증 후 `REVIEW_ENABLED=true`로 전환해 재시작하고 예약 실행을 확인한다. 마지막으로 `systemctl enable ai-reviewer`로 부팅 시 실행을 설정한다.
 
@@ -98,16 +98,16 @@ sha256sum "$backup_dir/database.dump" > "$backup_dir/database.sha256"
 2. DB 관리자는 **기존에 없는** `ai_reviewer_restore_<시각>` DB를 생성한다. 원본 DB 이름과 다름을 확인한다. role/권한은 미리 준비하고 복원 대상 owner를 정한다. DB 생성 실패 시 멈추며 기존 DB로 fallback하지 않는다.
 3. 새 DB 이름을 명시하여 `pg_restore --no-password --exit-on-error --single-transaction --no-owner --no-acl --dbname=ai_reviewer_restore_<시각> /absolute/backup/database.dump`를 실행한다. 원본 DB에 `--clean`/`--create`/`DROP`을 실행하지 않는다. restore role은 새 DB의 승인된 소유자여야 한다. `--no-acl` 때문에 필요한 앱 권한은 새 DB에서 명시적으로 검증한다. [PostgreSQL pg_restore](https://www.postgresql.org/docs/17/app-pgrestore.html)
 4. 테이블별 건수, Flyway 버전/성공 이력, 샘플 프로젝트/계정/이슈 상태, FK·sequence를 비교한다. dump 생성 후 온라인 원본이 바뀌었다면 현재 건수와의 단순 비교는 일치 조건이 아니다. 정지 상태에서 잡은 기준 또는 snapshot 기록을 쓴다.
-5. 별도 앱 인스턴스/계정/포트로 새 DB를 연결하고 `REVIEW_ENABLED=false`, 외부 Git/AI egress 차단, 운영 프록시에 미연결 상태로 로그인·승인·조회·권한을 검증한다. 시작은 Flyway를 실행하므로 백업 시점 WAR로 먼저 확인한 후 업그레이드 시험을 구분한다. API 토큰은 복원용 환경에 복사하지 않는다.
+5. 별도 앱 인스턴스/계정/포트로 새 DB를 연결하고 `REVIEW_ENABLED=false`, `REVIEW_WORKER_ENABLED=false`, 외부 Git/AI egress 차단, 운영 프록시에 미연결 상태로 로그인·승인·조회·권한을 검증한다. 시작은 Flyway를 실행하므로 백업 시점 WAR로 먼저 확인한 후 업그레이드 시험을 구분한다. API 토큰은 복원용 환경에 복사하지 않는다.
 6. 결과를 기록한다. 검증용 DB 제거는 대상 이름·환경을 다시 확인한 별도 관리자 작업이며 이 절차는 자동 삭제하지 않는다. 실패해도 운영 DB/현재 설정은 바꾸지 않는다.
 
 ## 업데이트와 rollback
 
 **업데이트 전:** 새 WAR의 해시/검증 결과, Flyway 변경, 이전 버전과의 DB 호환성을 확인한다. 새 DB 복제본에서 새 WAR로 migration·권한·리뷰·재시작 검증을 마친다. 실제 운영 변경 시간, 복원 시 잃을 수 있는 쓰기, 책임자를 정한다. 이 프로젝트는 자동 down migration을 제공하지 않는다.
 
-**전환:** 프록시에서 유지보수 상태로 전환하고 모든 앱 인스턴스를 중지한다. 실행 중 리뷰는 종료 과정에서 중단될 수 있으며 메모리 대기열은 보존되지 않는다. 저장된 커밋은 재사용되지만 진행 중 외부 요청과 마지막 저장 결과를 확인해야 한다. 원본 정지 백업을 만든 후 새 릴리스를 별도 디렉터리에 설치한다. `current`가 예상 이전 릴리스를 가리키는 링크인지 `readlink -f`로 확인한다. root 소유 같은 파일시스템에 임시 링크를 만든 뒤 `mv -T`로 `current` 링크를 교체한다. `current`가 실디렉터리면 중단하고 조사한다. 이전 WAR/백업을 삭제하지 않는다.
+**전환:** 프록시에서 유지보수 상태로 전환하고 모든 앱 인스턴스를 중지한다. 실행 중 리뷰는 종료 과정에서 중단될 수 있다. V12 이후 접수 요청은 DB에 보존되며 저장된 커밋을 재사용한다. V11 이전 메모리 대기 요청은 업그레이드 전에 완료시키거나 별도로 기록해 재접수한다. 진행 중 외부 요청과 마지막 저장 결과를 확인해야 한다. 원본 정지 백업을 만든 후 새 릴리스를 별도 디렉터리에 설치한다. `current`가 예상 이전 릴리스를 가리키는 링크인지 `readlink -f`로 확인한다. root 소유 같은 파일시스템에 임시 링크를 만든 뒤 `mv -T`로 `current` 링크를 교체한다. `current`가 실디렉터리면 중단하고 조사한다. 이전 WAR/백업을 삭제하지 않는다.
 
-**시작 후:** 예약을 끈 상태로 migration·관리자 로그인·권한·목록/이슈·수동 리뷰를 확인하고 프록시 트래픽과 예약을 순서대로 재개한다. journal의 예외를 통째로 외부 공유하지 않는다. 운영 현황의 오래된 실행 기록은 강제 종료 후 종료 미기록일 수 있으며 다른 인스턴스 실행 여부와 함께 확인한다. 예약이 꺼져 있으면 재시작 전 메모리 대기 요청이 자동 복구되지 않는다.
+**시작 후:** `REVIEW_ENABLED=false`, `REVIEW_WORKER_ENABLED=false` 상태로 migration·관리자 로그인·권한·목록/이슈·보존된 요청을 확인한다. 외부 연결 검증 준비 후 `REVIEW_WORKER_ENABLED=true`로 재시작해 기존 접수 요청의 복구와 수동 리뷰를 확인하고, 프록시 트래픽과 새 예약 생성을 순서대로 재개한다. `REVIEW_ENABLED=false`만으로는 기존 요청 처리가 멈추지 않는다. journal의 예외를 통째로 외부 공유하지 않는다. 오래된 RUNNING은 강제 종료 후 남은 기록일 수 있으며 복구는 PG 프로젝트 잠금을 얻은 작업자만 수행한다.
 
 **실패 시:** 앱을 중지하고 원인을 보존한다. 스키마가 바뀌었으면 WAR 링크만 이전으로 돌려 실행하지 않는다. 호환성이 확인된 경우에만 코드 rollback을 선택한다. 호환되지 않거나 불명확하면 업데이트 전 백업을 **새 DB에** 복원·검증하고 이전 WAR와 그 DB를 함께 연결한다. 원본 DB는 보존한다. 운영 전환 이후 쓰기가 있었다면 유실 범위와 병합/재입력 방안을 결정한 뒤 전환한다. DB URL 변경은 root 환경파일을 편집하고 재시작한다. Flyway 실패를 숨기기 위해 history 행 삭제나 무검토 repair를 하지 않는다.
 

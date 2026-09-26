@@ -34,6 +34,7 @@
   <sec:authorize access="!isAuthenticated()"><nav class="public-nav" aria-label="가입과 로그인"><a href="<c:url value='/login'/>">로그인</a><a class="button" href="<c:url value='/signup'/>">회원가입</a></nav></sec:authorize>
 </header>
 <main id="main" class="container">
+  <sec:authorize access="isAuthenticated()"><c:if test="${not reviewWorkerEnabled}"><div id="review-worker-paused" class="notice" role="status">현재 서버의 리뷰 처리가 일시 중지되었습니다. 요청은 저장되며 관리자가 이 서버의 처리를 재개하면 이어서 처리합니다. 다른 서버에서는 처리가 계속될 수 있습니다.</div></c:if></sec:authorize>
   <c:if test="${not empty notice}"><div class="notice success" role="status"><c:out value="${notice}"/></div></c:if>
   <c:if test="${not empty message}"><div class="notice success" role="status"><c:out value="${message}"/></div></c:if>
   <c:if test="${not empty success}"><div class="notice success" role="status"><c:out value="${success}"/></div></c:if>

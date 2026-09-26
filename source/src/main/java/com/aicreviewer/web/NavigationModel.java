@@ -9,13 +9,19 @@ import org.springframework.web.bind.annotation.ModelAttribute;
 @ControllerAdvice
 public class NavigationModel {
     private final boolean scheduledReviewEnabled;
+    private final boolean reviewWorkerEnabled;
 
-    public NavigationModel(@Value("${app.review.enabled:true}") boolean scheduledReviewEnabled) {
+    public NavigationModel(@Value("${app.review.enabled:true}") boolean scheduledReviewEnabled,
+                           @Value("${app.review.worker-enabled:true}") boolean reviewWorkerEnabled) {
         this.scheduledReviewEnabled = scheduledReviewEnabled;
+        this.reviewWorkerEnabled = reviewWorkerEnabled;
     }
 
     @ModelAttribute("scheduledReviewEnabled")
     public boolean scheduledReviewEnabled() { return scheduledReviewEnabled; }
+
+    @ModelAttribute("reviewWorkerEnabled")
+    public boolean reviewWorkerEnabled() { return reviewWorkerEnabled; }
 
     @ModelAttribute("activeSection")
     public String activeSection(HttpServletRequest request) {

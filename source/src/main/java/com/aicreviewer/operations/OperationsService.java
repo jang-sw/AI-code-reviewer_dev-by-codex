@@ -20,7 +20,7 @@ import org.springframework.web.server.ResponseStatusException;
 public class OperationsService {
     public static final int PAGE_SIZE = 50;
     public static final int MAX_PAGE = 10000;
-    private static final Set<String> FILTERS = Set.of("ATTENTION", "FAILED", "STALE", "NEVER_RUN");
+    private static final Set<String> FILTERS = Set.of("ATTENTION", "FAILED", "STALE", "NEVER_RUN", "QUEUED", "REQUEST_DELAYED");
     private final JdbcTemplate jdbc;
     private final UserAccountService users;
     private final int staleAfterMinutes;
@@ -53,13 +53,19 @@ public class OperationsService {
         String condition = switch (filter) {
             case "FAILED" -> "r.status = 'FAILED'";
             case "NEVER_RUN" -> "p.status = 'APPROVED' AND r.id IS NULL";
+            case "QUEUED" -> "q.state = 'QUEUED'";
+            case "REQUEST_DELAYED" -> {
+                args.add(Timestamp.from(cutoff));
+                yield "q.state IN ('QUEUED', 'RUNNING') AND q.requested_at <= ?";
+            }
             case "STALE" -> {
                 args.add(Timestamp.from(cutoff));
                 yield "p.status = 'APPROVED' AND r.id IS NOT NULL AND r.started_at <= ?";
             }
             default -> {
                 args.add(Timestamp.from(cutoff));
-                yield "(r.status = 'FAILED' OR (p.status = 'APPROVED' AND (r.id IS NULL OR r.started_at <= ?)))";
+                args.add(Timestamp.from(cutoff));
+                yield "(r.status = 'FAILED' OR (p.status = 'APPROVED' AND (r.id IS NULL OR r.started_at <= ?)) OR (q.state IN ('QUEUED', 'RUNNING') AND q.requested_at <= ?))";
             }
         };
         args.add(PAGE_SIZE + 1);
@@ -68,22 +74,30 @@ public class OperationsService {
         // every run in Java. Never select error text, repository addresses or provider settings.
         List<ProjectObservation> rows = jdbc.query("""
                 SELECT p.id, p.name, p.status AS project_status,
-                       r.id AS run_id, r.status AS run_status, r.started_at
+                       r.id AS run_id, r.status AS run_status, r.started_at,
+                       q.state AS request_state, q.requested_at
                 FROM project p LEFT JOIN review_run r ON r.id = (
                     SELECT latest.id FROM review_run latest
                     WHERE latest.project_id = p.id ORDER BY latest.id DESC LIMIT 1
                 )
-                """ + "WHERE " + condition + " ORDER BY r.started_at ASC NULLS FIRST, p.id ASC LIMIT ? OFFSET ?",
+                LEFT JOIN review_request q ON q.project_id = p.id
+                """ + "WHERE " + condition + (filter.equals("QUEUED") || filter.equals("REQUEST_DELAYED")
+                        ? " ORDER BY q.requested_at ASC, p.id ASC" : " ORDER BY r.started_at ASC NULLS FIRST, p.id ASC") + " LIMIT ? OFFSET ?",
                 (rs, row) -> {
                     Long runId = rs.getObject("run_id", Long.class);
                     Timestamp started = rs.getTimestamp("started_at");
                     Instant startedAt = started == null ? null : started.toInstant();
                     String projectStatus = rs.getString("project_status");
                     String runStatus = rs.getString("run_status");
+                    String requestState = rs.getString("request_state");
+                    Timestamp requested = rs.getTimestamp("requested_at");
+                    Instant requestedAt = requested == null ? null : requested.toInstant();
                     boolean approved = "APPROVED".equals(projectStatus);
                     return new ProjectObservation(rs.getLong("id"), rs.getString("name"), projectStatus, runId,
                             runStatus, startedAt, startedAt == null ? null : Math.max(0L, Duration.between(startedAt, observedAt).toMinutes()),
-                            "FAILED".equals(runStatus), approved && startedAt != null && !startedAt.isAfter(cutoff), approved && runId == null);
+                            "FAILED".equals(runStatus), approved && startedAt != null && !startedAt.isAfter(cutoff), approved && runId == null,
+                            requestState, requestedAt, requestedAt == null ? null : Math.max(0L, Duration.between(requestedAt, observedAt).toMinutes()),
+                            ("QUEUED".equals(requestState) || "RUNNING".equals(requestState)) && requestedAt != null && !requestedAt.isAfter(cutoff));
                 }, args.toArray());
         return new OperationsPage(List.copyOf(rows.subList(0, Math.min(PAGE_SIZE, rows.size()))), page,
                 rows.size() > PAGE_SIZE && page < MAX_PAGE, filter, observedAt, staleAfterMinutes);
@@ -94,5 +108,6 @@ public class OperationsService {
 
     public record ProjectObservation(long projectId, String projectName, String projectStatus, Long runId,
                                      String runStatus, Instant startedAt, Long elapsedMinutes,
-                                     boolean failed, boolean stale, boolean neverRun) { }
+                                     boolean failed, boolean stale, boolean neverRun, String requestState,
+                                     Instant requestedAt, Long requestElapsedMinutes, boolean requestDelayed) { }
 }

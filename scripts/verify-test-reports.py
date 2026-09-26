@@ -1,4 +1,4 @@
-"""Fail CI when either required real PostgreSQL test suite did not run successfully."""
+"""Fail CI when any required real PostgreSQL test suite did not run successfully."""
 
 from pathlib import Path
 import sys
@@ -8,6 +8,7 @@ import xml.etree.ElementTree as ET
 REQUIRED_SUITES = (
     "com.aicreviewer.ApplicationPostgresTest",
     "com.aicreviewer.identity.IdentityPostgresTest",
+    "com.aicreviewer.review.ReviewRequestPostgresTest",
 )
 
 
@@ -35,7 +36,7 @@ def main() -> int:
     except ValueError as error:
         print(str(error), file=sys.stderr)
         return 1
-    print("Both required PostgreSQL suites ran with no skips, failures or errors.")
+    print("All required PostgreSQL suites ran with no skips, failures or errors.")
     return 0
 
 

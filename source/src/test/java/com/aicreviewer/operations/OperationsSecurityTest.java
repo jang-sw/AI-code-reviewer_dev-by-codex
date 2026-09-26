@@ -18,7 +18,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 @SpringBootTest(properties = {
         "spring.datasource.url=jdbc:h2:mem:operations_security;MODE=PostgreSQL;DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE",
-        "app.bootstrap.enabled=false", "app.operations.stale-after-minutes=120"
+        "app.bootstrap.enabled=false", "app.operations.stale-after-minutes=120", "app.review.worker-enabled=false"
 })
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
@@ -84,5 +84,24 @@ class OperationsSecurityTest {
                 .andExpect(status().isMethodNotAllowed());
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM review_run", Long.class)).isZero();
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audit_event", Long.class)).isZero();
+    }
+
+    @Test
+    void administratorReadsDurableQueueFiltersAndWorkerPauseWithoutOwnershipTokens() throws Exception {
+        Long projectId = jdbc.queryForObject("SELECT id FROM project WHERE repository_path='private/operations'", Long.class);
+        jdbc.update("INSERT INTO review_request(project_id,request_id,state,source,requested_at,available_at) VALUES(?,?,'QUEUED','SCHEDULED',TIMESTAMP '2000-01-01 00:00:00',CURRENT_TIMESTAMP)",
+                projectId, java.util.UUID.randomUUID().toString());
+        for (String filter : new String[] {"QUEUED", "REQUEST_DELAYED"}) {
+            var result = mvc.perform(get("/admin/operations").param("filter", filter).with(user(accounts.loadUserByUsername("ops-admin"))))
+                    .andExpect(status().isOk()).andExpect(model().attribute("reviewWorkerEnabled", false)).andReturn();
+            var page = (OperationsService.OperationsPage) result.getModelAndView().getModel().get("operations");
+            assertThat(page.filter()).isEqualTo(filter);
+            assertThat(page.projects()).hasSize(1);
+            assertThat(page.projects().getFirst().requestState()).isEqualTo("QUEUED");
+            assertThat(page.projects().getFirst().requestDelayed()).isTrue();
+            assertThat(page.toString()).doesNotContain("claim_token", "request_id", "requested_by", "github.com");
+        }
+        mvc.perform(get("/admin/operations").param("filter", "QUEUED").with(user(accounts.loadUserByUsername("ops-member"))))
+                .andExpect(status().isForbidden());
     }
 }

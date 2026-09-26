@@ -9,6 +9,7 @@ import com.aicreviewer.git.GitRepositoryClient;
 import com.aicreviewer.git.GitReviewBatch;
 import com.aicreviewer.git.IntegrationException;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -29,10 +30,18 @@ public class ReviewCoordinator {
     private final AiReviewClient ai;
     private final TransactionTemplate transactions;
     private final int maxCommits;
+    private final ReviewRequestRepository requests;
 
     public ReviewCoordinator(ReviewRepository repository, ProjectReviewLock locks, GitRepositoryClient git,
                              AiReviewClient ai, PlatformTransactionManager transactionManager,
-                             @Value("${app.review.max-commits:100}") int maxCommits) {
+                             int maxCommits) {
+        this(repository, locks, git, ai, transactionManager, maxCommits, null);
+    }
+
+    @Autowired
+    public ReviewCoordinator(ReviewRepository repository, ProjectReviewLock locks, GitRepositoryClient git,
+                             AiReviewClient ai, PlatformTransactionManager transactionManager,
+                             @Value("${app.review.max-commits:100}") int maxCommits, ReviewRequestRepository requests) {
         if (maxCommits < 1 || maxCommits > 1000) throw new IllegalArgumentException("Review batch size must be between 1 and 1000");
         this.repository = repository;
         this.locks = locks;
@@ -40,6 +49,7 @@ public class ReviewCoordinator {
         this.ai = ai;
         this.transactions = new TransactionTemplate(transactionManager);
         this.maxCommits = maxCommits;
+        this.requests = requests;
     }
 
     public void authorizeManual(long projectId, String username) {
@@ -47,6 +57,23 @@ public class ReviewCoordinator {
     }
 
     public List<Long> scheduledProjects(int limit) { return repository.approvedProjectIds(limit); }
+
+    /** Runtime entry point: the database request, not a local executor task, owns durable progress. */
+    public Outcome processRequest(ReviewRequestRepository.Request request) {
+        if (requests == null) throw new IllegalStateException("Durable review requests are not configured");
+        var lease = locks.tryAcquire(request.projectId());
+        if (lease.isEmpty()) {
+            requests.deferBusy(request, Instant.now().plusSeconds(ReviewRequestRepository.RETRY_SECONDS));
+            return Outcome.BUSY;
+        }
+        try (var heldLock = lease.get()) {
+            ReviewRequestRepository.Claim claim = requests.claim(request, Instant.now());
+            if (claim == null) return Outcome.SKIPPED;
+            // Claim already authorizes under row locks; later calls recheck before external I/O and writes.
+            ReviewProject project = repository.project(request.projectId(), false);
+            return executeBatch(project, claim.runId(), claim);
+        }
+    }
 
     /** Null username identifies the trusted scheduler; web callers always supply a principal. */
     public Outcome reviewProject(long projectId, String username) {
@@ -60,37 +87,99 @@ public class ReviewCoordinator {
             ReviewRepository.requireApproved(project);
             Long runId = transactions.execute(status -> repository.startRun(projectId, actor == null ? null : actor.id(), Instant.now()));
             if (runId == null) throw new IllegalStateException("No review run was created");
-            try {
-                Set<String> reviewedShas = repository.reviewedShas(projectId);
-                GitReviewBatch batch = git.batch(project.repository(), project.branch(), project.lastReviewedSha(), reviewedShas, maxCommits);
-                validateBatch(batch, reviewedShas);
-                List<GitCommit> commits = batch.commits();
-                for (GitCommit commit : commits) {
-                    if (Thread.currentThread().isInterrupted()) throw new IllegalStateException("Review interrupted");
-                    // Retries never create a second issue set or move a cursor backwards.
-                    if (repository.alreadyReviewed(projectId, commit.sha())) continue;
-                    PreparedReview prepared = prepareReview(project, commit);
-                    validateReview(prepared.result());
-                    transactions.execute(status -> repository.persistCommit(runId, project, project.lastReviewedSha(), prepared.commit(), prepared.result(), Instant.now()));
-                }
-                // A partial merge can persist progress without a checkpoint. Conversely, a
-                // fully persisted retry can advance to a safe checkpoint with no new commits.
-                transactions.executeWithoutResult(status -> repository.completeBatch(runId, project, batch.checkpointSha(), Instant.now()));
-                return Outcome.SUCCEEDED;
-            } catch (RuntimeException exception) {
-                // IntegrationException has an explicit safe-message contract. Other exception
-                // messages may include source code or credentials and must never reach persistence.
-                String reason = exception.getClass().getSimpleName();
-                if (exception instanceof IntegrationException && exception.getMessage() != null) {
-                    reason = exception.getMessage().replace('\n', ' ').replace('\r', ' ');
-                    if (reason.length() > 500) reason = reason.substring(0, 500);
-                }
-                String safeError = "리뷰 처리 실패: " + reason + ". 저장된 커밋 리뷰를 재사용하여 재시도할 수 있습니다.";
-                transactions.executeWithoutResult(status -> repository.finishRun(runId, false, Instant.now(), safeError));
-                LOG.log(System.Logger.Level.WARNING, "Review run {0} for project {1} failed: {2}", runId, projectId, exception.getClass().getSimpleName());
-                return Outcome.FAILED;
+            return executeBatch(project, runId, null);
+        }
+    }
+
+    private Outcome executeBatch(ReviewProject project, long runId, ReviewRequestRepository.Claim claim) {
+        long projectId = project.id();
+        try {
+            checkInterrupted();
+            assertCurrentRequest(claim);
+            Set<String> reviewedShas = repository.reviewedShas(projectId);
+            GitReviewBatch batch = git.batch(project.repository(), project.branch(), project.lastReviewedSha(), reviewedShas, maxCommits);
+            validateBatch(batch, reviewedShas);
+            List<GitCommit> commits = batch.commits();
+            for (GitCommit commit : commits) {
+                checkInterrupted();
+                assertCurrentRequest(claim);
+                // Retries never create a second issue set or move a cursor backwards.
+                if (repository.alreadyReviewed(projectId, commit.sha())) continue;
+                PreparedReview prepared = prepareReview(project, commit);
+                validateReview(prepared.result());
+                transactions.execute(status -> {
+                    checkInterrupted();
+                    if (claim != null) requests.guard(claim);
+                    boolean persisted = repository.persistCommit(runId, project, project.lastReviewedSha(), prepared.commit(), prepared.result(), Instant.now());
+                    checkInterrupted();
+                    return persisted;
+                });
+            }
+            // A partial merge can persist progress without a checkpoint. Conversely, a
+            // fully persisted retry can advance to a safe checkpoint with no new commits.
+            transactions.executeWithoutResult(status -> {
+                checkInterrupted();
+                if (claim == null) repository.completeBatch(runId, project, batch.checkpointSha(), Instant.now());
+                else requests.complete(claim, project, batch.checkpointSha(), Instant.now());
+                checkInterrupted();
+            });
+            return Outcome.SUCCEEDED;
+        } catch (RuntimeException exception) {
+            if (claim != null && (exception instanceof ReviewRequestRepository.StaleClaimException || interrupted(exception))) {
+                // Ownership replacement and interrupted shutdown never acknowledge away durable work.
+                return Outcome.SKIPPED;
+            }
+            if (claim != null && databaseFailure(exception)) {
+                // A failed commit response can mean either rollback or a committed acknowledgement.
+                // Leave the durable state unchanged; the next lease owner reconciles stored progress.
+                throw exception;
+            }
+            // IntegrationException has an explicit safe-message contract. Other exception
+            // messages may include source code or credentials and must never reach persistence.
+            String reason = exception.getClass().getSimpleName();
+            if (exception instanceof IntegrationException && exception.getMessage() != null) {
+                reason = exception.getMessage().replace('\n', ' ').replace('\r', ' ');
+                if (reason.length() > 500) reason = reason.substring(0, 500);
+            }
+            String safeError = "리뷰 처리 실패: " + reason + ". 저장된 커밋 리뷰를 재사용하여 재시도할 수 있습니다.";
+            if (claim == null) transactions.executeWithoutResult(status -> repository.finishRun(runId, false, Instant.now(), safeError));
+            else {
+                boolean acknowledged = Boolean.TRUE.equals(transactions.execute(status -> requests.fail(claim, safeError, Instant.now())));
+                if (!acknowledged) return Outcome.SKIPPED;
+            }
+            LOG.log(System.Logger.Level.WARNING, "Review run {0} for project {1} failed: {2}", runId, projectId, exception.getClass().getSimpleName());
+            return exception instanceof ReviewRequestRepository.RequestCancelledException ? Outcome.CANCELLED : Outcome.FAILED;
+        }
+    }
+
+    private void assertCurrentRequest(ReviewRequestRepository.Claim claim) {
+        if (claim != null) transactions.executeWithoutResult(status -> requests.guard(claim));
+    }
+
+    private static void checkInterrupted() {
+        if (Thread.currentThread().isInterrupted()) throw new IllegalStateException("Review interrupted");
+    }
+
+    private static boolean interrupted(RuntimeException exception) {
+        if (Thread.currentThread().isInterrupted()) return true;
+        var seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<Throwable, Boolean>());
+        for (Throwable current = exception; current != null && seen.add(current); current = current.getCause()) {
+            if (current instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+                return true;
             }
         }
+        return false;
+    }
+
+    private static boolean databaseFailure(RuntimeException exception) {
+        var seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<Throwable, Boolean>());
+        for (Throwable current = exception; current != null && seen.add(current); current = current.getCause()) {
+            if (current instanceof org.springframework.dao.DataAccessException
+                    || current instanceof org.springframework.transaction.TransactionException
+                    || current instanceof java.sql.SQLException) return true;
+        }
+        return false;
     }
 
     private PreparedReview prepareReview(ReviewProject project, GitCommit commit) {
@@ -176,5 +265,5 @@ public class ReviewCoordinator {
 
     private static boolean textWithin(String value, int maximum) { return value != null && !value.isBlank() && value.length() <= maximum; }
 
-    public enum Outcome { SUCCEEDED, FAILED, BUSY }
+    public enum Outcome { SUCCEEDED, FAILED, BUSY, SKIPPED, CANCELLED }
 }

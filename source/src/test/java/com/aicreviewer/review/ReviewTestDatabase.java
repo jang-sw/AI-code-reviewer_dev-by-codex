@@ -26,7 +26,8 @@ public final class ReviewTestDatabase implements AutoCloseable {
                 new ClassPathResource("db/migration/V8__project_list_indexes.sql"),
                 new ClassPathResource("db/migration/V9__issue_list_indexes.sql"),
                 new ClassPathResource("db/migration/V10__manual_review_evidence.sql"),
-                new ClassPathResource("db/migration/V11__metadata_manual_reason.sql")).execute(source);
+                new ClassPathResource("db/migration/V11__metadata_manual_reason.sql"),
+                new ClassPathResource("db/migration/V12__durable_review_requests.sql")).execute(source);
         jdbc = new JdbcTemplate(source);
         transactionManager = new DataSourceTransactionManager(source);
         jdbc.update("insert into app_user(id, username, password_hash, git_username, role, enabled) values (1, 'owner', 'unused', 'owner-git', 'USER', true), (2, 'author', 'unused', 'author-git', 'USER', true), (3, 'admin', 'unused', 'admin-git', 'ADMIN', true), (4, 'other', 'unused', 'other-git', 'USER', true)");

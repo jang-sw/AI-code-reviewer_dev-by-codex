@@ -2,6 +2,9 @@ package com.aicreviewer.project;
 
 import com.aicreviewer.git.RepositoryUrl;
 import com.aicreviewer.identity.UserAccountService;
+import com.aicreviewer.review.ReviewRequestRepository;
+import com.aicreviewer.web.ReviewRequestView;
+import java.time.Instant;
 import java.security.Principal;
 import java.net.URI;
 import java.util.Map;
@@ -18,10 +21,12 @@ import org.springframework.web.servlet.mvc.support.RedirectAttributes;
 public class ProjectController {
     private final ProjectService projects;
     private final UserAccountService users;
+    private final ReviewRequestRepository requests;
 
-    public ProjectController(ProjectService projects, UserAccountService users) {
+    public ProjectController(ProjectService projects, UserAccountService users, ReviewRequestRepository requests) {
         this.projects = projects;
         this.users = users;
+        this.requests = requests;
     }
 
     @GetMapping("/projects")
@@ -77,6 +82,7 @@ public class ProjectController {
     @GetMapping("/projects/{id}")
     public String detail(Principal principal, @PathVariable long id, Model model) {
         model.addAttribute("project", projects.getVisible(principal.getName(), id));
+        requests.find(id).ifPresent(request -> model.addAttribute("reviewRequest", ReviewRequestView.from(request, Instant.now())));
         model.addAttribute("isAdmin", users.requireAccount(principal.getName()).isAdmin());
         model.addAttribute("pageTitle", "프로젝트 상세");
         return "projects/detail";

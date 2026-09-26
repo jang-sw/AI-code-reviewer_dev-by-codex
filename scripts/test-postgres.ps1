@@ -1,7 +1,9 @@
 param(
     [string]$PgBin = 'C:\Program Files\PostgreSQL\17\bin',
     [ValidateRange(1024, 65535)][int]$Port = 55439,
-    [switch]$BackupRestore
+    [switch]$BackupRestore,
+    [switch]$ReviewRestart,
+    [ValidateRange(1024, 65535)][int]$ReviewRestartPort = 18089
 )
 $ErrorActionPreference = 'Stop'
 $workspace = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -50,6 +52,13 @@ try {
     try { Invoke-Checked '.\mvnw.cmd' @('-B','-ntp','verify') } finally { Pop-Location }
     if ($BackupRestore) {
         & (Join-Path $PSScriptRoot 'verify-test-backup.ps1') -PgBin $PgBin -Port $Port
+    }
+    if ($ReviewRestart) {
+        $restartJava = if ($env:JAVA_HOME) { Join-Path $env:JAVA_HOME 'bin/java.exe' } else { (Get-Command java -ErrorAction Stop).Source }
+        if (-not (Test-Path -LiteralPath $restartJava)) { throw 'Java for the packaged restart drill was not found.' }
+        Invoke-Checked 'python' @((Join-Path $PSScriptRoot 'verify-review-restart.py'),
+            '--war', (Join-Path $workspace 'source/target/ai-code-reviewer.war'),
+            '--java', $restartJava, '--psql', $psql, '--port', "$ReviewRestartPort")
     }
 } finally {
     foreach ($name in $environmentNames) { [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], 'Process') }

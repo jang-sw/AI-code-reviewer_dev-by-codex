@@ -1,116 +1,115 @@
 package com.aicreviewer.review;
 
-import jakarta.annotation.PreDestroy;
 import com.zaxxer.hikari.HikariDataSource;
+import jakarta.annotation.PreDestroy;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
+import javax.sql.DataSource;
+import java.time.Instant;
 import java.util.Set;
-import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
-import javax.sql.DataSource;
 
-/** Bounded background work keeps slow AI calls out of servlet request threads. */
+/** PostgreSQL owns the pending work; this executor only limits local execution. */
 @Service
 public class ReviewDispatcher {
-    static final int QUEUE_CAPACITY = 1000;
     static final int MAX_CONCURRENCY = 16;
-    static final int MAX_SCHEDULE_CANDIDATES = QUEUE_CAPACITY + MAX_CONCURRENCY;
+    static final int MAX_SCHEDULE_CANDIDATES = 1016;
+    static final int POLL_CANDIDATES = 64;
     private static final System.Logger LOG = System.getLogger(ReviewDispatcher.class.getName());
     private final ReviewCoordinator coordinator;
+    private final ReviewRequestRepository requests;
+    private final boolean workerEnabled;
     private final ThreadPoolExecutor executor;
     private final Set<Long> inFlight = ConcurrentHashMap.newKeySet();
 
     @Autowired
-    public ReviewDispatcher(ReviewCoordinator coordinator, DataSource dataSource, @Value("${app.review.concurrency:2}") int concurrency) {
-        this(coordinator, concurrency, dataSource instanceof HikariDataSource hikari ? hikari.getMaximumPoolSize() : null);
+    public ReviewDispatcher(ReviewCoordinator coordinator, ReviewRequestRepository requests, DataSource dataSource,
+                            @Value("${app.review.concurrency:2}") int concurrency,
+                            @Value("${app.review.worker-enabled:true}") boolean workerEnabled) {
+        this(coordinator, requests, concurrency, dataSource instanceof HikariDataSource hikari ? hikari.getMaximumPoolSize() : null, workerEnabled);
     }
 
-    ReviewDispatcher(ReviewCoordinator coordinator, int concurrency) {
-        this(coordinator, concurrency, null);
+    ReviewDispatcher(ReviewCoordinator coordinator, ReviewRequestRepository requests, int concurrency) {
+        this(coordinator, requests, concurrency, null);
     }
 
-    ReviewDispatcher(ReviewCoordinator coordinator, int concurrency, Integer connectionPoolSize) {
+    ReviewDispatcher(ReviewCoordinator coordinator, ReviewRequestRepository requests, int concurrency, Integer connectionPoolSize) {
+        this(coordinator, requests, concurrency, connectionPoolSize, true);
+    }
+
+    ReviewDispatcher(ReviewCoordinator coordinator, ReviewRequestRepository requests, int concurrency, Integer connectionPoolSize, boolean workerEnabled) {
         if (concurrency < 1 || concurrency > MAX_CONCURRENCY) throw new IllegalArgumentException("Review concurrency must be between 1 and 16");
         if (connectionPoolSize != null && connectionPoolSize < 2 * concurrency + 2) {
             throw new IllegalArgumentException("JDBC pool must have at least 2 * app.review.concurrency + 2 connections for review locks, transactions and web requests");
         }
         this.coordinator = coordinator;
+        this.requests = requests;
+        this.workerEnabled = workerEnabled;
         this.executor = new ThreadPoolExecutor(concurrency, concurrency, 0L, TimeUnit.MILLISECONDS,
-                new ArrayBlockingQueue<>(QUEUE_CAPACITY), Thread.ofPlatform().name("project-review-", 0).factory(), new ThreadPoolExecutor.AbortPolicy());
+                new SynchronousQueue<>(), Thread.ofPlatform().name("project-review-", 0).factory(), new ThreadPoolExecutor.AbortPolicy());
     }
 
     public Submission submitManual(long projectId, String username) {
-        coordinator.authorizeManual(projectId, username);
-        return submit(projectId, username);
+        // Authorization and durable enqueue commit happen together. A later dispatch
+        // failure must not turn an accepted request into an ambiguous HTTP failure.
+        var result = requests.enqueueManual(projectId, username, Instant.now());
+        drain();
+        return result == ReviewRequestRepository.EnqueueResult.ALREADY_QUEUED
+                ? Submission.ALREADY_QUEUED : Submission.QUEUED;
     }
 
-    Submission submitScheduled(long projectId) { return submit(projectId, null); }
+    public boolean isQueued(long projectId) { return requests.isActive(projectId); }
 
-    private Submission submit(long projectId, String username) {
-        if (!inFlight.add(projectId)) return Submission.ALREADY_QUEUED;
+    /** Runs even when creation of new scheduled requests is disabled. */
+    @Scheduled(fixedDelay = 5000, initialDelay = 1000)
+    public synchronized void drain() {
+        if (!workerEnabled || executor.isShutdown() || inFlight.size() >= executor.getMaximumPoolSize()) return;
         try {
-            executor.execute(new ReviewTask(projectId, username));
-            return Submission.QUEUED;
-        } catch (RejectedExecutionException exception) {
-            inFlight.remove(projectId);
-            return Submission.CAPACITY_REACHED;
-        }
-    }
-
-    public boolean isQueued(long projectId) { return inFlight.contains(projectId); }
-
-    private final class ReviewTask implements Runnable {
-        private final long projectId;
-        private final String username;
-        private ReviewTask(long projectId, String username) { this.projectId = projectId; this.username = username; }
-        @Override public void run() {
-            try {
-                coordinator.reviewProject(projectId, username);
-            } catch (RuntimeException exception) {
-                LOG.log(System.Logger.Level.WARNING, "Project {0} review execution failed: {1}", projectId, exception.getClass().getSimpleName());
-            } finally {
-                inFlight.remove(projectId);
+            for (var request : requests.candidates(Instant.now(), POLL_CANDIDATES)) {
+                if (executor.isShutdown() || inFlight.size() >= executor.getMaximumPoolSize()) break;
+                if (!inFlight.add(request.projectId())) continue;
+                try {
+                    executor.execute(() -> execute(request));
+                } catch (RejectedExecutionException exception) {
+                    inFlight.remove(request.projectId());
+                    break; // The DB request remains available to the next poll or process.
+                }
             }
+        } catch (RuntimeException exception) {
+            LOG.log(System.Logger.Level.WARNING, "Review queue dispatch failed: {0}", exception.getClass().getSimpleName());
         }
-        void discard() { inFlight.remove(projectId); }
     }
 
-    /**
-     * Query enough candidates to get past every locally queued project, while bounding JDBC allocation.
-     * Limiting to only the currently free slots would let old in-flight IDs hide eligible later IDs.
-     * Executor state can change after this snapshot; submit still handles saturation atomically.
-     */
-    int scheduledCandidateLimit() {
-        if (executor.isShutdown() || (executor.getQueue().remainingCapacity() == 0
-                && executor.getActiveCount() >= executor.getMaximumPoolSize())) return 0;
-        return QUEUE_CAPACITY + executor.getMaximumPoolSize();
+    private void execute(ReviewRequestRepository.Request request) {
+        try {
+            coordinator.processRequest(request);
+        } catch (RuntimeException exception) {
+            LOG.log(System.Logger.Level.WARNING, "Project {0} review execution failed: {1}",
+                    request.projectId(), exception.getClass().getSimpleName());
+        } finally {
+            inFlight.remove(request.projectId());
+        }
     }
 
     @PreDestroy
-    public void close() {
-        close(20, TimeUnit.SECONDS);
-    }
+    public void close() { close(20, TimeUnit.SECONDS); }
 
     void close(long wait, TimeUnit unit) {
         executor.shutdown();
         try {
-            if (!executor.awaitTermination(wait, unit)) discardQueuedTasks();
+            if (!executor.awaitTermination(wait, unit)) executor.shutdownNow();
         } catch (InterruptedException exception) {
-            discardQueuedTasks();
+            executor.shutdownNow();
             Thread.currentThread().interrupt();
         }
     }
 
-    private void discardQueuedTasks() {
-        // shutdownNow only returns tasks that never started. Running tasks retain their
-        // reservation until their own finally block has actually finished.
-        for (Runnable task : executor.shutdownNow()) ((ReviewTask) task).discard();
-    }
-
-    public enum Submission { QUEUED, ALREADY_QUEUED, CAPACITY_REACHED }
+    public enum Submission { QUEUED, ALREADY_QUEUED }
 }

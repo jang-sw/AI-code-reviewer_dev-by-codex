@@ -179,8 +179,113 @@ class OperationsServiceTest {
 
     @Test
     void databaseFailurePropagatesInsteadOfReportingAnEmptyHealthyList() {
-        db.jdbc.execute("DROP TABLE review_run");
+        db.jdbc.execute("ALTER TABLE project DROP COLUMN name");
         assertThatThrownBy(() -> operations.list("admin", "ATTENTION", 0)).isInstanceOf(DataAccessException.class);
+    }
+
+    @Test
+    void durableQueueHasIndependentAgeAndIncludesPausedRequestsUntilWorkerCancellation() {
+        project(20, "APPROVED");
+        project(21, "APPROVED");
+        project(22, "PAUSED");
+        run(20, "SUCCEEDED", NOW.minusSeconds(30));
+        run(21, "FAILED", NOW.minusSeconds(10));
+        queued(20, NOW.minusSeconds(7200));
+        queued(21, NOW.plusSeconds(60));
+        queued(22, NOW.minusSeconds(7201));
+        assertThat(ids("QUEUED")).containsExactly(22L, 20L, 21L);
+        assertThat(ids("REQUEST_DELAYED")).containsExactly(22L, 20L);
+        var late = operations.list("admin", "REQUEST_DELAYED", 0).projects().get(1);
+        assertThat(late.requestState()).isEqualTo("QUEUED");
+        assertThat(late.requestElapsedMinutes()).isEqualTo(120);
+        assertThat(late.elapsedMinutes()).isZero();
+        assertThat(late.requestDelayed()).isTrue();
+        assertThat(late.stale()).isFalse();
+        assertThat(ids("ATTENTION")).contains(20L, 21L, 22L);
+        var future = operations.list("admin", "QUEUED", 0).projects().getLast();
+        assertThat(future.requestElapsedMinutes()).isZero();
+        assertThat(future.requestDelayed()).isFalse();
+        assertThat(future.failed()).isTrue(); // Earlier failed execution is distinct from the new queue request.
+        db.jdbc.update("UPDATE review_request SET state='CANCELLED',finished_at=?,result_code='PROJECT_INELIGIBLE' WHERE project_id=22", Timestamp.from(NOW));
+        assertThat(ids("QUEUED")).containsExactly(20L, 21L);
+        assertThat(ids("REQUEST_DELAYED")).containsExactly(20L);
+    }
+
+    @Test
+    void oldRunningRequestStaysVisibleDespiteRecentRecoveryAttemptAndIsNotReportedAsQueued() {
+        project(20, "APPROVED");
+        queued(20, NOW.minusSeconds(7200));
+        var queued = operations.list("admin", "QUEUED", 0).projects().getFirst();
+        assertThat(queued.neverRun()).isTrue();
+        assertThat(queued.elapsedMinutes()).isNull();
+        assertThat(queued.requestElapsedMinutes()).isEqualTo(120);
+        run(20, "RUNNING", NOW.minusSeconds(10));
+        Long runId = db.jdbc.queryForObject("SELECT id FROM review_run WHERE project_id=20", Long.class);
+        db.jdbc.update("UPDATE review_request SET state='RUNNING',claim_token='private-token-fixture',run_id=?,last_attempt_at=?,attempt_count=2 WHERE project_id=20", runId, Timestamp.from(NOW.minusSeconds(10)));
+        assertThat(ids("QUEUED")).isEmpty();
+        assertThat(ids("REQUEST_DELAYED")).containsExactly(20L);
+        assertThat(ids("ATTENTION")).containsExactly(20L);
+        var delayed = operations.list("admin", "REQUEST_DELAYED", 0).projects().getFirst();
+        assertThat(delayed.requestState()).isEqualTo("RUNNING");
+        assertThat(delayed.requestDelayed()).isTrue();
+        assertThat(delayed.elapsedMinutes()).isZero();
+        assertThat(delayed.requestElapsedMinutes()).isEqualTo(120);
+        assertThat(delayed.stale()).isFalse();
+        var result = operations.list("admin", "STALE", 0);
+        assertThat(result.projects()).isEmpty();
+        db.jdbc.update("UPDATE review_run SET started_at=? WHERE id=?", Timestamp.from(NOW.minusSeconds(7200)), runId);
+        var running = operations.list("admin", "STALE", 0).projects().getFirst();
+        assertThat(running.requestState()).isEqualTo("RUNNING");
+        assertThat(running.requestDelayed()).isTrue();
+        assertThat(running.toString()).doesNotContain("private-token-fixture", "claim_token", "requested_by");
+    }
+
+    @Test
+    void queueFiltersKeepFiftyRowBoundAndStablePages() {
+        for (long id = 100; id < 152; id++) {
+            project(id, "APPROVED");
+            queued(id, NOW.minusSeconds(7200));
+        }
+        for (String filter : new String[] {"QUEUED", "REQUEST_DELAYED"}) {
+            var first = operations.list("admin", filter, 0);
+            var second = operations.list("admin", filter, 1);
+            assertThat(first.projects()).hasSize(50);
+            assertThat(first.hasNext()).isTrue();
+            assertThat(second.projects()).extracting(OperationsService.ProjectObservation::projectId).containsExactly(150L, 151L);
+            assertThat(second.hasNext()).isFalse();
+            assertThat(second.filter()).isEqualTo(filter);
+            assertThat(operations.list("admin", filter, 10000).projects()).isEmpty();
+        }
+    }
+
+    @Test
+    void delayedFilterCombinesQueuedAndRecentlyReclaimedRunningRequestsWithStablePaging() {
+        for (long id = 100; id < 152; id++) {
+            project(id, "APPROVED");
+            queued(id, NOW.minusSeconds(7200));
+            if (id % 2 == 1) {
+                run(id, "RUNNING", NOW.minusSeconds(1));
+                Long runId = db.jdbc.queryForObject("SELECT id FROM review_run WHERE project_id=?", Long.class, id);
+                db.jdbc.update("UPDATE review_request SET state='RUNNING',claim_token=?,run_id=?,attempt_count=3,last_attempt_at=? WHERE project_id=?",
+                        java.util.UUID.randomUUID().toString(), runId, Timestamp.from(NOW.minusSeconds(1)), id);
+            }
+        }
+        var first = operations.list("admin", "REQUEST_DELAYED", 0);
+        var second = operations.list("admin", "REQUEST_DELAYED", 1);
+        assertThat(first.projects()).hasSize(50).allSatisfy(row -> assertThat(row.requestDelayed()).isTrue());
+        assertThat(first.hasNext()).isTrue();
+        assertThat(second.projects()).extracting(OperationsService.ProjectObservation::projectId).containsExactly(150L, 151L);
+        assertThat(second.projects()).extracting(OperationsService.ProjectObservation::requestState).containsExactly("QUEUED", "RUNNING");
+        assertThat(second.hasNext()).isFalse();
+        assertThat(operations.list("admin", "QUEUED", 0).projects()).hasSize(26);
+        db.jdbc.update("UPDATE review_request SET requested_at=? WHERE project_id=151", Timestamp.from(NOW.minusSeconds(7199)));
+        assertThat(operations.list("admin", "REQUEST_DELAYED", 1).projects()).extracting(OperationsService.ProjectObservation::projectId).containsExactly(150L);
+        assertThat(ids("ATTENTION")).doesNotContain(151L);
+    }
+
+    private void queued(long projectId, Instant requested) {
+        db.jdbc.update("INSERT INTO review_request(project_id,request_id,state,source,requested_at,available_at) VALUES(?,?,'QUEUED','SCHEDULED',?,?)",
+                projectId, java.util.UUID.randomUUID().toString(), Timestamp.from(requested), Timestamp.from(requested));
     }
 
     private List<Long> ids(String filter) {

@@ -42,7 +42,7 @@ try {
     Invoke-Checked (Join-Path $PgBin 'createdb.exe') ($connection + @($restoreDatabase))
     $createdHere = $true
     Invoke-Checked (Join-Path $PgBin 'pg_restore.exe') ($connection + @('--exit-on-error','--no-owner','--dbname',$restoreDatabase,$dump))
-    $tables = @('app_user','project','review_run','reviewed_commit','review_issue','manual_review_file','audit_event','git_author_mapping','flyway_schema_history')
+    $tables = @('app_user','project','review_request','review_run','reviewed_commit','review_issue','manual_review_file','audit_event','git_author_mapping','flyway_schema_history')
     $verified = @()
     foreach ($table in $tables) {
         $before = Fingerprint 'reviewer_integration' $table
@@ -53,10 +53,30 @@ try {
     # A restored identity sequence must allow a fresh insert, not collide with restored IDs.
     Invoke-Checked $psql ($connection + @('-X','-v','ON_ERROR_STOP=1','-d',$restoreDatabase,'-c',
         "BEGIN; INSERT INTO audit_event(action,target_type,detail) VALUES ('RESTORE_DRILL','SYSTEM','isolated validation'); ROLLBACK;"))
+    # review_request uses the project primary key, not its own identity sequence.
+    # Verify fresh user/project identities and the restored queue FK/state constraints together.
+    $fixtureSuffix = [Guid]::NewGuid().ToString('N')
+    $fixtureRequest = [Guid]::NewGuid().ToString()
+    $queueInsert = @"
+BEGIN;
+WITH restore_user AS (
+    INSERT INTO app_user(username,password_hash,git_username,role)
+    VALUES ('restore_$fixtureSuffix','non-authenticating-restore-fixture','restore_$fixtureSuffix','USER') RETURNING id
+), restore_project AS (
+    INSERT INTO project(name,repository_url,provider,repository_host,repository_path,owner_id,status)
+    SELECT 'Restore queue fixture','https://github.com/restore/$fixtureSuffix','GITHUB','github.com','restore/$fixtureSuffix',id,'APPROVED'
+    FROM restore_user RETURNING id
+)
+INSERT INTO review_request(project_id,request_id,state,source,requested_at,available_at)
+SELECT id,'$fixtureRequest','QUEUED','SCHEDULED',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP FROM restore_project;
+ROLLBACK;
+"@
+    Invoke-Checked $psql ($connection + @('-X','-v','ON_ERROR_STOP=1','-d',$restoreDatabase,'-c',$queueInsert))
     $report = [ordered]@{ generatedAt = [DateTimeOffset]::UtcNow.ToString('o'); verifiedTables = $verified;
-        dumpSha256 = (Get-FileHash -LiteralPath $dump -Algorithm SHA256).Hash; result = 'PASS'; scope = 'isolated synthetic test database only' }
+        dumpSha256 = (Get-FileHash -LiteralPath $dump -Algorithm SHA256).Hash; result = 'PASS';
+        freshIdentityInsert = $true; projectKeyedQueueInsert = $true; scope = 'isolated synthetic test database only' }
     $report | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $backupDirectory 'restore-report.json') -Encoding UTF8
-    Write-Output "Backup/restore drill passed for $($verified.Count) tables and an identity-sequence insert."
+    Write-Output "Backup/restore drill passed for $($verified.Count) tables, fresh identities and a project-keyed queue insert."
 } finally {
     if ($createdHere -and $restoreDatabase -match '^reviewer_restore_[a-f0-9]{32}$') {
         Invoke-Checked (Join-Path $PgBin 'dropdb.exe') ($connection + @($restoreDatabase))

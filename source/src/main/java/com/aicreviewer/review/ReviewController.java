@@ -1,6 +1,7 @@
 package com.aicreviewer.review;
 
 import com.aicreviewer.git.GitCommitLink;
+import com.aicreviewer.web.ReviewRequestView;
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -10,16 +11,19 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.servlet.mvc.support.RedirectAttributes;
 
 import java.security.Principal;
+import java.time.Instant;
 import java.util.LinkedHashMap;
 
 @Controller
 public class ReviewController {
     private final ReviewRepository repository;
     private final ReviewDispatcher dispatcher;
+    private final ReviewRequestRepository requests;
 
-    public ReviewController(ReviewRepository repository, ReviewDispatcher dispatcher) {
+    public ReviewController(ReviewRepository repository, ReviewDispatcher dispatcher, ReviewRequestRepository requests) {
         this.repository = repository;
         this.dispatcher = dispatcher;
+        this.requests = requests;
     }
 
     @GetMapping("/")
@@ -47,7 +51,7 @@ public class ReviewController {
         model.addAttribute("projectName", project.name());
         model.addAttribute("projectStatus", project.status());
         model.addAttribute("cursor", project.lastReviewedSha());
-        model.addAttribute("queued", dispatcher.isQueued(projectId));
+        requests.find(projectId).ifPresent(request -> model.addAttribute("reviewRequest", ReviewRequestView.from(request, Instant.now())));
         model.addAttribute("runs", runs.rows());
         model.addAttribute("runPage", runs.page());
         model.addAttribute("hasNextRunPage", runs.hasNext());
@@ -62,9 +66,8 @@ public class ReviewController {
     public String review(@PathVariable long id, Principal principal, RedirectAttributes redirect) {
         var result = dispatcher.submitManual(id, principal.getName());
         redirect.addFlashAttribute("message", switch (result) {
-            case QUEUED -> "리뷰를 대기열에 등록했습니다. 이 화면을 새로고침하면 진행 결과를 볼 수 있습니다.";
+            case QUEUED -> "리뷰 요청을 저장했습니다. 서버가 재시작되어도 요청은 유지됩니다. 이 화면을 새로고침하면 진행 결과를 볼 수 있습니다.";
             case ALREADY_QUEUED -> "이미 리뷰가 대기 중이거나 실행 중입니다.";
-            case CAPACITY_REACHED -> "리뷰 대기열이 가득 찼습니다. 잠시 후 다시 시도해 주세요.";
         });
         return "redirect:/reviews?projectId=" + id;
     }
