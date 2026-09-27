@@ -9,6 +9,7 @@ REQUIRED_SUITES = (
     "com.aicreviewer.ApplicationPostgresTest",
     "com.aicreviewer.identity.IdentityPostgresTest",
     "com.aicreviewer.review.ReviewRequestPostgresTest",
+    "com.aicreviewer.operations.OperationsTelemetryPostgresTest",
 )
 
 

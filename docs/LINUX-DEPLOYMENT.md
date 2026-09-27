@@ -59,7 +59,14 @@ sudo systemctl start ai-reviewer
 sudo systemctl status ai-reviewer --no-pager
 ```
 
-`systemctl start` 성공은 DB/화면 준비 완료의 증명이 아니다. `Type=exec`는 Java 실행 여부까지만 확인한다. journal을 제한된 권한으로 확인하고 로그인 화면, 최초 관리자 로그인, 가입 승인, 프로젝트 신청·승인, 수동 요청이 DB 대기 상태로 접수되는지 확인한다. Git·AI 검증 준비가 끝나면 `REVIEW_WORKER_ENABLED=true`로 재시작해 합성/허용된 저장소의 수동 리뷰를 검증한다. `/actuator/health`는 인증이 필요하므로 익명302응답을 건강 상태로 세지 않는다. 서비스 자동 재시작은 반복 실패 시 제한되므로 원인 수정 후 필요할 때 `systemctl reset-failed ai-reviewer`를 사용한다. [systemd 서비스 문서](https://github.com/systemd/systemd/blob/main/man/systemd.service.xml)
+`systemctl start` 성공은 DB/화면 준비 완료의 증명이 아니다. `Type=exec`는 Java 실행 여부까지만 확인한다. journal을 제한된 권한으로 확인하고 로그인 화면, 최초 관리자 로그인, 가입 승인, 프로젝트 신청·승인, 수동 요청이 DB 대기 상태로 접수되는지 확인한다. Git·AI 검증 준비가 끝나면 `REVIEW_WORKER_ENABLED=true`로 재시작해 합성/허용된 저장소의 수동 리뷰를 검증한다. 서비스 자동 재시작은 반복 실패 시 제한되므로 원인 수정 후 필요할 때 `systemctl reset-failed ai-reviewer`를 사용한다. [systemd 서비스 문서](https://github.com/systemd/systemd/blob/main/man/systemd.service.xml)
+
+루프백에서 아래 GET 요청으로 프로세스의 생존 상태와 DB 연결을 포함한 준비 상태를 확인한다. 정상은200과 `{"status":"UP"}`, 비정상은503이다. 인증 없이 상태만 응답하며 Git·AI 품질이나 리뷰 진행을 보장하지 않는다. `/actuator/health`와 `/actuator/metrics/**`는 승인된 관리자 로그인이 필요하므로302를 성공으로 처리하지 않는다. 실패·지연 및 수집 상태는 관리자 ‘서버 상태’ 화면에서 따로 확인한다. [모니터링 범위와 장애 대응](MONITORING.md)을 따른다.
+
+```bash
+curl --fail --silent --show-error --max-time 15 http://127.0.0.1:8080/actuator/health/liveness
+curl --fail --silent --show-error --max-time 15 http://127.0.0.1:8080/actuator/health/readiness
+```
 
 최초 관리자 생성이 확인되면 bootstrap 세 변수를 환경파일에서 제거하고 계획한 재시작을 한다. 기존 DB에서 bootstrap 값을 지워도 기존 관리자는 유지된다. TLS/권한/모델 검증 후 `REVIEW_ENABLED=true`로 전환해 재시작하고 예약 실행을 확인한다. 마지막으로 `systemctl enable ai-reviewer`로 부팅 시 실행을 설정한다.
 

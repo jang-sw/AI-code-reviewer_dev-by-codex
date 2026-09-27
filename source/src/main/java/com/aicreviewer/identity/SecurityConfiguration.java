@@ -3,6 +3,7 @@ package com.aicreviewer.identity;
 import jakarta.servlet.DispatcherType;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.config.ObjectPostProcessor;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -24,6 +25,10 @@ public class SecurityConfiguration {
                                            SignupAttemptLimiter signupLimiter) throws Exception {
         return http
                 .authorizeHttpRequests(authorize -> authorize
+                        .requestMatchers(SafeHealthProbe.REQUESTS).permitAll()
+                        .requestMatchers(HttpMethod.GET, "/actuator/health", "/actuator/metrics", "/actuator/metrics/**").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.HEAD, "/actuator/health", "/actuator/metrics", "/actuator/metrics/**").hasRole("ADMIN")
+                        .requestMatchers("/actuator", "/actuator/**").denyAll()
                         .dispatcherTypeMatchers(DispatcherType.FORWARD, DispatcherType.ERROR).permitAll()
                         .requestMatchers("/login", "/signup", "/error", "/assets/**", "/css/**", "/js/**", "/favicon.ico").permitAll()
                         .requestMatchers("/admin/**").hasRole("ADMIN")

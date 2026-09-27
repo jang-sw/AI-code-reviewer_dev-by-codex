@@ -49,6 +49,13 @@ class PostgreSQLReportGateTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "skipped, empty or unsuccessful"):
                     MODULE.verify_reports(self.directory)
 
+    def test_telemetry_snapshot_suite_is_mandatory(self):
+        suite = "com.aicreviewer.operations.OperationsTelemetryPostgresTest"
+        self.assertIn(suite, MODULE.REQUIRED_SUITES)
+        (self.directory / f"TEST-{suite}.xml").unlink()
+        with self.assertRaisesRegex(ValueError, "Missing or invalid"):
+            MODULE.verify_reports(self.directory)
+
     def test_zero_or_invalid_test_count_fails(self):
         for count in ("0", "-1", "2", "invalid"):
             with self.subTest(count=count):

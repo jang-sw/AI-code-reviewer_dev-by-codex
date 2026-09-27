@@ -17,6 +17,12 @@ final class AccountSessionFilter extends OncePerRequestFilter {
     AccountSessionFilter(AccountUserDetailsService users) { this.users = users; }
 
     @Override
+    protected boolean shouldNotFilter(HttpServletRequest request) {
+        // Public status probes must not acquire a DB dependency from an incidental session cookie.
+        return SafeHealthProbe.REQUESTS.matches(request);
+    }
+
+    @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();

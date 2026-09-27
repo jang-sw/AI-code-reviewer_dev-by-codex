@@ -10,7 +10,7 @@
 - JSP/JSTL 웹 화면. JSP Java scriptlet을 사용하지 않는다. 실행 가능한 WAR.
 - Spring Security 세션/CSRF/BCrypt, Spring JDBC, Flyway SQL migration.
 - Ollama, LiteLLM 또는 OpenAI Responses API 직접 연결. 로컬 기본 `gemma3:1b`; OpenAI는 전용 `OPENAI_MODEL`/`OPENAI_API_KEY` 명시 설정.
-- `source/src/main/java/com/aicreviewer/` 아래 identity(계정), project(승인), git(수집), ai(모델 연결), review(예약/잠금/저장), issue(이슈함), web(감사/오류) 모듈.
+- `source/src/main/java/com/aicreviewer/` 아래 identity(계정), project(승인), git(수집), ai(모델 연결), review(예약/잠금/저장), issue(이슈함), operations(운영 관측), web(감사/오류) 모듈.
 - `source/src/main/resources/` 아래 application.properties, db/migration, static/css.
 - `source/src/main/webapp/WEB-INF/jsp/` JSP·공통 fragment. `source/src/test/` 자동 테스트.
 - `scripts/test-postgres.ps1`: Windows 격리 PostgreSQL 검증. `-BackupRestore -ReviewRestart`는 백업/복원과 실제 WAR 강제 중단 후 재기동 검증도 실행한다.
@@ -27,6 +27,7 @@
 8. 본문 없는 경로·권한 변경과 정규 빈 파일 생성·삭제도 신규 처리 시 고정 tree를 재확인해 수동 이슈로 배정한다. 이력이 재작성되면 관리자가 프로젝트를 일시 중지하고 기존 리뷰·이슈를 보존하며 진행 기준만 복구할 수 있다.
 9. 입력 한도나 미제공 diff가 있으면 전체 변경 경로를 고정 tree로 증명한 뒤 커밋 전체를 수동 확인 이슈로 배정하고 다음 커밋을 진행한다. AI 입력은 가능한 경우 파일 경계로 분할한다. API/응답 오류·증명 실패는 계속 중단한다.
 10. 관리자는 운영 상태에서 최신 실패·미실행·오래된 실행 시작을50건씩 확인한다. 수동 업무는 확인 사유와 함께 처리하며 AI 권고와 구분한다.
+11. 관리자 ‘서버 상태’는 별도 주기로 수집한 DB 전체 요약과 실패·지연 화면 알림을 제공한다. 수집 실패나90초 이상 지난 관측은 현재 수치로 표시하지 않는다. 상태만 반환하는 공개 생존/준비 확인과 관리자 metrics의 범위는 [모니터링 가이드](docs/MONITORING.md)를 따른다.
 
 ## 실행·검증
 
@@ -44,5 +45,5 @@ Git 기본 호스트는 `github.com`이다. 설치형 GitLab은 관리자가 허
 
 - 실제 대형 이력/변경 부하와 공급자별 수동 전환 호환성. 파일 내부 분할·원본 diff 복원·부분 AI/수동 혼합은 별도 확장이다. 증명할 수 없는 변경은 실패한다.
 - 실제 GitLab·LiteLLM 환경, 운영 모델 품질, 장시간·장애·부하 검증.
-- 운영 백업/복원·모니터링·보존·업그레이드/롤백·의존성 취약점 검증.
+- 운영 백업/복원·관측 용량/진행률·보존·업그레이드/롤백·의존성 취약점 검증.
 - 상세 기준은 `docs/RELEASE-CHECKLIST.md`와 `docs/AI-EVALUATION.md`를 따른다.

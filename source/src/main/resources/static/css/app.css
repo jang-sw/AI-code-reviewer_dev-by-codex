@@ -146,6 +146,11 @@ summary { cursor:pointer; color:var(--blue); font-weight:600; }
 .assignment-notice { margin:20px 0 0; }
 .issue-card .section-heading { align-items:flex-start; flex-wrap:wrap; }
 .issue-card .section-heading .muted { overflow-wrap:anywhere; }
+.monitoring-status .badge { margin-right:8px; }
+.monitoring-times time { overflow-wrap:anywhere; }
+.monitoring-alert p { margin-bottom:8px; }
+.monitoring-stats { grid-template-columns:repeat(auto-fit,minmax(min(210px,100%),1fr)); }
+.monitoring-stats .stat-card { min-width:0; overflow-wrap:anywhere; }
 @media(max-width:640px) { .journey-steps { grid-template-columns:1fr; gap:20px; } .admin-callout { display:block; } .admin-callout .actions { margin-top:16px; } .project-item-header { flex-wrap:wrap; } .filter-form { display:block; } .filter-form .field { margin-bottom:14px; } .page-header>.actions { margin-top:16px; } .public-nav { flex-basis:auto; margin-left:auto; } .admin-menu { left:auto; right:0; } }
 @media(max-width:1050px) { .site-header { flex-wrap:wrap; gap:12px 24px; } nav { order:3; flex-basis:100%; } .session-menu { margin-left:auto; } }
 @media(max-width:640px) { .review-history-scroll-hint { display:block; } }

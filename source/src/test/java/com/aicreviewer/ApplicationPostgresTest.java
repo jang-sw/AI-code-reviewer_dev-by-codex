@@ -10,6 +10,7 @@ import com.aicreviewer.git.ManualReviewFile;
 import com.aicreviewer.ai.AiInputLimitException;
 import com.aicreviewer.identity.UserAccountService;
 import com.aicreviewer.project.ProjectService;
+import com.aicreviewer.operations.OperationsTelemetryService;
 import com.aicreviewer.review.ProjectReviewLock;
 import com.aicreviewer.review.ReviewCoordinator;
 import java.net.CookieManager;
@@ -64,6 +65,7 @@ class ApplicationPostgresTest {
     @Autowired ProjectService projects;
     @Autowired ReviewCoordinator reviews;
     @Autowired ProjectReviewLock locks;
+    @Autowired OperationsTelemetryService telemetry;
     @MockitoBean GitRepositoryClient git;
     @MockitoBean AiReviewClient ai;
     String writer;
@@ -536,6 +538,55 @@ class ApplicationPostgresTest {
         assertThat(get(admin, "/admin/operations?page=-1").statusCode()).isEqualTo(400);
         jdbc.update("insert into review_run(project_id,status,started_at,finished_at) values (?,'SUCCEEDED',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)", projectId);
         assertThat(get(admin, "/admin/operations?filter=FAILED").body()).doesNotContain("/projects/" + projectId + "\"");
+    }
+
+    @Test
+    void monitoringRendersRealJspAndCachedJsonForCurrentAdminOnly() throws Exception {
+        telemetry.refresh();
+        await().atMost(Duration.ofSeconds(5)).until(() -> telemetry.observation().available());
+        var admin = login("pgadmin");
+        var page = get(admin, "/admin/monitoring");
+        assertThat(page.statusCode()).isEqualTo(200);
+        assertThat(page.headers().firstValue("Cache-Control").orElse("")).contains("no-store");
+        assertThat(page.body()).contains("서버 상태", "data-observation-status=\"READY\"", "id=\"monitoring-counts\"", "현재 서버 설정", "프로젝트별 운영 상태")
+                .doesNotContain("<script>alert(1)</script>")
+                .containsPattern("<time datetime=\"[^\"]+\">[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}</time>");
+        var snapshot = get(admin, "/admin/monitoring/snapshot");
+        assertThat(snapshot.statusCode()).isEqualTo(200);
+        assertThat(snapshot.headers().firstValue("Content-Type").orElse("")).contains("application/json");
+        assertThat(snapshot.headers().firstValue("Cache-Control").orElse("")).contains("no-store");
+        assertThat(snapshot.body()).contains("\"status\":\"READY\"", "\"available\":true", "\"currentServerSchedulerEnabled\":false")
+                .doesNotContain(writer, outsider, "repository_url", "password", "jdbc:");
+        var metrics = get(admin, "/actuator/metrics/ai.reviewer.observation.available");
+        assertThat(metrics.statusCode()).isEqualTo(200);
+        assertThat(metrics.body()).contains("ai.reviewer.observation.available", "\"value\":1.0");
+        assertThat(get(login(writer), "/admin/monitoring").statusCode()).isEqualTo(403);
+        assertThat(get(login(writer), "/admin/monitoring/snapshot").statusCode()).isEqualTo(403);
+        assertThat(get(client(), "/admin/monitoring/snapshot").statusCode()).isEqualTo(302);
+        verifyNoInteractions(git, ai);
+    }
+
+    @Test
+    void anonymousHealthProbesAreStatusOnlyButMetricsAndHealthRootRequireAdmin() throws Exception {
+        var anonymous = client();
+        for (String group : List.of("liveness", "readiness")) {
+            String path = "/actuator/health/" + group;
+            var probe = get(anonymous, path);
+            assertThat(probe.statusCode()).isEqualTo(200);
+            assertThat(probe.body()).isEqualTo("{\"status\":\"UP\"}");
+            var head = anonymous.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + path))
+                    .timeout(Duration.ofSeconds(5)).method("HEAD", HttpRequest.BodyPublishers.noBody()).build(), HttpResponse.BodyHandlers.ofString());
+            assertThat(head.statusCode()).isEqualTo(200);
+            assertThat(head.body()).isEmpty();
+            assertThat(post(anonymous, path, Map.of()).statusCode()).isEqualTo(403);
+        }
+        assertThat(get(anonymous, "/actuator/health").statusCode()).isEqualTo(302);
+        assertThat(get(anonymous, "/actuator/metrics").statusCode()).isEqualTo(302);
+        var ordinary = login(writer);
+        assertThat(get(ordinary, "/actuator/health").statusCode()).isEqualTo(403);
+        assertThat(get(ordinary, "/actuator/metrics").statusCode()).isEqualTo(403);
+        assertThat(get(login("pgadmin"), "/actuator/health").statusCode()).isEqualTo(200);
+        verifyNoInteractions(git, ai);
     }
 
     private void stubBatch(List<GitCommit> commits, String checkpoint) {
