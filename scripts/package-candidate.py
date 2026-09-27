@@ -37,6 +37,8 @@ ALLOWLIST = (
     "docs/MONITORING.md",
     "docs/OPENAI-INTEGRATION.md",
     "docs/OPERATIONS.md",
+    "docs/PUBLIC-GIT-VALIDATION.md",
+    "docs/DB-RECOVERY-VALIDATION.md",
     "docs/QUEUE-VALIDATION.md",
     "docs/RELEASE-CHECKLIST.md",
     "docs/SECRET-HYGIENE.md",

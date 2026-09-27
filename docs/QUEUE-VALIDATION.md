@@ -54,4 +54,4 @@ python3 scripts/verify-review-restart.py \
 
 완료한 커밋의 DB 저장·이슈 중복 방지와 요청의 재시작 보존을 확인했다. 외부 AI 호출 자체의 정확히 한 번 실행이나 과금 중복 방지를 보장하지 않는다. 응답 뒤 DB commit 전에 중단되거나 잠금 연결이 끊어지면 미저장 커밋을 다시 호출할 수 있다. 복구 backoff는 재확인 간격이며 작업 종료 시간이나 SLA가 아니다.
 
-실제 DB 서버 재시작·장기 네트워크 분리·운영 다중 인스턴스 장시간 공정성/지연·대형 저장소 처리량·Linux systemd 종료 시간·운영 백업 복구는 별도 검증이 필요하다. `REVIEW_ENABLED=false`는 새 예약만 멈춘다. 완전한 유지보수 중지는 모든 인스턴스에서 `REVIEW_WORKER_ENABLED=false` 또는 서비스 종료를 함께 적용해야 한다.
+로컬 격리 PostgreSQL의 fast stop·재시작 후 같은 WAR의 요청 복구도 [별도 시나리오](DB-RECOVERY-VALIDATION.md)로 통과했다. 장기 네트워크 분리·운영 다중 인스턴스 장시간 공정성/지연·대형 저장소 처리량·Linux systemd 종료 시간·운영 백업 복구는 별도 검증이 필요하다. `REVIEW_ENABLED=false`는 새 예약만 멈춘다. 완전한 유지보수 중지는 모든 인스턴스에서 `REVIEW_WORKER_ENABLED=false` 또는 서비스 종료를 함께 적용해야 한다.
