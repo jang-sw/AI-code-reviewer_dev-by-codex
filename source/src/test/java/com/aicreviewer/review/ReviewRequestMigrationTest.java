@@ -26,7 +26,7 @@ class ReviewRequestMigrationTest {
             var runs = jdbc.queryForList("select * from review_run");
             var commits = jdbc.queryForList("select * from reviewed_commit");
             var issues = jdbc.queryForList("select * from review_issue");
-            Flyway.configure().dataSource(source).load().migrate();
+            Flyway.configure().dataSource(source).target("12").load().migrate();
             assertThat(jdbc.queryForList("select * from review_run")).isEqualTo(runs);
             assertThat(jdbc.queryForList("select * from reviewed_commit")).isEqualTo(commits);
             assertThat(jdbc.queryForList("select * from review_issue")).isEqualTo(issues);

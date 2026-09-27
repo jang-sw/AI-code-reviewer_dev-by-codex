@@ -97,8 +97,10 @@ public class ReviewCoordinator {
             checkInterrupted();
             assertCurrentRequest(claim);
             Set<String> reviewedShas = repository.reviewedShas(projectId);
+            recordProgressStage(projectId, runId, claim, "GIT_LOADING");
             GitReviewBatch batch = git.batch(project.repository(), project.branch(), project.lastReviewedSha(), reviewedShas, maxCommits);
             validateBatch(batch, reviewedShas);
+            recordProgressStage(projectId, runId, claim, "REVIEWING");
             List<GitCommit> commits = batch.commits();
             for (GitCommit commit : commits) {
                 checkInterrupted();
@@ -117,6 +119,7 @@ public class ReviewCoordinator {
             }
             // A partial merge can persist progress without a checkpoint. Conversely, a
             // fully persisted retry can advance to a safe checkpoint with no new commits.
+            recordProgressStage(projectId, runId, claim, "FINALIZING");
             transactions.executeWithoutResult(status -> {
                 checkInterrupted();
                 if (claim == null) repository.completeBatch(runId, project, batch.checkpointSha(), Instant.now());
@@ -150,6 +153,16 @@ public class ReviewCoordinator {
             LOG.log(System.Logger.Level.WARNING, "Review run {0} for project {1} failed: {2}", runId, projectId, exception.getClass().getSimpleName());
             return exception instanceof ReviewRequestRepository.RequestCancelledException ? Outcome.CANCELLED : Outcome.FAILED;
         }
+    }
+
+    private void recordProgressStage(long projectId, long runId, ReviewRequestRepository.Claim claim, String stage) {
+        transactions.executeWithoutResult(status -> {
+            checkInterrupted();
+            if (claim != null) requests.guard(claim);
+            else ReviewRepository.requireApproved(repository.project(projectId, true));
+            repository.recordProgressStage(runId, projectId, stage, Instant.now());
+            checkInterrupted();
+        });
     }
 
     private void assertCurrentRequest(ReviewRequestRepository.Claim claim) {

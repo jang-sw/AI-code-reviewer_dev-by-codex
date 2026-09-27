@@ -3,6 +3,16 @@
 <section id="review-request-state" class="card" data-request-state="<c:out value='${reviewRequest.state}'/>" aria-labelledby="review-request-heading">
   <h2 id="review-request-heading">최근 리뷰 요청</h2>
   <p role="status"><strong><c:out value="${reviewRequest.stateLabel}"/></strong> · <c:out value="${reviewRequest.sourceLabel}"/></p>
+  <c:if test="${not empty reviewProgress}">
+    <div id="review-progress" data-progress-stage="<c:out value='${reviewProgress.stage}'/>" data-saved-commits="<c:out value='${reviewProgress.savedCommits}'/>">
+      <dl><dt>마지막 기록된 처리 단계</dt><dd><c:out value="${reviewProgress.stageLabel}"/></dd>
+        <dt>이번 처리 시도에서 새로 저장한 커밋</dt><dd><c:out value="${reviewProgress.savedCommits}"/>건</dd>
+        <dt>이번 시도 마지막 저장 (UTC)</dt><dd><c:choose><c:when test="${not empty reviewProgress.lastSavedAt}"><time datetime="<c:out value='${reviewProgress.lastSavedAt}'/>"><c:out value="${reviewProgress.lastSavedAtLabel}"/></time></c:when><c:otherwise>저장 시각 기록 없음</c:otherwise></c:choose></dd>
+        <c:if test="${not empty reviewProgress.recordedAt}"><dt>진행 기록 갱신 (UTC)</dt><dd><time datetime="<c:out value='${reviewProgress.recordedAt}'/>"><c:out value="${reviewProgress.recordedAtLabel}"/></time></dd></c:if>
+      </dl>
+      <p class="hint">이전 시도의 저장 결과는 재사용합니다. 수동 확인 이슈를 배정한 커밋도 포함하므로 담당자의 확인 완료 건수와 다릅니다.</p>
+    </div>
+  </c:if>
   <dl><dt>접수 시각 (UTC)</dt><dd><c:out value="${reviewRequest.requestedAt}"/></dd>
     <c:if test="${reviewRequest.active}"><dt>접수 후 경과</dt><dd><c:out value="${reviewRequest.elapsedMinutes}"/>분</dd></c:if>
     <c:if test="${not empty reviewRequest.lastAttemptAt}"><dt>최근 처리 시작 (UTC)</dt><dd><c:out value="${reviewRequest.lastAttemptAt}"/></dd><dt>처리 시도</dt><dd><c:out value="${reviewRequest.attemptCount}"/>회</dd></c:if>

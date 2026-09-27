@@ -110,4 +110,24 @@ class ReviewControllerTest {
             assertThat(message).contains(submission == ReviewDispatcher.Submission.QUEUED ? "요청을 저장" : "이미 리뷰");
         }
     }
+
+    @Test
+    void authorizedCurrentRequestProgressKeepsIndependentHistoryPagesAndExcludesOwnershipData() throws Exception {
+        var now = Instant.parse("2026-09-27T07:00:00Z");
+        var request = new ReviewRequestRepository.Request(10, "private-progress-request", "RUNNING", "MANUAL", 987654321L,
+                now, now, now, 2, 20L, null, null);
+        var progress = new ReviewProgress("REVIEWING", now, 3, now);
+        when(requests.find(10)).thenReturn(Optional.of(request));
+        when(requests.progress(request)).thenReturn(Optional.of(progress));
+
+        var result = mvc.perform(get("/reviews").param("projectId", "10").param("commitPage", "2").param("runPage", "3").principal(() -> "owner"))
+                .andExpect(status().isOk()).andExpect(model().attribute("reviewProgress", progress))
+                .andExpect(model().attribute("commitPage", 2)).andExpect(model().attribute("runPage", 3)).andReturn();
+        assertThat(result.getModelAndView().getModel().get("reviewProgress").toString())
+                .doesNotContain("private-progress-request", "987654321", "claimToken", "repository", "password");
+        var order = inOrder(repository, requests);
+        order.verify(repository).authorizedProject(10, actor);
+        order.verify(requests).find(10);
+        order.verify(requests).progress(request);
+    }
 }

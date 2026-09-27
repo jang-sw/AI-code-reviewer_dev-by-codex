@@ -26,6 +26,7 @@ import java.util.Set;
 
 @Repository
 public class ReviewRepository {
+    private static final Set<String> PROGRESS_STAGES = Set.of("PREPARING", "GIT_LOADING", "REVIEWING", "FINALIZING");
     public static final int HISTORY_PAGE_SIZE = 50;
     public static final int MAX_HISTORY_PAGE = 10000;
     private final JdbcTemplate jdbc;
@@ -68,10 +69,22 @@ public class ReviewRepository {
         // A held session lock proves prior RUNNING rows belong to interrupted processes.
         jdbc.update("update review_run set status = 'FAILED', finished_at = ?, error_message = ? where project_id = ? and status = 'RUNNING'",
                 Timestamp.from(now), "이전 실행이 중단되었습니다. 저장된 커밋 리뷰를 재사용하여 다시 진행합니다.", projectId);
-        long id = insert("insert into review_run(project_id, status, started_at, reviewed_commits) values (?, 'RUNNING', ?, 0)",
-                projectId, Timestamp.from(now));
+        long id = insert("insert into review_run(project_id, status, started_at, reviewed_commits, progress_stage, progress_updated_at) values (?, 'RUNNING', ?, 0, 'PREPARING', ?)",
+                projectId, Timestamp.from(now), Timestamp.from(now));
         audit(actorId, "REVIEW_STARTED", "REVIEW_RUN", id, "project=" + projectId, now);
         return id;
+    }
+
+    /** Caller holds the project row and, for queued work, the current request guard in this transaction. */
+    public void recordProgressStage(long runId, long projectId, String stage, Instant now) {
+        if (!org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()) {
+            throw new IllegalStateException("Review progress requires a guarded transaction");
+        }
+        if (stage == null || !PROGRESS_STAGES.contains(stage)) throw new IllegalArgumentException("Invalid review progress stage");
+        if (jdbc.update("update review_run set progress_stage = ?, progress_updated_at = ? where id = ? and project_id = ? and status = 'RUNNING'",
+                stage, Timestamp.from(now), runId, projectId) != 1) {
+            throw new IllegalStateException("Review execution is no longer current");
+        }
     }
 
     public boolean alreadyReviewed(long projectId, String sha) {
@@ -141,7 +154,10 @@ public class ReviewRepository {
             audit(null, "MANUAL_REVIEW_ASSIGNED", "REVIEWED_COMMIT", commitId,
                     "files=" + commit.manualFiles().size() + "; evidence=PINNED_TREES; assignee=" + assignment.userId(), now);
         }
-        jdbc.update("update review_run set reviewed_commits = reviewed_commits + 1 where id = ? and status = 'RUNNING'", runId);
+        if (jdbc.update("update review_run set reviewed_commits = reviewed_commits + 1, last_saved_at = ?, progress_updated_at = ? where id = ? and project_id = ? and status = 'RUNNING'",
+                Timestamp.from(now), Timestamp.from(now), runId, current.id()) != 1) {
+            throw new IllegalStateException("Review execution is no longer current");
+        }
         return true;
     }
 

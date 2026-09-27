@@ -112,7 +112,11 @@ SELECT json_build_object(
   'issues', (SELECT count(*) FROM {schema}.review_issue WHERE project_id={project}),
   'assignees', COALESCE((SELECT json_agg(assignee_id ORDER BY id) FROM {schema}.review_issue WHERE project_id={project}),'[]'::json),
   'runs', COALESCE((SELECT json_agg(json_build_object('state',status,'commits',reviewed_commits) ORDER BY id)
-      FROM {schema}.review_run WHERE project_id={project}),'[]'::json)
+      FROM {schema}.review_run WHERE project_id={project}),'[]'::json),
+  'progress', (SELECT json_build_object('runId',r.id,'stage',r.progress_stage,
+      'saved',r.reviewed_commits,'recordedAt',r.progress_updated_at,'lastSavedAt',r.last_saved_at)
+      FROM {schema}.review_request q JOIN {schema}.review_run r ON r.id=q.run_id AND r.project_id=q.project_id
+      WHERE q.project_id={project})
 );
 """
         try:
@@ -128,6 +132,8 @@ class Fixture:
         self.errors = []
         self.first_b_entered = threading.Event()
         self.release_first_b = threading.Event()
+        self.second_b_entered = threading.Event()
+        self.release_second_b = threading.Event()
         self.server = None
         self.thread = None
 
@@ -252,6 +258,10 @@ class Fixture:
                         fixture.first_b_entered.set()
                         if not fixture.release_first_b.wait(180):
                             raise VerificationError("The intentional B response delay exceeded its hard limit")
+                    elif sha == SHA_B and count == 2:
+                        fixture.second_b_entered.set()
+                        if not fixture.release_second_b.wait(180):
+                            raise VerificationError("The recovered B response delay exceeded its hard limit")
                     result = {"summary": "합성 재시작 검증용 리뷰", "findings": [{"severity": "HIGH", "title": "Synthetic finding " + FILES[sha],
                               "filePath": FILES[sha], "lineNumber": 1, "description": "합성 입력 검증입니다.", "suggestion": "합성 변경을 확인하세요."}]}
                     self.reply({"done": True, "done_reason": "stop", "message": {"role": "assistant", "content": json.dumps(result, ensure_ascii=False)}})
@@ -268,12 +278,34 @@ class Fixture:
 
     def close(self):
         self.release_first_b.set()
+        self.release_second_b.set()
         if self.server is not None:
             if self.thread is not None and self.thread.is_alive():
                 self.server.shutdown()
             self.server.server_close()
         if self.thread is not None:
             self.thread.join(3)
+
+
+class ProgressParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.cards = []
+
+    def handle_starttag(self, tag, attributes):
+        values = dict(attributes)
+        if values.get("id") == "review-progress":
+            self.cards.append(values)
+
+
+def verify_progress_page(page, expected_stage, expected_saved):
+    parser = ProgressParser()
+    parser.feed(page)
+    require(len(parser.cards) == 1, "The packaged page did not render exactly one current progress card")
+    card = parser.cards[0]
+    require(card.get("data-progress-stage") == expected_stage
+            and card.get("data-saved-commits") == str(expected_saved),
+            "The packaged page rendered stale or incorrect current-attempt progress")
 
 
 class CsrfParser(HTMLParser):
@@ -488,6 +520,9 @@ def main():
                         and initial["request"]["source"] == "MANUAL" and initial["request"]["actor"] is not None
                         and not initial["runs"] and not initial["commits"] and not fixture.observed(),
                         "Worker-disabled request was not durably queued without external calls")
+                require(initial["progress"] is None and 'id="review-progress"' not in page
+                        and 'id="review-progress"' not in review_page,
+                        "A never-started queued request was shown with another run's progress")
                 report["checks"]["durableQueuedWithWorkersDisabled"] = True
                 report["checks"]["packagedLoginCsrfAndBootstrapAuthentication"] = True
                 report["checks"]["queuedJspAndDisabledScheduleNotice"] = True
@@ -507,6 +542,16 @@ def main():
                 require(before_kill.get("ai_A.java") == 1 and before_kill.get("ai_B.java") == 1
                         and before_kill.get("diff_A.java") == 1 and before_kill.get("diff_B.java") == 1,
                         "The synthetic pre-crash request count was unexpected")
+                first_progress = interrupted["progress"]
+                require(first_progress["stage"] == "REVIEWING" and first_progress["saved"] == 1
+                        and first_progress["lastSavedAt"] is not None and first_progress["recordedAt"] is not None,
+                        "The first saved commit did not durably update the current run's progress")
+                browser = Browser(war.base)
+                browser.login(war.username, war.password)
+                for route in ("/projects/" + str(project), "/reviews?projectId=" + str(project)):
+                    _, progress_page = browser.request(route)
+                    verify_progress_page(progress_page, "REVIEWING", 1)
+                report["checks"]["persistedProgressShownBeforeCrash"] = True
                 war.stop(force=True)
                 fixture.release_first_b.set()
                 report["checks"]["queuedRequestSurvivedFirstProcessStop"] = True
@@ -514,6 +559,22 @@ def main():
 
                 report["stage"] = "recover_running_request_after_forced_kill"
                 war.start(True)
+                bounded_wait(fixture.second_b_entered.is_set, deadline,
+                             "The recovered second synthetic AI call did not start", war.process)
+                recovering = database.snapshot(schema, project)
+                recovered_progress = recovering["progress"]
+                require(recovering["commits"] == [SHA_A] and recovering["issues"] == 1
+                        and recovered_progress["runId"] != first_progress["runId"]
+                        and recovered_progress["stage"] == "REVIEWING" and recovered_progress["saved"] == 0
+                        and recovered_progress["lastSavedAt"] is None and recovered_progress["recordedAt"] is not None,
+                        "Recovery mixed prior saved results with this attempt's progress")
+                browser = Browser(war.base)
+                browser.login(war.username, war.password)
+                for route in ("/projects/" + str(project), "/reviews?projectId=" + str(project)):
+                    _, progress_page = browser.request(route)
+                    verify_progress_page(progress_page, "REVIEWING", 0)
+                report["checks"]["recoveredAttemptStartsWithZeroNewSaves"] = True
+                fixture.release_second_b.set()
                 final = None
 
                 def completed():
@@ -530,6 +591,10 @@ def main():
                         and final["assignees"] == [initial["request"]["actor"]] * 2
                         and final["runs"] == [{"state": "FAILED", "commits": 1}, {"state": "SUCCEEDED", "commits": 1}],
                         "Recovery duplicated or lost reviewed commits, assignments, run state or the safe checkpoint")
+                require(final["progress"]["runId"] == recovered_progress["runId"]
+                        and final["progress"]["stage"] == "FINALIZING" and final["progress"]["saved"] == 1
+                        and final["progress"]["lastSavedAt"] is not None,
+                        "The recovered attempt's saved progress was not retained at completion")
                 counts = fixture.observed()
                 require(counts.get("ai_A.java") == 1 and counts.get("detail_A.java") == 1 and counts.get("diff_A.java") == 1
                         and counts.get("ai_B.java") == 2 and counts.get("detail_B.java") == 2 and counts.get("diff_B.java") == 2,
@@ -566,6 +631,7 @@ def main():
         # No tracebacks, child environment, HTTP bodies, SQL responses or arbitrary exception messages.
     finally:
         fixture.release_first_b.set()
+        fixture.release_second_b.set()
         # Also cover failures between schema creation and the scenario's inner try.
         # Each resource is owned by this invocation; no PID lookup or global cleanup is used.
         cleanup_failed = False

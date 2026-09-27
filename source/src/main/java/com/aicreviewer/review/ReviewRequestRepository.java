@@ -118,6 +118,18 @@ public class ReviewRequestRepository {
         return jdbc.query("select * from review_request where project_id = ?", REQUEST, projectId).stream().findFirst();
     }
 
+    /** Authorization precedes this lookup. A replacement request or claim cannot supply a different run's progress. */
+    public Optional<ReviewProgress> progress(Request snapshot) {
+        if (snapshot.runId() == null || "QUEUED".equals(snapshot.state())) return Optional.empty();
+        return jdbc.query("""
+                select r.progress_stage, r.progress_updated_at, r.reviewed_commits, r.last_saved_at
+                from review_request q join review_run r on r.id = q.run_id and r.project_id = q.project_id
+                where q.project_id = ? and q.request_id = ? and q.run_id = ? and q.state = ?
+                """, (rs, row) -> new ReviewProgress(rs.getString("progress_stage"), instant(rs.getTimestamp("progress_updated_at")),
+                        rs.getInt("reviewed_commits"), instant(rs.getTimestamp("last_saved_at"))),
+                snapshot.projectId(), snapshot.requestId(), snapshot.runId(), snapshot.state()).stream().findFirst();
+    }
+
     public boolean isActive(long projectId) {
         return Boolean.TRUE.equals(jdbc.queryForObject("select exists(select 1 from review_request where project_id = ? and state in ('QUEUED', 'RUNNING'))", Boolean.class, projectId));
     }

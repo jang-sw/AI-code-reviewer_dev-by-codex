@@ -89,6 +89,19 @@ class RestartDrillBoundaryTest(unittest.TestCase):
                 database.sql('SELECT 1;')
         self.assertNotIn('synthetic-sensitive', str(failure.exception))
 
+    def test_progress_probe_rejects_missing_duplicate_or_prior_attempt_cards(self):
+        card = '<section id="review-progress" data-progress-stage="REVIEWING" data-saved-commits="0"></section>'
+        MODULE.verify_progress_page(card, 'REVIEWING', 0)
+        for page in ('', card + card, card.replace('="0"', '="1"'), card.replace('REVIEWING', 'FINALIZING')):
+            with self.subTest(page=page), self.assertRaises(MODULE.VerificationError):
+                MODULE.verify_progress_page(page, 'REVIEWING', 0)
+
+    def test_fixture_cleanup_releases_both_interrupted_and_recovered_requests(self):
+        fixture = MODULE.Fixture()
+        fixture.close()
+        self.assertTrue(fixture.release_first_b.is_set())
+        self.assertTrue(fixture.release_second_b.is_set())
+
 
 if __name__ == '__main__':
     unittest.main()

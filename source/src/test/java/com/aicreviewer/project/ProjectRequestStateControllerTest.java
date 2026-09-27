@@ -3,6 +3,7 @@ package com.aicreviewer.project;
 import com.aicreviewer.identity.UserAccount;
 import com.aicreviewer.identity.UserAccountService;
 import com.aicreviewer.review.ReviewRequestRepository;
+import com.aicreviewer.review.ReviewProgress;
 import com.aicreviewer.web.ReviewRequestView;
 import java.time.Instant;
 import java.util.Optional;
@@ -41,5 +42,23 @@ class ProjectRequestStateControllerTest {
         var order = inOrder(projects, requests);
         order.verify(projects).getVisible("owner", 10);
         order.verify(requests).find(10);
+    }
+
+    @Test void projectDetailUsesOnlyProgressBoundToItsAuthorizedRequestSnapshot() {
+        var now = Instant.parse("2026-09-27T07:00:00Z");
+        var request = new ReviewRequestRepository.Request(10, "private-request", "FAILED", "MANUAL", 1L,
+                now, now, now, 1, 20L, now, "REVIEW_FAILED");
+        var progress = new ReviewProgress("REVIEWING", now, 1, now);
+        when(users.requireAccount("owner")).thenReturn(new UserAccount(1, "owner", "owner", "USER", true, now));
+        when(requests.find(10)).thenReturn(Optional.of(request));
+        when(requests.progress(request)).thenReturn(Optional.of(progress));
+        var model = new ExtendedModelMap();
+        assertThat(controller.detail(() -> "owner", 10, model)).isEqualTo("projects/detail");
+        assertThat(model.get("reviewProgress")).isEqualTo(progress);
+        assertThat(progress.toString()).doesNotContain("private-request", "requestedBy", "claimToken");
+        var order = inOrder(projects, requests);
+        order.verify(projects).getVisible("owner", 10);
+        order.verify(requests).find(10);
+        order.verify(requests).progress(request);
     }
 }

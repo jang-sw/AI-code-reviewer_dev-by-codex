@@ -51,7 +51,10 @@ public class ReviewController {
         model.addAttribute("projectName", project.name());
         model.addAttribute("projectStatus", project.status());
         model.addAttribute("cursor", project.lastReviewedSha());
-        requests.find(projectId).ifPresent(request -> model.addAttribute("reviewRequest", ReviewRequestView.from(request, Instant.now())));
+        requests.find(projectId).ifPresent(request -> {
+            model.addAttribute("reviewRequest", ReviewRequestView.from(request, Instant.now()));
+            requests.progress(request).ifPresent(progress -> model.addAttribute("reviewProgress", progress));
+        });
         model.addAttribute("runs", runs.rows());
         model.addAttribute("runPage", runs.page());
         model.addAttribute("hasNextRunPage", runs.hasNext());

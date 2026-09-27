@@ -82,7 +82,10 @@ public class ProjectController {
     @GetMapping("/projects/{id}")
     public String detail(Principal principal, @PathVariable long id, Model model) {
         model.addAttribute("project", projects.getVisible(principal.getName(), id));
-        requests.find(id).ifPresent(request -> model.addAttribute("reviewRequest", ReviewRequestView.from(request, Instant.now())));
+        requests.find(id).ifPresent(request -> {
+            model.addAttribute("reviewRequest", ReviewRequestView.from(request, Instant.now()));
+            requests.progress(request).ifPresent(progress -> model.addAttribute("reviewProgress", progress));
+        });
         model.addAttribute("isAdmin", users.requireAccount(principal.getName()).isAdmin());
         model.addAttribute("pageTitle", "프로젝트 상세");
         return "projects/detail";
