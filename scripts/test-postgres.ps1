@@ -3,7 +3,10 @@ param(
     [ValidateRange(1024, 65535)][int]$Port = 55439,
     [switch]$BackupRestore,
     [switch]$ReviewRestart,
-    [ValidateRange(1024, 65535)][int]$ReviewRestartPort = 18089
+    [ValidateRange(1024, 65535)][int]$ReviewRestartPort = 18089,
+    [switch]$ReviewConcurrency,
+    [ValidateRange(1024, 65535)][int]$ReviewConcurrencyPortA = 18090,
+    [ValidateRange(1024, 65535)][int]$ReviewConcurrencyPortB = 18091
 )
 $ErrorActionPreference = 'Stop'
 $workspace = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -21,6 +24,7 @@ function Invoke-Checked([string]$Executable, [string[]]$Arguments) {
     if ($LASTEXITCODE -ne 0) { throw "Command failed: $Executable (exit $LASTEXITCODE)" }
 }
 try {
+    if ($ReviewConcurrency -and $ReviewConcurrencyPortA -eq $ReviewConcurrencyPortB) { throw 'Concurrent WAR ports must differ.' }
     if (-not (Test-Path -LiteralPath $pgCtl)) { throw 'PostgreSQL development tools were not found; supply -PgBin.' }
     New-Item -ItemType Directory -Force (Join-Path $workspace '.local') | Out-Null
     if (-not (Test-Path -LiteralPath $cluster)) {
@@ -53,12 +57,20 @@ try {
     if ($BackupRestore) {
         & (Join-Path $PSScriptRoot 'verify-test-backup.ps1') -PgBin $PgBin -Port $Port
     }
-    if ($ReviewRestart) {
+    if ($ReviewRestart -or $ReviewConcurrency) {
         $restartJava = if ($env:JAVA_HOME) { Join-Path $env:JAVA_HOME 'bin/java.exe' } else { (Get-Command java -ErrorAction Stop).Source }
-        if (-not (Test-Path -LiteralPath $restartJava)) { throw 'Java for the packaged restart drill was not found.' }
+        if (-not (Test-Path -LiteralPath $restartJava)) { throw 'Java for the packaged worker drills was not found.' }
+    }
+    if ($ReviewRestart) {
         Invoke-Checked 'python' @((Join-Path $PSScriptRoot 'verify-review-restart.py'),
             '--war', (Join-Path $workspace 'source/target/ai-code-reviewer.war'),
             '--java', $restartJava, '--psql', $psql, '--port', "$ReviewRestartPort")
+    }
+    if ($ReviewConcurrency) {
+        Invoke-Checked 'python' @((Join-Path $PSScriptRoot 'verify-review-concurrency.py'),
+            '--war', (Join-Path $workspace 'source/target/ai-code-reviewer.war'),
+            '--java', $restartJava, '--psql', $psql,
+            '--port-a', "$ReviewConcurrencyPortA", '--port-b', "$ReviewConcurrencyPortB")
     }
 } finally {
     foreach ($name in $environmentNames) { [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], 'Process') }

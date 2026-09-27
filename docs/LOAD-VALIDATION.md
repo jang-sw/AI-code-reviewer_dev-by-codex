@@ -86,3 +86,44 @@ try {
 ```
 
 필요하면 스크립트의 `-PgBin`·`-Port`로 PostgreSQL 개발 도구와 비어 있는 로컬 포트를 지정한다. 이 테스트는 `RUN_REVIEW_LOAD_SMOKE=true`와 `TEST_DATABASE_URL=jdbc:postgresql://127.0.0.1:<port>/reviewer_integration` 또는 동등한 `localhost` URL을 모두 만족해야 실행된다. URL 검사만으로 DB의 소유권이 증명되지는 않으므로 운영 DB나 다른 작업의 DB를 이 이름으로 연결하지 않는다. 기본 실행·CI에서는 선택 시험을 건너뛰며, 이를 실행 통과로 해석하지 않는다.
+
+## 실제 PostgreSQL 운영 집계 10,000프로젝트
+
+2026-09-27 KST, Java25·PostgreSQL17 개발 환경에서 `OperationsTelemetryLoadSmokeTest`를 실행했다. 별도 UUID schema에 프로젝트10,000개, 프로젝트당 실행10개로 실행100,000건, 최근 요청10,000건을 생성하고 실제 `OperationsTelemetryService`를 호출했다. Git·AI 호출은 없다.
+
+- 프로젝트4개 상태는 각각2,500개, 요청5개 상태는 각각2,000개로 집계됐다. 활성 요청4,000건 중120분 경계 이상인2,000건만 지연으로 집계됐다.
+- 과거 실행90,000건을 실패로 두고, 가장 큰 실행ID의 시각을 과거 실행보다 앞당겼다. 전체 실패92,000건 중 **최신 실행이 실패한 프로젝트2,000개**만 집계되어, 시각 역전이나 과거 실패 누적으로 수치가 부풀지 않았다.
+- 14개 고정 지표, 미래 접수 시각·정확120분·1초 안쪽 경계, 전용 schema 제거를 확인했다. 실패한 실행은 과거 성공 보고서를 그대로 남기지 않는다.
+
+| 구간 | 로컬 관찰값 |
+|---|---:|
+| 합성 데이터 저장 | 2,709ms |
+| 세 쿼리와 트랜잭션을 포함한 집계 호출 | 71ms |
+| 최신 실패 SQL의 EXPLAIN 실행 시간 | 34.407ms |
+
+측정 전 데이터 삽입·건수 확인·`ANALYZE`를 수행했다. 따라서 이는 캐시가 준비된 단일 관찰이며 cold-cache·운영 처리량·지연 상한을 보장하지 않는다. 실제 SQL 실행 계획에는 `project`와 실패 `review_run`의 순차 읽기, 최신ID 조회의 `review_run_project_history_idx` 사용이 함께 나타났다. 공유 블록 hit49,181/read0, 임시 블록 read/write0이었다. 결과 행 수가 작더라도 DB 내부 읽기 비용은 데이터 누적에 따라 늘어난다. 여러 서버가30초마다 수집하는 비용, 실행 기록 수백만 건, 동시 쓰기·디스크 읽기·장기 보존 정책은 추가 검증 대상이다.
+
+결과는 Git 제외된 `source/target/operations-load-result.json`에 상태·건수·시간과 정제된 계획으로 기록한다. SQL 조건식·schema·연결 정보·비밀번호는 보고서에 넣지 않는다. JDBC query30초/socket45초 제한을 적용하며 소요시간으로 합격 여부를 결정하지 않는다.
+
+저장소 루트의 선택 실행:
+
+```powershell
+$operationsSmokeFlags = @('RUN_OPERATIONS_LOAD_SMOKE', 'RUN_REVIEW_LOAD_SMOKE',
+    'RUN_GIT_LOAD_SMOKE', 'RUN_GITHUB_SMOKE', 'RUN_GITLAB_SMOKE',
+    'RUN_OLLAMA_SMOKE', 'RUN_AI_EVALUATION')
+$savedOperationsFlags = @{}
+foreach ($name in $operationsSmokeFlags) {
+    $savedOperationsFlags[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+}
+try {
+    foreach ($name in $operationsSmokeFlags) { [Environment]::SetEnvironmentVariable($name, 'false', 'Process') }
+    $env:RUN_OPERATIONS_LOAD_SMOKE = 'true'
+    & .\scripts\test-postgres.ps1 -BackupRestore
+} finally {
+    foreach ($name in $operationsSmokeFlags) {
+        [Environment]::SetEnvironmentVariable($name, $savedOperationsFlags[$name], 'Process')
+    }
+}
+```
+
+이중 opt-in인 `RUN_OPERATIONS_LOAD_SMOKE=true`와 위와 같은 명시적 포트의 로컬 `reviewer_integration` URL이 모두 필요하다. 기본 실행·CI에서는 건너뛴다. 전체 검증의 최신 결과는 `WORK.md`를 따른다.

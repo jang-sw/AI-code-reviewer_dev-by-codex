@@ -21,6 +21,7 @@ fi
 
 # External smoke/evaluation and larger offline load tests are deliberate opt-ins outside this CI entrypoint.
 export RUN_GITHUB_SMOKE=false RUN_GITLAB_SMOKE=false RUN_OLLAMA_SMOKE=false RUN_AI_EVALUATION=false RUN_GIT_LOAD_SMOKE=false
+export RUN_REVIEW_LOAD_SMOKE=false RUN_OPERATIONS_LOAD_SMOKE=false
 workspace="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd -- "$workspace/source"
 ./mvnw -B -ntp clean verify

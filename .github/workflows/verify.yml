@@ -39,6 +39,7 @@ jobs:
       RUN_AI_EVALUATION: 'false'
       RUN_GIT_LOAD_SMOKE: 'false'
       RUN_REVIEW_LOAD_SMOKE: 'false'
+      RUN_OPERATIONS_LOAD_SMOKE: 'false'
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -95,3 +96,14 @@ jobs:
           python3 scripts/verify-review-restart.py \
             --war "$GITHUB_WORKSPACE/source/target/ai-code-reviewer.war" \
             --java "$java_bin" --psql "$psql_bin" --port 18089
+      - name: Verify two packaged workers and progress behind a slow project
+        env:
+          TEST_DATABASE_URL: jdbc:postgresql://127.0.0.1:${{ job.services.postgres.ports['5432'] }}/reviewer_integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          java_bin="$(command -v java)"
+          psql_bin="$(command -v psql)"
+          python3 scripts/verify-review-concurrency.py \
+            --war "$GITHUB_WORKSPACE/source/target/ai-code-reviewer.war" \
+            --java "$java_bin" --psql "$psql_bin" --port-a 18090 --port-b 18091

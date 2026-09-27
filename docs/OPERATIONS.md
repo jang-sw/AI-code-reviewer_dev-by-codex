@@ -161,6 +161,9 @@ cd source
 # 실제 WAR를 종료·재시작하여 접수 보존과 중단 커밋 재개까지 검증
 .\scripts\test-postgres.ps1 -BackupRestore -ReviewRestart
 
+# 실제 WAR 두 개에서 프로젝트 중복 실행 방지와 느린 프로젝트 뒤의 진행 검증
+.\scripts\test-postgres.ps1 -ReviewConcurrency
+
 # source: 로컬 Ollama에 합성 코드만 보내는 선택 검증
 $env:RUN_OLLAMA_SMOKE='true'
 .\mvnw.cmd '-Dtest=LocalOllamaSmokeTest' test
@@ -183,13 +186,15 @@ Remove-Item Env:RUN_GITLAB_SMOKE
 
 `-ReviewRestart`는 빌드한 WAR를 세 번 시작해 처리 중 강제 종료와 DB 요청 재개를 검사한다. GitLab/Ollama 응답은 로컬 합성이며 외부 저장소·실제 모델·유료 API를 호출하지 않는다. [요청 복구 검증 기록](QUEUE-VALIDATION.md)에 재현 절차와 한계를 적었다.
 
+`-ReviewConcurrency`는 같은 전용 schema를 사용하는 WAR 두 개와 합성 프로젝트 세 개를 실행한다. 느린 AI 응답을 보류한 동안 다른 서버의 잠금 경쟁과 후속 프로젝트 완료를 검사한다. [두 서버 검증](WORKER-CONCURRENCY-VALIDATION.md)의 재현·제한을 따른다. 각 도구는 자신이 만든 프로세스·schema·작업 디렉터리만 정리한다.
+
 공개 GitLab smoke는 [GitLab 자체 테스트 저장소](https://gitlab.com/gitlab-org/gitlab-test)의 고정 head 이력47개 중 루트 커밋1개의 diff와 해당 루트 기준 재개만 읽는다. 2026-09-26 실제3.794초 통과했다. 전체47개 변경의 리뷰 지원이나 사용자 설치형 GitLab·비공개 인증 검증을 대신하지 않는다.
 
-외부 호출 없이10,000커밋 이력의 배치·재개·요청 수를 검증하는 선택 테스트는 [오프라인 부하 검증](LOAD-VALIDATION.md)을 따른다. 실제 API/AI/DB를 포함한 운영 부하 검증과 구분한다.
+외부 호출 없이10,000커밋 이력의 배치·재개·요청 수, 실제 로컬 PostgreSQL의 수동1,000파일·10,000프로젝트 운영 집계를 검증하는 선택 테스트는 [부하 검증](LOAD-VALIDATION.md)을 따른다. 실제 API/AI와 운영 서버를 포함한 처리량 보장과 구분한다.
 
 ## CI와 의존성 검사
 
-`.github/workflows/verify.yml`은 push/PR/수동 실행에서 Java25와 임시 PostgreSQL17로 `scripts/verify-ci.sh`를 실행한다. 필수 PostgreSQL 세 suite(`ApplicationPostgresTest`, `IdentityPostgresTest`, `ReviewRequestPostgresTest`)가 누락되거나 skip이면 실패한다. 빌드한 WAR의 합성 프로세스 재시작 검사도 실행하도록 구성했다. 외부 GitHub/GitLab/Ollama/모델 평가 호출은 비활성화한다. 코드 검증만 수행하며 배포하지 않는다. 로컬 문법·gate 검증은 수행했으나 실제 GitHub Actions 실행은 원격 반영 전 미실행이다.
+`.github/workflows/verify.yml`은 push/PR/수동 실행에서 Java25와 임시 PostgreSQL17로 `scripts/verify-ci.sh`를 실행한다. 필수 PostgreSQL 네 suite(`ApplicationPostgresTest`, `IdentityPostgresTest`, `ReviewRequestPostgresTest`, `OperationsTelemetryPostgresTest`)가 누락되거나 skip이면 실패한다. 빌드한 WAR의 합성 프로세스 재시작·두 서버 경쟁 검사도 실행하도록 구성했다. 외부 GitHub/GitLab/Ollama/모델 평가와 대규모 선택 부하는 비활성화한다. 코드 검증만 수행하며 배포하지 않는다. 로컬 문법·gate 검증은 수행했으나 실제 GitHub Actions 실행은 원격 반영 전 미실행이다.
 
 Tomcat은 공급자 보안 수정을 위해 `pom.xml`에서11.0.26으로 고정했다. Maven 운영 의존성 검사와 재현 명령은 [의존성 점검 기록](DEPENDENCY-AUDIT.md)을 따른다. OSV 결과와 공급자 공지를 함께 확인하며, 검사 시점·범위 밖의 안전성을 주장하지 않는다.
 
