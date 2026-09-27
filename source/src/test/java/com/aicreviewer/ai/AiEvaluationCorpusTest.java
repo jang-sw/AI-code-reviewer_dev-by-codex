@@ -15,6 +15,10 @@ class AiEvaluationCorpusTest {
         assertThat(cases).allSatisfy(c -> {
             assertThat(c.expectedDefect()).isNotBlank();
             assertThat(c.commit().diff()).startsWith("diff --git ").contains("@@ -0,0 +1,");
+            assertThat(c.semanticChecks()).hasSize(4).allSatisfy(check -> assertThat(check).isNotBlank());
+            assertThat(c.commit().diff()).contains("+++ b/" + c.expectedFile());
+            assertThat(c.allowedLines().isEmpty()).isEqualTo(!c.expectedFinding());
+            assertThat(c.allowedLines()).allSatisfy(line -> assertThat(line).isPositive());
         });
     }
 }
