@@ -33,6 +33,8 @@ bash deploy/linux/verify-artifact.sh /absolute/staging/ai-code-reviewer.war EXPE
 
 검증 도구는 체크섬과 실행 WAR 구조만 읽는다. 신뢰하지 않는 WAR를 실행하지 않으며 실제 서비스 시작·JSP/DB 동작 검증을 대신하지 않는다.
 
+WAR와 빈 환경 예제·서비스·Nginx 템플릿·운영 문서는 [후보 패키지 생성 도구](CANDIDATE-PACKAGE.md)로 묶을 수 있다. 현재 개발 버전과 미승인 상태를 기록하며 실제 환경파일은 포함하지 않는다. 후보 생성이나 체크섬 통과만으로 릴리스 승인이 끝나는 것은 아니다.
+
 ## 최초 설치
 
 다음은 Linux 관리자에게 제공하는 단계다. 기존 계정·경로가 있으면 소유자와 목적을 확인하고 재사용 여부를 결정한다. `useradd`/`install`/`ln` 실패를 무시하지 않는다. 서비스 계정은 로그인 불가, root가 관리하는 WAR·설정에 쓰기 불가여야 한다.

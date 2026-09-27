@@ -107,3 +107,23 @@ jobs:
           python3 scripts/verify-review-concurrency.py \
             --war "$GITHUB_WORKSPACE/source/target/ai-code-reviewer.war" \
             --java "$java_bin" --psql "$psql_bin" --port-a 18090 --port-b 18091
+      - name: Verify repeatable local candidate packaging
+        env:
+          CANDIDATE_SOURCE_REVISION: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact="$GITHUB_WORKSPACE/source/target/ai-code-reviewer.war"
+          digest="$(sha256sum -- "$artifact")"
+          digest="${digest%% *}"
+          first="$RUNNER_TEMP/reviewer-candidate-first"
+          second="$RUNNER_TEMP/reviewer-candidate-second"
+          # This verifies this job's bytes and repeatability; it does not approve or publish a release.
+          for output in "$first" "$second"; do
+            python3 scripts/package-candidate.py --war "$artifact" \
+              --expected-war-sha256 "$digest" --source-revision "$CANDIDATE_SOURCE_REVISION" \
+              --output-dir "$output" --source-date-epoch 0
+          done
+          candidate="ai-reviewer-0.1.0-SNAPSHOT-candidate.tar.gz"
+          cmp -- "$first/$candidate" "$second/$candidate"
+          cmp -- "$first/$candidate.sha256" "$second/$candidate.sha256"
