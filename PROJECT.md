@@ -39,6 +39,8 @@ Git 기본 호스트는 `github.com`이다. 설치형 GitLab은 관리자가 허
 
 운영 대상은 **Linux 서버, Docker 미사용**이다. [Linux 배포 자료](docs/LINUX-DEPLOYMENT.md)와 `deploy/linux/`의 systemd·TLS·환경파일 템플릿을 제공한다. 실제 서버 설치·보안·복구 검증은 아직 남아 있다.
 
+로컬 Linux 검증은 [WSL2 준비·재현 절차](docs/WSL-VALIDATION.md)를 따른다. 전용 Ubuntu 24.04의 Linux 파일시스템에 소스와 PostgreSQL 데이터를 따로 준비한다. 새 Linux 검증 도구는 실제 Linux 실행 전인 초안이며 Windows 도구의 통과 결과와 구분한다.
+
 저장소 루트에서 `./scripts/test-postgres.ps1`을 실행하면 `.local/pg-validation`에 독립 PostgreSQL 클러스터를 만들어 실제 DB/HTTP/JSP/동시성 테스트와 WAR 패키징 후 종료한다. 기본 `mvnw verify`에서는 DB·실서비스 선택 테스트를 건너뛰므로 전체 검증과 구분한다.
 
 기본 자동 테스트는 외부 API/유료 모델을 호출하지 않는다. 실제 GitHub와 Ollama smoke 실행은 운영 가이드의 opt-in 명령을 사용한다. 마지막 실제 실행 결과는 WORK.md에 기록한다.
@@ -47,6 +49,6 @@ Git 기본 호스트는 `github.com`이다. 설치형 GitLab은 관리자가 허
 
 - 실제 대형 이력/변경 부하와 공급자별 수동 전환 호환성. 파일 내부 분할·원본 diff 복원·부분 AI/수동 혼합은 별도 확장이다. 증명할 수 없는 변경은 실패한다.
 - 실제 GitLab·LiteLLM 환경, 운영 모델 품질, 장시간·장애·부하 검증.
-- 운영 AI는 LiteLLM 우선이다. 아직 별도 Linux 테스트 서버가 없으므로 로컬 검증을 계속하며 실제 Linux 검증은 남겨 둔다.
+- 운영 AI는 LiteLLM 우선이다. Linux 검증은 사용자 요청에 따라 WSL2로 준비한다. 현재 WSL과 가상 머신 플랫폼 설치 후 Windows 재부팅을 기다리는 단계이며 Ubuntu 등록·Linux 실행 검증은 아직 남아 있다.
 - 운영 백업/복원·관측 용량/진행률·보존·업그레이드/롤백·의존성 취약점 검증.
 - 상세 기준은 `docs/RELEASE-CHECKLIST.md`와 `docs/AI-EVALUATION.md`를 따른다.

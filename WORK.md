@@ -1,10 +1,10 @@
 # 현재 작업 상태
 
 - 작업: 실사용 AI 소스코드 리뷰 시스템. **개발 중, 릴리스 완료 아님.**
-- 이번 회차: 2026-09-27 15:24 KST 시작, 최대17:24 KST까지 구현·검증 후 인계한다.
-- 기록 기준: `main` / `7aec5e9` (회차 시작3410669, 깨끗한 작업 트리). 이전 이력과 커밋은 모두 미푸시.
-- 이번 완료 조건: LiteLLM 우선 평가 도구의 설정·판정 근거, 사용자용 처리 단계·저장 건수, 공개 GitHub/GitLab 바이너리·빈 파일 실서비스 호환 검증을 구현하고 회귀 검증한다.
-- 이번 단계: 공개 Git smoke·LiteLLM 평가 도구·현재 시도 진행 표시를 각각 로컬 커밋했다. 실제 DB 중지 후 같은 WAR의 자동 복구와 최종22파일 후보 묶음 재현 검증도 통과했다. 해당 도구·문서를 마지막 로컬 커밋으로 보존하고 다음 작업을 인계한다. 사용자 확정: Linux 테스트 서버와 LiteLLM 주소·모델은 아직 없으므로 로컬 개발·검증과 설정·평가 도구부터 준비한다. 운영 AI는 LiteLLM 우선이며 실제·유료 호출은 수행하지 않는다.
+- 이번 회차: 2026-09-30 23:55 KST 시작, 최대 2026-10-01 01:55 KST까지 구현·검증 후 인계한다.
+- 기록 기준: `main` / `005dd65` (회차 시작 깨끗한 작업 트리). 이전 이력과 커밋은 모두 미푸시.
+- 이번 완료 조건: 사용자 요청에 따라 WSL Linux 검증 환경을 구축하고 Docker 없이 기존 Java25/PostgreSQL17 빌드·배포·복구 검증을 수행한다. Windows 재부팅/권한 때문에 진행하지 못한 검증은 미실행으로 기록한다.
+- 이번 단계: WSL3.0.1/커널6.18.40.1-1과 VirtualMachinePlatform 설치를 Windows UAC 경로로 마쳤다(exit0). 펌웨어 가상화는 활성이나 HypervisorPresent=false·RebootPending=true이며 WSL2는 아직 시작 불가다. Ubuntu24.04 설치 명령도 재부팅 필요만 반환했고 배포판은 등록되지 않았다. Linux 전용 검증 도구 초안·모의 테스트·설치 문서를 준비했다. **다음 실행은 사용자 Windows 재부팅 후 진행한다.** 운영 배포·Windows 재부팅·실제/유료 모델 호출은 수행하지 않았다. LiteLLM 주소·모델은 아직 미정이며 운영 우선 방식은 LiteLLM이다.
 - 확정 요구사항: `docs/REQUIREMENTS.md`. 내부 이슈함 우선, 최초 전체 이력, Java25/Spring/Maven/JSP/PostgreSQL 유지.
 - 재개 시 이 문서와 실제 Git 상태를 대조하고 아래 다음 작업부터 진행한다. 모든 릴리스 항목 검증 전 완료라고 보고하지 않는다.
 
@@ -44,12 +44,20 @@
 - LiteLLM 우선 평가 도구: 명시 주소·모델, HTTP 없는 호출 계획, 최대6개 고정 합성 사례/각1회 요청, 기대 파일·행·권고 개수와 사람 의미 검토 분리. 중단/설정 오류/요청 실패를 구분하고 알려진 키·주소가 결과에 재현되면 저장하지 않는다. 실제 모델 품질 승인은 별도다.
 - 현재 요청에 연결된 실행의 마지막 처리 단계·이번 시도 새 저장 건수·마지막 저장 시각을 프로젝트/리뷰 화면에 표시한다. 원자 저장·claim/권한 보호를 유지하며 새 요청/복구 시도에 이전 실행의 수치를 붙이지 않는다. 과거 실행의 없는 시각은 만들지 않으며 수동 업무 배정과 사람의 확인 완료를 구분한다.
 - 부모 실행이 시작한 격리 PostgreSQL만 중지·재시작하는 실제 WAR 검증 도구. 시작 전 고정 경로·모든 조상의 링크/reparse·marker/버전 검사, 제어 전 PID/시작 시각·SQL 서버 대조, 실행별 보고서 토큰과 검증한 소유권만 인계해 마지막 종료 대상을 보호한다. 실패 시 임의 교체 서버를 채택하지 않는다.
+- WSL2 전용 Ubuntu24.04·Java25·PostgreSQL17 준비와 Linux native 파일시스템 격리·systemd/TLS/복원 재현 계획을 `docs/WSL-VALIDATION.md`에 기록했다. 기존 Linux 배포 가이드의 로그인 검증을 TLS 이후로 옮기고 ProtectHome과 Java 실제 설치 경로 제약을 명시했다.
+- Linux 부모 검증 도구 초안 `scripts/test-postgres-linux.py`와 `scripts/tests/test_test_postgres_linux.py`는 작업 트리에 **미커밋으로 보존**한다. Linux non-root·PG17/Java25·PGDATA 마운트/링크/마커·PID/시작 시각·SQL 대조, clean verify/필수 PG gate·세 WAR 검증 연결, 협력 취소와 소유권 인계를 모의 검사했다. AGENTS.md의 필수 미검증 반영 보류 규칙에 따라 실제 Linux 실행 후 코드 커밋 여부를 판단한다.
 
 ## 최신 실제 검증
 
+- 이번 회차 WSL 설치: Windows11 Pro 빌드26200.9457, WSL3.0.1.0/커널6.18.40.1-1, VirtualMachinePlatform 활성(InstallState1), 펌웨어 가상화 활성 확인. Windows 재부팅 대기·HypervisorPresent=false·등록된 배포판 없음까지 확인했다. `.local/session7-wsl-preflight.json`에 요약을 보관했다. Linux 실행·Java/PG 빌드·systemd/TLS·복구 검증은 아직 미실행이다.
+- 신규 Linux 도구 모의30건 전부 통과, 전체 Python133건 중132통과/POSIX wrapper1skip, 실패/오류0. `.local/session7-linux-runner-unit.log`와 `.local/session7-python-full.log`에 보존했다. 독립 읽기 리뷰에서 발견한 PG 배포판 버전 접미사·Maven cwd·중첩 마운트·취소 정리 결함을 수정하고 위 검사와 재검토를 통과했다. 실제 Linux 신호·프로세스·DB 검증은 별도다.
+- WSL 문서의 로컬 링크·PowerShell 명령 블록2개 구문, Linux 서비스 ProtectHome/secure-cookie 설정 대조와 diff 공백 검사를 통과했다. 이 회차에는 Java 소스 변경이 없어 Maven/실제 PG/브라우저 검증은 재실행하지 않았다. 아래 Java/WAR 결과는 이전 회차 결과다.
+
+### 이전 회차: 진행 정보·LiteLLM 준비·DB 복구
+
 - 최종 전체 Java906건 중896통과/선택10skip(외부7+부하3), 필수PG4개 suite gate·10개 테이블 백업/복원 통과. 앞선 V12→V13 실제PG 업그레이드에 이어 최종 WAR 강제 종료/3회 시작52.844초, 두 WAR 잠금 경쟁/후속 진행22.375초 통과. 두 JSP에서 재시작 전 저장1건, 재시도 중 신규저장0건/이전 결과 재사용을 확인했다. 모바일 진행 정보를 상단으로 옮긴 최종 JSP도 실제 WAR390px/1280px·키보드 이동·본문 가로 넘침 없음으로 확인했다.
 - LiteLLM 평가 신규18건+기존12건 자동 회귀 및 실제 HTTP 없는2사례 preflight 통과. 잘못된 행·추가 권고·주입/한국어 heuristic·중단/실패 기록·known key/base 비노출을 검증했다. 자동 precheck와 사람 의미 검토 PENDING/품질 NOT_ASSESSED를 구분하며 실제 프록시 연결·운영 품질 통과가 아니다.
-- 이번 회차 공개 Git 실서비스5건 통과: GitHub2건4.067초, GitLab3건13.00초. 새3사례에서 GitHub 바이너리 루트→다음 바이너리→빈 재개, GitLab 이미지 수정→일반 본문→빈 재개, canonical 빈 파일 메타데이터→수동 근거 재증명을 확인했다. 토큰·AI·DB 호출 없음. 신규3건 예상43GET은 코드 기반 계산이며 실측 호출량은 아니다. `docs/PUBLIC-GIT-VALIDATION.md`와 `.local/session6-public-git.log`에 범위·한계를 기록했다.
+- 이전 회차 공개 Git 실서비스5건 통과: GitHub2건4.067초, GitLab3건13.00초. 새3사례에서 GitHub 바이너리 루트→다음 바이너리→빈 재개, GitLab 이미지 수정→일반 본문→빈 재개, canonical 빈 파일 메타데이터→수동 근거 재증명을 확인했다. 토큰·AI·DB 호출 없음. 신규3건 예상43GET은 코드 기반 계산이며 실측 호출량은 아니다. `docs/PUBLIC-GIT-VALIDATION.md`와 `.local/session6-public-git.log`에 범위·한계를 기록했다.
 - 전체 Python103건 중102통과/POSIX1skip. DB 복구 경계22건·PowerShell 소유권 helper10건·후보26건 포함. 실제 격리 DB fast stop/재시작42.984초 통과: 같은 WAR1회 시작, 준비503/생존200→준비200, 동일 요청/요청자·이슈 중복 없음·미저장B만 재호출·새 시도 진행 카드·소유 schema/WAR/PG 정리. actionlint·Bash 문법·배포 artifact fixture5건도 통과했다. 최종 보고서는 `.local/session6-final-full.log`, `.local/session6-python-full.log`, `.local/review-db-recovery-44e7fd2ffaae4fc697c00577715d3df1.json`에 있다.
 - 최종 WAR42,002,558바이트 구조·SHA256 확인 후 후보2개37,965,105바이트가 동일하고, 내부22개 파일 전체 해시/메타데이터/원본 WAR/빈 비밀 설정을 재검증했다. `.local/session6-candidate-first`·`second`와 `.local/session6-candidate-result.json`에 보존했다. sourceRevision은7aec5e9의 운영자 제공 기록이며 releaseApproved=false다. Git Bash WAR 검사에 Windows식 경로를 전달해 처음 거부된 명령은 `/d/...` 절대경로로 바로잡아 통과했다. 실제 Linux 설치·원격 CI·운영 AI 품질 검증은 남아 있다.
 
@@ -113,7 +121,7 @@
 
 ## 다음 작업
 
-0. 다음 회차는 서버·프록시 없이 진행할 수 있는 장기 다중 작업자 공정성/취소·네트워크 실패 경계 검증과 운영 보존 정책 설계부터 검토한다. 이미 통과한 단기 재시작/동시성 검사를 이유 없이 반복하지 않는다. 후보 패키지는 정식 릴리스 승인이나 서버 설치를 대신하지 않는다.
+0. 사용자가 Windows 작업을 저장하고 재부팅한 뒤 WSL 상태·배포판 목록부터 재확인한다. `ai-reviewer-validation`이 없으면 Ubuntu24.04를 `.local/wsl/ai-reviewer-validation`에 등록한다(`docs/WSL-VALIDATION.md`). Linux 홈의 독립 소스와 Java25/PostgreSQL17을 준비해 미커밋 Linux 도구30개 모의 검사 및 실제 신호 취소·필수 PG suite·세 WAR 복구/동시성 검사를 실행한다. 이어 systemd·전용 계정/권한·TLS·백업/새 DB 복원을 확인한다. WSL 설치만으로 Linux/운영 검증 통과로 처리하지 않는다.
 1. 공개 GitHub/GitLab 바이너리·빈 파일 실서비스5건은 통과했다. 실제 대형/설치형/비공개 응답으로 호환 범위를 확대하며 전체 변경 경로를 증명할 수 없는 응답이나 API 장애는 계속 실패 처리한다.
 2. LiteLLM 주소·모델이 정해지면 준비된 dry-run으로 예산을 확인하고, 승인된 호출 범위에서 합성 평가와 사람의 의미 검토를 진행한다. 실제 설치형 GitLab·비공개 GitHub 연결과 운영 모델 품질도 남아 있다.
 3. 실제 대형 저장소 부하/API할당량·다중 인스턴스 장시간 공정성/지연·장기 네트워크 단절·모니터링/보존 정책 구현·검증. 로컬 단일 WAR 중단과 DB fast stop 후 복구는 `docs/QUEUE-VALIDATION.md`·`docs/DB-RECOVERY-VALIDATION.md` 범위로 통과했다.
@@ -121,8 +129,8 @@
 
 ## 재개·운영 메모
 
-- 운영 대상은 사용자 답변으로 Linux 서버, 도커 미사용으로 확정했다(2026-09-26). 실제 서버 배포는 별도 승인 대상이다.
+- 운영 대상은 사용자 답변으로 Linux 서버, 도커 미사용으로 확정했다(2026-09-26). 사용자 요청에 따라 WSL 로컬 Linux 검증 환경을 구축 중이다(2026-09-30). 실제 서버 배포는 별도 승인 대상이다.
 - origin: jang-sw/code-reviewer_by-codex. main 직접 푸시 별도 승인 없음 → 로컬 커밋만, 푸시/배포 없음.
-- `.local/pg-test`: 개발검증 전용127.0.0.1:55432. `.local/pg-validation` 및 staged snapshot의pg-validation:55439. 이번 최종 검증은 pg-validation만 사용, 다른 PG 서비스는 변경하지 않음.
-- `.local`은 Git 제외. 이번 작업이 시작한 합성 WAR·전용PG와 임시 브라우저 탭을 종료하고 viewport를 복원했다.18080/18089/18090/18091/18092/55439 listen없음 확인. 사용자 Ollama와 별도55432 PG는 변경하지 않음.
+- `.local/pg-test`: Windows 개발검증 전용127.0.0.1:55432. Windows `.local/pg-validation` 및 staged snapshot의pg-validation:55439. Linux PGDATA는 Linux 홈의 별도 checkout에만 만들고 Windows PGDATA를 공유하지 않는다.
+- `.local`은 Git 제외. 이전 회차 합성 WAR·전용PG·브라우저 탭은 정리했다. 이번 회차에는 WAR/PG를 시작하지 않았다. 사용자 Ollama와 별도55432 PG는 변경하지 않는다. WSL 설치 프로세스는 exit0으로 종료했으며 Windows 재부팅은 수행하지 않았다.
 - 런타임 Git 수집은 매번 pinned 전체 이력을 재검증, 기본1000페이지/metadata32MiB/저장SHA131072개 안전 한도. 제한을 자동 확장/절삭하지 않는다.

@@ -21,7 +21,7 @@ systemd가 root 권한으로 환경파일을 읽은 뒤 전용 계정으로 앱�
 ## 설치 전 확인
 
 1. Java25, PostgreSQL17 서버/클라이언트, Bash, `sha256sum`, `unzip`, systemd, TLS 프록시를 배포판의 신뢰하는 경로로 설치한다. 실제 패키지 설치는 관리자가 수행한다. DB는 전용 인스턴스 또는 독립 DB를 사용한다. 테스트용 trust 인증은 운영에 복사하지 않는다.
-2. Java 공급자의 지원기간/업데이트 정책과 현재 취약점 기록을 확인한다. `java -version`, `psql --version`, `systemd --version`을 배포 기록에 남긴다. 서비스가 지정한 `/opt/ai-reviewer/java/bin/java`가 Java25인지 확인한다.
+2. Java 공급자의 지원기간/업데이트 정책과 현재 취약점 기록을 확인한다. `java -version`, `psql --version`, `systemd --version`을 배포 기록에 남긴다. 서비스가 지정한 `/opt/ai-reviewer/java/bin/java`가 Java25인지 확인한다. 서비스의 `ProtectHome=yes`가 홈 디렉터리 접근을 막으므로 Java는 root가 관리하는 `/opt` 등 홈 밖에 설치한다. `/opt/ai-reviewer/java` 링크의 실제 대상도 `/home`·`/root` 아래에 두지 않는다.
 3. 외부 접근은 HTTPS만 허용하고8080/5432는 일반 사용자망에 열지 않는다. 원격 DB라면 PG 서버 인증서 검증을 포함한 TLS를 별도 구성한다. Git/AI 대상은 조직이 승인한 주소만 설정한다.
 4. 소스의 검증된 커밋에서 `(cd source && ./mvnw -B -ntp verify)`를 실행해 WAR를 만든다. 이는 기본 테스트이며 실제 PG 검증 결과와 구분한다. CI 전체 검증 또는 격리 PostgreSQL 검증 결과를 함께 보관한다. 운영 DB를 테스트 대상으로 지정하지 않는다.
 
@@ -61,7 +61,7 @@ sudo systemctl start ai-reviewer
 sudo systemctl status ai-reviewer --no-pager
 ```
 
-`systemctl start` 성공은 DB/화면 준비 완료의 증명이 아니다. `Type=exec`는 Java 실행 여부까지만 확인한다. journal을 제한된 권한으로 확인하고 로그인 화면, 최초 관리자 로그인, 가입 승인, 프로젝트 신청·승인, 수동 요청이 DB 대기 상태로 접수되는지 확인한다. Git·AI 검증 준비가 끝나면 `REVIEW_WORKER_ENABLED=true`로 재시작해 합성/허용된 저장소의 수동 리뷰를 검증한다. 서비스 자동 재시작은 반복 실패 시 제한되므로 원인 수정 후 필요할 때 `systemctl reset-failed ai-reviewer`를 사용한다. [systemd 서비스 문서](https://github.com/systemd/systemd/blob/main/man/systemd.service.xml)
+`systemctl start` 성공은 DB/화면 준비 완료의 증명이 아니다. `Type=exec`는 Java 실행 여부까지만 확인한다. 이 단계에서는 서비스 프로세스의 전용 계정, 파일·디렉터리 권한과 아래 상태 응답을 확인하고 journal을 제한된 권한으로 살핀다. 실제 로그인과 사용자 기능 검증은 TLS 프록시를 준비한 다음 진행한다. 서비스 자동 재시작은 반복 실패 시 제한되므로 원인 수정 후 필요할 때 `systemctl reset-failed ai-reviewer`를 사용한다. [systemd 서비스 문서](https://github.com/systemd/systemd/blob/main/man/systemd.service.xml)
 
 루프백에서 아래 GET 요청으로 프로세스의 생존 상태와 DB 연결을 포함한 준비 상태를 확인한다. 정상은200과 `{"status":"UP"}`, 비정상은503이다. 인증 없이 상태만 응답하며 Git·AI 품질이나 리뷰 진행을 보장하지 않는다. `/actuator/health`와 `/actuator/metrics/**`는 승인된 관리자 로그인이 필요하므로302를 성공으로 처리하지 않는다. 실패·지연 및 수집 상태는 관리자 ‘서버 상태’ 화면에서 따로 확인한다. [모니터링 범위와 장애 대응](MONITORING.md)을 따른다.
 
@@ -70,7 +70,9 @@ curl --fail --silent --show-error --max-time 15 http://127.0.0.1:8080/actuator/h
 curl --fail --silent --show-error --max-time 15 http://127.0.0.1:8080/actuator/health/readiness
 ```
 
-최초 관리자 생성이 확인되면 bootstrap 세 변수를 환경파일에서 제거하고 계획한 재시작을 한다. 기존 DB에서 bootstrap 값을 지워도 기존 관리자는 유지된다. TLS/권한/모델 검증 후 `REVIEW_ENABLED=true`로 전환해 재시작하고 예약 실행을 확인한다. 마지막으로 `systemctl enable ai-reviewer`로 부팅 시 실행을 설정한다.
+상태 응답을 확인한 뒤 아래 TLS·프록시 절차를 적용한다. 환경파일의 `SESSION_COOKIE_SECURE=true`를 유지하고, 준비한 실제 HTTPS 주소에서 로그인 화면과 최초 관리자 로그인, 가입 승인, 프로젝트 신청·승인, 수동 요청이 DB 대기 상태로 접수되는지 확인한다. Python 재시작·동시성·DB 복구 도구의 HTTP 통신은 별도 합성 검증용이며 이 운영 서비스의 로그인 절차와 구분한다.
+
+HTTPS에서 최초 관리자 로그인이 확인되면 bootstrap 세 변수를 환경파일에서 제거하고 계획한 재시작을 한다. 기존 DB에서 bootstrap 값을 지워도 기존 관리자는 유지된다. 재로그인을 확인하고 Git·AI 검증 준비가 끝나면 `REVIEW_WORKER_ENABLED=true`로 재시작해 합성/허용된 저장소의 수동 리뷰를 검증한다. TLS/권한/모델 검증 후 `REVIEW_ENABLED=true`로 전환해 재시작하고 예약 실행을 확인한다. 마지막으로 `systemctl enable ai-reviewer`로 부팅 시 실행을 설정한다.
 
 ## TLS·프록시 경계
 
