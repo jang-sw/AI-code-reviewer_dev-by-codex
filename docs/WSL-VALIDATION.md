@@ -2,7 +2,7 @@
 
 검증 기준: 2026-10-02. Ubuntu 24.04 LTS의 전용 WSL2 배포판에서 Java 25, PostgreSQL 17, 실행 WAR를 Docker 없이 검증했다. 실제 Linux 전체 빌드·DB·백업·세 WAR 장애/동시성 시험과 별도 systemd·HTTPS·새 DB 복원 시험을 통과했다. 아래 절차는 재현 안내이며, 이번 실행의 버전·결과·한계는 문서 끝에 구분해 기록한다. **운영 서버 부팅·업그레이드·실제 모델 품질 검증과 릴리스 승인은 아직 남아 있다.**
 
-앱 설치·운영 절차는 [Linux 배포 가이드](LINUX-DEPLOYMENT.md), 합성 장애 시험은 [재시작](QUEUE-VALIDATION.md), [동시 실행](WORKER-CONCURRENCY-VALIDATION.md), [DB 장애 복구](DB-RECOVERY-VALIDATION.md) 문서와 함께 따른다. 실제 Git 계정, AI 키, 운영 DB, 운영 인증서는 사용하지 않는다.
+앱 설치·운영 절차는 [Linux 배포 가이드](LINUX-DEPLOYMENT.md), 합성 장애 시험은 [재시작](QUEUE-VALIDATION.md), [동시 실행](WORKER-CONCURRENCY-VALIDATION.md), [DB 장애 복구](DB-RECOVERY-VALIDATION.md), [누적 리뷰 업데이트·복귀](UPGRADE-VALIDATION.md) 문서와 함께 따른다. 실제 Git 계정, AI 키, 운영 DB, 운영 인증서는 사용하지 않는다.
 
 ## 1. 전용 WSL2 배포판 준비
 
@@ -185,6 +185,10 @@ WSL은 systemd 서비스만으로 배포판 실행을 유지하지 않아 이번
 이 리허설의 worker·scheduler는 OFF이고 저장된 `review_run`은0행이다. 실행 중 리뷰나 축적된 리뷰 결과를 포함한 모든 업그레이드 경로를 입증하지 않는다. 관련 데이터 보존 회귀와 운영 서버의 실제 migration 정책은 별도로 유지한다. DB 증거는 `/var/lib/ai-reviewer-validation/be8791ed11c54c5485151331f74d3fda/upgrade-record.json`, HTTPS 결과는 Linux checkout의 `.local/service/upgrade/https-{old,final,rollback}.json`에 있다.
 
 최종 정리에서 원본/복원/업데이트 앱, Nginx, 서비스용PG와 부모 검증PG를 모두 중지했다. Nginx 자동 시작을 해제하고 loopback11개 시험 포트의 연결 불가·검증 lock 부재·소유 복원 DB 부재를 확인했다. 원본 합성 DB, 비밀 설정과 백업은 전용 WSL의 제한된 경로에 보존한다. 정리 요약은 `.local/service/session8-validation-summary.json`에 기록한다.
+
+### 저장 리뷰·중단 요청의 업데이트·백업 복귀
+
+2026-10-03에는 `--backup-restore --review-upgrade`로 저장된 A 커밋과 처리 중 B 요청을 실제 구 WAR에서 만들고 강제 종료한 뒤, V13 및 별도 새 DB의 V12 백업 복원본에서 각각 재개했다. SQL로 추가한 과거 AI/수동 이슈·근거·사유·감사 자료의 보존과 화면 escaping, 새 claim·시도별 진행값, A AI1회/B AI3회, 정확한 이슈/체크포인트를 확인했다. WAR6회 시작65.283초, 원본10테이블 보존·소유 DB2개 제거·부모PG 종료까지 통과했다. 전체 Java907건 중897통과/선택10skip이며 필수PG gate도 통과했다. [명령·해시·데이터 생성 구분·한계](UPGRADE-VALIDATION.md)에 세부 증거를 기록했다. 이 시험은 직접 시작한 WAR의 loopback HTTP이며 앞의 systemd/TLS 시험과 구분한다.
 
 ### 남은 검증
 

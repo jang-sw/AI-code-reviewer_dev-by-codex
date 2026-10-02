@@ -1,5 +1,6 @@
 """Portable safety fixtures: no PostgreSQL, Maven, Java or real child is executed."""
 import argparse
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -44,6 +45,109 @@ class LinuxPostgresSafetyTest(unittest.TestCase):
 
     def write_pid(self, pid=123, started=1800000000, port=55439, directory=None, listen='127.0.0.1'):
         self.pid_file.write_text(f'{pid}\n{directory or self.runner.cluster}\n{started}\n{port}\n\n{listen}\n0 0\nready\n', encoding='utf-8')
+
+    def enable_upgrade(self):
+        self.args.review_upgrade = True
+        self.args.review_upgrade_port = 18093
+        self.args.previous_war = self.workspace / 'previous.war'
+        self.args.previous_war.write_bytes(b'previous synthetic WAR')
+        self.args.expected_previous_war_sha256 = hashlib.sha256(b'previous synthetic WAR').hexdigest()
+        (self.workspace / 'scripts' / 'verify-review-upgrade.py').write_text('# synthetic fixture', encoding='utf-8')
+
+    def test_upgrade_requires_explicit_previous_war_and_recorded_hash_together(self):
+        base = ['--pg-bin', str(self.pg_bin), '--java', str(self.args.java)]
+        self.enable_upgrade()
+        previous = ['--previous-war', str(self.args.previous_war)]
+        checksum = ['--expected-previous-war-sha256', self.args.expected_previous_war_sha256]
+        for extra in (['--review-upgrade'], previous, checksum, previous + checksum,
+                      ['--review-upgrade'] + previous, ['--review-upgrade'] + checksum):
+            with self.subTest(extra=extra), self.assertRaises(MODULE.SafetyError):
+                MODULE.arguments(base + extra)
+        args = MODULE.arguments(base + ['--review-upgrade'] + previous + checksum)
+        self.assertTrue(args.review_upgrade)
+        self.assertEqual(args.review_upgrade_port, 18093)
+        for value in ('x' * 64, 'a' * 63, 'a' * 65):
+            with self.subTest(value=value), self.assertRaises(MODULE.SafetyError):
+                MODULE.arguments(base + ['--review-upgrade'] + previous + ['--expected-previous-war-sha256', value])
+
+    def test_upgrade_checksum_mismatch_stops_before_cluster_or_external_commands(self):
+        self.enable_upgrade()
+        self.args.expected_previous_war_sha256 = '0' * 64
+        with patch.object(MODULE, 'require_linux_user'), patch.object(self.runner, 'command') as command, \
+                self.assertRaises(MODULE.SafetyError):
+            self.runner.prepare()
+        command.assert_not_called()
+        self.assertFalse(self.runner.lock.exists())
+
+    def test_previous_war_in_cleaned_build_directory_is_rejected(self):
+        self.enable_upgrade()
+        self.args.previous_war = self.workspace / 'source' / 'target' / 'ai-code-reviewer.war'
+        self.args.expected_previous_war_sha256 = MODULE.war_digest(self.args.previous_war)
+        with patch.object(MODULE, 'require_linux_user'), patch.object(self.runner, 'command') as command, \
+                self.assertRaises(MODULE.SafetyError):
+            self.runner.prepare()
+        command.assert_not_called()
+
+    def test_war_digest_rejects_empty_or_non_war_input(self):
+        self.enable_upgrade()
+        self.assertEqual(MODULE.war_digest(self.args.previous_war), self.args.expected_previous_war_sha256)
+        self.args.previous_war.write_bytes(b'')
+        with self.assertRaises(MODULE.SafetyError):
+            MODULE.war_digest(self.args.previous_war)
+        other = self.workspace / 'previous.txt'
+        other.write_text('synthetic', encoding='utf-8')
+        with self.assertRaises(MODULE.SafetyError):
+            MODULE.war_digest(other)
+
+    def test_upgrade_port_participates_in_collision_check(self):
+        self.enable_upgrade()
+        self.assertEqual(self.runner.selected_ports(), [55439, 18093])
+        self.args.review_restart = True
+        self.args.review_upgrade_port = self.args.review_restart_port
+        with self.assertRaises(MODULE.SafetyError):
+            self.runner.selected_ports()
+
+    def test_upgrade_passes_owned_identity_and_accepts_only_matching_complete_report(self):
+        self.enable_upgrade()
+        self.runner.logs.mkdir()
+        self.runner.owned = (123, 1800000000)
+        observed = []
+        def child(command, **kwargs):
+            self.assertTrue(kwargs['cooperative_cancel'])
+            self.assertEqual(kwargs['timeout'], 1000)
+            self.assertEqual(command[command.index('--expected-postmaster-pid') + 1], '123')
+            self.assertEqual(command[command.index('--previous-war') + 1], self.args.previous_war)
+            data = {'result': 'PASS', 'parentRunToken': self.runner.token, 'ownedDatabasesRemoved': True,
+                    'externalServicesUsed': False, 'paidAiUsed': False,
+                    'warSha256': command[command.index('--expected-war-sha256') + 1],
+                    'previousWarSha256': self.args.expected_previous_war_sha256}
+            data.update(overrides)
+            path = Path(command[command.index('--report') + 1])
+            path.write_text(json.dumps(data), encoding='utf-8')
+            observed.append(path)
+        for overrides in ({'parentRunToken': '0' * 32}, {'ownedDatabasesRemoved': False},
+                          {'externalServicesUsed': True}, {'paidAiUsed': True}, {'result': 'FAIL'},
+                          {'warSha256': '0' * 64}, {'previousWarSha256': '0' * 64}, {}):
+            with self.subTest(overrides=overrides), patch.object(self.runner, 'verify_owned') as verify, \
+                    patch.object(self.runner, 'command', side_effect=child):
+                if overrides:
+                    with self.assertRaises(MODULE.SafetyError):
+                        self.runner.upgrade()
+                else:
+                    self.runner.upgrade()
+                self.assertEqual(verify.call_count, 2)
+            observed.pop().unlink()
+
+    def test_upgrade_existing_report_is_preserved_without_child_call(self):
+        self.enable_upgrade()
+        self.runner.logs.mkdir()
+        report = self.runner.logs / ('review-upgrade-' + self.runner.token + '.json')
+        report.write_text('previous synthetic evidence', encoding='utf-8')
+        with patch.object(self.runner, 'verify_owned'), patch.object(self.runner, 'command') as command, \
+                self.assertRaises(MODULE.SafetyError):
+            self.runner.upgrade()
+        command.assert_not_called()
+        self.assertEqual(report.read_text(encoding='utf-8'), 'previous synthetic evidence')
 
     def test_non_linux_and_root_refused(self):
         with patch.object(MODULE.sys, 'platform', 'win32'), self.assertRaises(MODULE.SafetyError):

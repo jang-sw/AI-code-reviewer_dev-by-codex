@@ -45,6 +45,7 @@ ALLOWLIST = (
     "docs/USER-EXPERIENCE.md",
     "docs/WORKER-CONCURRENCY-VALIDATION.md",
     "docs/WSL-VALIDATION.md",
+    "docs/UPGRADE-VALIDATION.md",
 )
 # Exact unfilled template defaults. Configuration changes require an explicit policy update.
 ENVIRONMENT_DEFAULTS = {

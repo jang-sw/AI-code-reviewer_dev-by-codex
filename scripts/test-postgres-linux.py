@@ -6,6 +6,7 @@ clusters, links, occupied ports, and changed postmaster identities are refused.
 Optional WAR drills use synthetic loopback Git/AI only; no real AI opt-in is inherited.
 """
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -102,6 +103,20 @@ def unused_port(port):
             probe.bind(('127.0.0.1', port))
         except OSError:
             raise SafetyError('A requested loopback test port is already occupied.') from None
+
+
+def war_digest(path):
+    path = checked_path(path)
+    require(path.suffix.lower() == '.war' and 0 < path.stat().st_size <= 256 * 1024 * 1024,
+            'An explicit bounded WAR file is required.')
+    digest = hashlib.sha256()
+    with path.open('rb') as stream:
+        total = 0
+        while chunk := stream.read(1024 * 1024):
+            total += len(chunk)
+            require(total <= 256 * 1024 * 1024, 'The WAR exceeded its size limit while reading.')
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def safe_environment(java, pg_bin, port):
@@ -231,6 +246,12 @@ class TestRun:
     def prepare(self):
         require_linux_user()
         checked_path(self.workspace, directory=True)
+        if getattr(self.args, 'review_upgrade', False):
+            previous = checked_path(self.args.previous_war)
+            require(self.workspace / 'source' / 'target' not in previous.parents,
+                    'Keep the previous WAR outside the current build output directory.')
+            require(war_digest(previous) == self.args.expected_previous_war_sha256.lower(),
+                    'The previous WAR does not match its explicitly recorded checksum.')
         mountinfo = Path('/proc/self/mountinfo').read_text(encoding='utf-8')
         # A native checkout can still contain a separately mounted Windows .local/PGDATA.
         for target in (self.workspace, self.workspace / '.local', self.cluster):
@@ -291,6 +312,8 @@ class TestRun:
             ports.extend((self.args.review_concurrency_port_a, self.args.review_concurrency_port_b))
         if self.args.review_database_recovery:
             ports.append(self.args.review_database_recovery_port)
+        if getattr(self.args, 'review_upgrade', False):
+            ports.append(self.args.review_upgrade_port)
         require(len(set(ports)) == len(ports), 'Selected PostgreSQL and WAR ports must all differ.')
         return ports
 
@@ -370,6 +393,37 @@ class TestRun:
                                               '--port-b', str(self.args.review_concurrency_port_b)])
         if self.args.review_database_recovery:
             self.drill('review-db-recovery', ['--port', str(self.args.review_database_recovery_port)])
+        if getattr(self.args, 'review_upgrade', False):
+            self.upgrade()
+
+    def upgrade(self):
+        self.verify_owned(self.owned)
+        report = self.logs / ('review-upgrade-' + self.token + '.json')
+        checked_path(report, allow_missing=True)
+        require(not report.exists(), 'Refusing an existing upgrade verification report.')
+        script = checked_path(self.workspace / 'scripts' / 'verify-review-upgrade.py')
+        war = checked_path(self.workspace / 'source' / 'target' / 'ai-code-reviewer.war')
+        expected = war_digest(war)
+        self.command([sys.executable, script, '--war', war, '--expected-war-sha256', expected,
+                      '--previous-war', self.args.previous_war,
+                      '--expected-previous-war-sha256', self.args.expected_previous_war_sha256,
+                      '--java', self.java, '--psql', self.pg_bin / 'psql', '--pg-bin', self.pg_bin,
+                      '--port', str(self.args.review_upgrade_port),
+                      '--expected-postmaster-pid', str(self.owned[0]),
+                      '--expected-postmaster-started-at', str(self.owned[1]),
+                      '--parent-run-token', self.token, '--report', report],
+                     log=self.logs / 'review-upgrade.log', timeout=1000, cooperative_cancel=True)
+        self.verify_owned(self.owned)
+        try:
+            outcome = json.loads(limited_text(report, 131072))
+            require(outcome.get('result') == 'PASS' and outcome.get('parentRunToken') == self.token
+                    and outcome.get('ownedDatabasesRemoved') is True
+                    and outcome.get('externalServicesUsed') is False and outcome.get('paidAiUsed') is False
+                    and outcome.get('warSha256') == expected
+                    and outcome.get('previousWarSha256') == self.args.expected_previous_war_sha256.lower(),
+                    'The upgrade drill did not produce a successful isolated report for these WARs.')
+        except (ValueError, TypeError, AttributeError):
+            raise SafetyError('The upgrade drill report was invalid.') from None
 
     def backup_restore(self):
         self.verify_owned(self.owned)
@@ -421,15 +475,25 @@ def arguments(argv=None):
     parser.add_argument('--pg-bin', type=Path, required=True)
     parser.add_argument('--java', type=Path, required=True)
     parser.add_argument('--port', type=int, default=55439)
-    for name in ('review-restart', 'review-concurrency', 'review-database-recovery', 'backup-restore'):
+    for name in ('review-restart', 'review-concurrency', 'review-database-recovery', 'backup-restore', 'review-upgrade'):
         parser.add_argument('--' + name, action='store_true')
+    parser.add_argument('--previous-war', type=Path)
+    parser.add_argument('--expected-previous-war-sha256')
     for name, default in (('review-restart-port', 18089), ('review-concurrency-port-a', 18090),
-                          ('review-concurrency-port-b', 18091), ('review-database-recovery-port', 18092)):
+                          ('review-concurrency-port-b', 18091), ('review-database-recovery-port', 18092),
+                          ('review-upgrade-port', 18093)):
         parser.add_argument('--' + name, type=int, default=default)
     args = parser.parse_args(argv)
     for name, value in vars(args).items():
         if name == 'port' or '_port' in name:
             require(1024 <= value <= 65535, 'Invalid local test port.')
+    require((args.previous_war is not None) == args.review_upgrade
+            and (args.expected_previous_war_sha256 is not None) == args.review_upgrade,
+            'Upgrade verification requires an explicit previous WAR and recorded checksum together.')
+    if args.review_upgrade:
+        absolute_path(args.previous_war)
+        require(re.fullmatch(r'[0-9a-fA-F]{64}', args.expected_previous_war_sha256) is not None,
+                'The recorded previous WAR checksum must be SHA-256.')
     return args
 
 
