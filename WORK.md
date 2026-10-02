@@ -4,7 +4,7 @@
 - 이번 회차: 2026-10-02 16:08 KST 시작, 최대 18:08 KST까지 구현·검증 후 인계한다.
 - 기록 기준: `main` / `d4a2352`. 이전 회차의 Linux 검증 도구·테스트 2개 미추적 파일을 보존하고 이어간다. 이전 이력과 커밋은 모두 미푸시.
 - 이번 완료 조건: 사용자 요청에 따라 WSL Linux 검증 환경을 구축하고 Docker 없이 기존 Java25/PostgreSQL17 빌드·배포·복구 검증을 수행한다. 운영 서버 배포와 실제 모델 품질 승인은 별도다.
-- 이번 단계: WSL2 Ubuntu24.04.5·Temurin25.0.4.1·PG17.11·systemd255에서 전체 빌드·필수 PG gate·백업/복원·세 WAR 검증을 통과했다. 별도 SCRAM DB/제한 계정의 systemd/Nginx HTTPS 가입·승인·bootstrap 제거·강제 종료 자동 복구·새 DB 복원 후 로그인과 요청 보존도 통과했다. Java 정상 종료143을 systemd가 실패로 표시하던 설정과 JDBC 검증 fixture의 시간 제한을 수정했다. 문서·후보 패키지·소유 자원 정리를 마무리한다. 운영 배포·실제/유료 모델 호출 없음. LiteLLM 주소·모델은 아직 미정이다.
+- 이번 단계: WSL 전체 빌드·복구·systemd/HTTPS 검증과 Linux 검증 도구를 로컬 커밋했다. 후보의 Linux 재현 생성도 통과했으며 새 배포 안내에서 참조하는 WSL 문서를 후보 고정 목록에 추가했다. 별도 합성 DB의 V12→V13 업데이트와 백업을 통한 구버전 복귀를 추가 검증한다. 운영 배포·실제/유료 모델 호출 없음. LiteLLM 주소·모델은 아직 미정이다.
 - 확정 요구사항: `docs/REQUIREMENTS.md`. 내부 이슈함 우선, 최초 전체 이력, Java25/Spring/Maven/JSP/PostgreSQL 유지.
 - 재개 시 이 문서와 실제 Git 상태를 대조하고 아래 다음 작업부터 진행한다. 모든 릴리스 항목 검증 전 완료라고 보고하지 않는다.
 
@@ -54,6 +54,7 @@
 - 별도 서비스 DB17/reviewer_service:55449와 클러스터 특권 없는 계정, 전용 앱 UID·root0600 환경파일·앱의 WAR/Java 쓰기 차단·state/runtime 쓰기·Flyway13 확인. systemd SIGKILL 자동 복구17.608초, HTTPS initial15·bootstrap 제거/재시작 resume9·위조 전달헤더 quota6·강제 종료 뒤 resume9·새 UUID DB 복원 별도 WAR의 HTTPS resume9 모두 통과. 합성 CA/SAN 검증을 우회하지 않았으며 외부 포트 개방·실제 Git/AI 호출 없음. 복원 DB만 소유권 확인 후 제거하고 원본 DB를 보존했다. 서비스 시험 WAR는 최초 Linux 빌드 `35325503bc4e6605c91bb7874b3fa1213f4c5ca172b920337031a875480b3067`이며 최종 빌드와 제품 코드는 같다.
 - 발견/수정: 백업 OID가 PG JSON에서 문자열이어서 SQL bigint 변환을 추가했고, 소유권 미확정으로 보존했던 새 빈 DB2개는 정확한 OID/owner/빈 관계를 확인한 후 제거했다. JDBC 취소 시험1건이 socket timeout으로 실패하여 쿼리1초·관측5초는 유지하고 socket3→6초 및 취소 전후 동일 backend PID 검증을 추가했다. 위 최종 전체 재검증으로 해소했다. CPU 부하를 원인으로 확정하지 않는다. systemd 정상 종료143 실패 표시를 `SuccessExitStatus=143`으로 수정한 후 정상 중지 `inactive/Result=success` 확인. 일회성 복원 helper가 중지 후 상태값이 반드시143이라고 가정한 마지막 assertion은 실패했지만, HTTPS9개·정상 중지 성공·원복·소유 DB 정리는 각각 확인했다.
 - 초기 설치 helper의 클러스터 이름/주소 인용과 WSL 재기동 뒤 수동 DB·hosts 복원 문제를 수정했다. 전용 hosts와 `generateHosts=false`, 검증 중 소유 foreground keeper를 사용했다. 제품 소스 오류·운영 부팅 검증과 구분한다. 관련 안전 코드의 독립 읽기 검토에서 추가 차단 결함 없음.
+- Linux 최종 WAR의 구조/체크섬·artifact fixture5건·systemd 단위 검사 통과. 최초 Linux 후보2개 바이트/외부체크섬 일치 확인 후, 패키지 안에서도 새 WSL 문서 링크가 열리도록 고정 목록에 추가했다(23개 파일). 변경 후 Windows/Linux 후보 fixture26건씩 통과. 실제 후보 설치·업데이트/rollback 결과는 아직 수집 중이다.
 
 ### 이전 회차: WSL 구성요소 설치·재부팅 대기
 
