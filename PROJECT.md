@@ -14,6 +14,7 @@
 - `source/src/main/resources/` 아래 application.properties, db/migration, static/css.
 - `source/src/main/webapp/WEB-INF/jsp/` JSP·공통 fragment. `source/src/test/` 자동 테스트.
 - `scripts/test-postgres.ps1`: Windows 격리 PostgreSQL 검증. `-BackupRestore -ReviewRestart`는 백업/복원과 실제 WAR 강제 중단 후 재기동, `-ReviewConcurrency`는 두 WAR의 잠금 경쟁과 다른 프로젝트 진행을 검증한다.
+- `scripts/test-postgres-linux.py`: 일반 Linux 사용자와 native 파일시스템의 전용 PostgreSQL17에서 전체 빌드·필수 DB 검증을 실행한다. `--backup-restore --review-restart --review-concurrency --review-database-recovery`로 백업과 세 복구 검증을 함께 실행한다.
 - `scripts/package-candidate.py`: 검증한 WAR·Linux 템플릿·운영 문서를 현재 개발 버전의 로컬 후보 묶음으로 생성한다. [사용법과 한계](docs/CANDIDATE-PACKAGE.md)를 확인한다. 실제 설치·업로드·릴리스 승인은 수행하지 않는다.
 
 ## 구현된 흐름
@@ -39,7 +40,7 @@ Git 기본 호스트는 `github.com`이다. 설치형 GitLab은 관리자가 허
 
 운영 대상은 **Linux 서버, Docker 미사용**이다. [Linux 배포 자료](docs/LINUX-DEPLOYMENT.md)와 `deploy/linux/`의 systemd·TLS·환경파일 템플릿을 제공한다. 실제 서버 설치·보안·복구 검증은 아직 남아 있다.
 
-로컬 Linux 검증은 [WSL2 준비·재현 절차](docs/WSL-VALIDATION.md)를 따른다. 전용 Ubuntu 24.04의 Linux 파일시스템에 소스와 PostgreSQL 데이터를 따로 준비한다. 새 Linux 검증 도구는 실제 Linux 실행 전인 초안이며 Windows 도구의 통과 결과와 구분한다.
+로컬 Linux 검증은 [WSL2 준비·재현 절차와 결과](docs/WSL-VALIDATION.md)를 따른다. 전용 Ubuntu24.04.5의 Linux 파일시스템에서 Java25·PostgreSQL17 전체 빌드, 백업·복원, 세 WAR 복구 검증을 통과했다. 별도 제한 계정의 systemd 서비스와 Nginx HTTPS에서도 가입·승인·재시작·복원 후 데이터 보존을 확인했다. 실제 운영 서버의 환경·지속 실행 검증은 별도다.
 
 저장소 루트에서 `./scripts/test-postgres.ps1`을 실행하면 `.local/pg-validation`에 독립 PostgreSQL 클러스터를 만들어 실제 DB/HTTP/JSP/동시성 테스트와 WAR 패키징 후 종료한다. 기본 `mvnw verify`에서는 DB·실서비스 선택 테스트를 건너뛰므로 전체 검증과 구분한다.
 
@@ -49,6 +50,6 @@ Git 기본 호스트는 `github.com`이다. 설치형 GitLab은 관리자가 허
 
 - 실제 대형 이력/변경 부하와 공급자별 수동 전환 호환성. 파일 내부 분할·원본 diff 복원·부분 AI/수동 혼합은 별도 확장이다. 증명할 수 없는 변경은 실패한다.
 - 실제 GitLab·LiteLLM 환경, 운영 모델 품질, 장시간·장애·부하 검증.
-- 운영 AI는 LiteLLM 우선이다. Linux 검증은 사용자 요청에 따라 WSL2로 준비한다. 현재 WSL과 가상 머신 플랫폼 설치 후 Windows 재부팅을 기다리는 단계이며 Ubuntu 등록·Linux 실행 검증은 아직 남아 있다.
+- 운영 AI는 LiteLLM 우선이며 주소·모델은 아직 미정이다. 사용자 요청에 따라 WSL2 Linux 검증을 수행했으며 실제 운영 서버의 부팅·인증서 갱신·업그레이드·장기 복구 검증은 남아 있다.
 - 운영 백업/복원·관측 용량/진행률·보존·업그레이드/롤백·의존성 취약점 검증.
 - 상세 기준은 `docs/RELEASE-CHECKLIST.md`와 `docs/AI-EVALUATION.md`를 따른다.
