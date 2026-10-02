@@ -1,6 +1,6 @@
 # Linux 서버 배포·복구 가이드
 
-Docker 없이 Java 25 실행 WAR, PostgreSQL 17, systemd, 같은 호스트의 TLS 프록시로 배포하는 절차다. **배포 자료를 준비한 상태이며 실제 Linux 설치·TLS·복원·운영 부하 검증을 완료했다는 뜻은 아니다.** 배포 대상 배포판/CPU/Java 공급자와 모델이 확정되면 해당 서버의 staging 환경에서 먼저 실행한다. 자동 설치·운영 DB 삭제 스크립트는 제공하지 않는다.
+Docker 없이 Java 25 실행 WAR, PostgreSQL 17, systemd, 같은 호스트의 TLS 프록시로 배포하는 절차다. 2026-10-02 전용 WSL2 Ubuntu24.04.5에서 설치·제한 계정·HTTPS·재시작·새 DB 복원을 검증했다([범위와 증거](WSL-VALIDATION.md)). **실제 운영 서버의 부팅·인증서 갱신·업그레이드·부하 검증과 배포 승인은 남아 있다.** 배포 대상 배포판/CPU/Java 공급자와 모델이 확정되면 해당 서버의 staging 환경에서 먼저 실행한다. 자동 설치·운영 DB 삭제 스크립트는 제공하지 않는다.
 
 ## 파일과 배치 구조
 
@@ -17,6 +17,8 @@ Docker 없이 Java 25 실행 WAR, PostgreSQL 17, systemd, 같은 호스트의 TL
 템플릿은 [systemd 서비스](../deploy/linux/ai-reviewer.service), [환경파일](../deploy/linux/reviewer.env.example), [Nginx](../deploy/linux/nginx.conf.example)이다. 서비스의 JVM heap2GiB는 출발 설정이며 서버 RAM, 네이티브 메모리, PostgreSQL/로컬 모델 사용량을 포함한 측정 후 조정한다. JIT를 막는 `MemoryDenyWriteExecute`는 사용하지 않는다. 코어 덤프도 비활성화한다.
 
 systemd가 root 권한으로 환경파일을 읽은 뒤 전용 계정으로 앱을 실행한다. 환경파일은 셸 스크립트가 아니며 `source`·`eval`하지 않는다. 환경변수는 서비스 프로세스에 전달되므로 root/같은 서비스 UID의 접근까지 숨기는 secret 저장소는 아니다. 이 계정을 다른 앱에 공유하지 않는다. 비밀값은 명령줄·Git·화면 캡처·journal에 복사하지 않는다. [systemd 실행환경 문서](https://github.com/systemd/systemd/blob/main/man/systemd.exec.xml)
+
+서비스는 SIGTERM으로 정상 종료하며 Java가 반환하는 종료 코드143도 `SuccessExitStatus=143`으로 성공 처리한다. WSL 실검증에서 정상 종료를 실패로 표시하던 문제를 수정한 설정이다. 비정상 종료는 `Restart=on-failure`의 대상이며, 실제 SIGKILL 후 자동 재시작과 준비 상태 회복도 확인했다. 종료 성공과 미완료 리뷰 요청의 재개는 별도 검증 항목이다.
 
 ## 설치 전 확인
 
@@ -129,6 +131,6 @@ sha256sum "$backup_dir/database.dump" > "$backup_dir/database.sha256"
 - 실제 DB 최소권한, DB 지연/중단 후 복귀, backup/restore 및 migration/rollback 리허설.
 - 운영 모델 품질, 실제 GitLab/LiteLLM 인증, 예상 동시성/대형 저장소 처리시간·메모리·RPO/RTO.
 
-현재 작업 환경은 Windows다. 2026-09-26 Git Bash의 `bash -n`과 `python deploy/linux/test-verify-artifact.py` 합성 fixture5건을 통과했고, 생성된 실제 WAR에도 읽기 전용 구조 검사를 적용했다. 이 검증은 실제 Linux 서비스 구동·DB 복원 검증과 구분한다. 서버 검증과 릴리스 점검이 끝나기 전에는 운영 완료로 표시하지 않는다.
+2026-09-26 Windows Git Bash의 문법·artifact fixture5건·WAR 구조 검증에 이어, 2026-10-02 전용 WSL Linux에서 실제 서비스 구동·합성 HTTPS·백업/새 DB 복원 후 로그인을 확인했다. 앱 계정의 DB 클러스터 특권 부재, root0600 환경파일, WAR·Java 쓰기 차단도 검사했다. 위 서버별 항목 중 운영 부팅·외부 TLS/갱신·장기 장애·업그레이드와 모델 품질은 아직 미검증이다. 서버 검증과 릴리스 점검이 끝나기 전에는 운영 완료로 표시하지 않는다.
 
 [CI 설정](../.github/workflows/verify.yml)은 기존 secret 검사와 PostgreSQL 필수 검증이 성공한 뒤 배포 도구 fixture5건, Bash 문법, 그 실행에서 빌드한 WAR의 구조를 확인한다. 이때 계산한 해시는 CI 산출물 자체의 구조 검사용이며 서버 전송 후 독립된 승인 해시 비교를 대체하지 않는다. 이 단계는 서비스 설치·실행·배포를 하지 않으며 원격 GitHub Actions 실행 결과는 별도로 확인한다.

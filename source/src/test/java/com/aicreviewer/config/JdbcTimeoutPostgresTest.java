@@ -26,12 +26,15 @@ class JdbcTimeoutPostgresTest {
             source.setConnectionTimeout(2000);
             var processor = JdbcTimeoutConfiguration.jdbcTimeoutPostProcessor(new MockEnvironment()
                     .withProperty("app.jdbc.query-timeout-seconds", "1")
-                    .withProperty("app.jdbc.socket-timeout-seconds", "3")
+                    // Keep the socket fallback outside the five-second cancellation observation budget.
+                    .withProperty("app.jdbc.socket-timeout-seconds", "6")
                     .withProperty("app.jdbc.connect-timeout-seconds", "1"));
             processor.postProcessBeforeInitialization(source, "dataSource");
             var jdbc = new JdbcTemplate(source);
             processor.postProcessBeforeInitialization(jdbc, "jdbcTemplate");
             assertThat(jdbc.queryForObject("SELECT 1", Integer.class)).isEqualTo(1);
+            Integer backendPid = jdbc.queryForObject("SELECT pg_backend_pid()", Integer.class);
+            assertThat(backendPid).isPositive();
 
             long started = System.nanoTime();
             Throwable failure = catchThrowable(() -> jdbc.execute("SELECT pg_sleep(10)"));
@@ -42,6 +45,7 @@ class JdbcTimeoutPostgresTest {
                     .isEqualTo("57014"); // PostgreSQL query_canceled, rather than a lost socket/session.
             assertThat(elapsed).isLessThan(Duration.ofSeconds(5));
             assertThat(jdbc.queryForObject("SELECT 1", Integer.class)).isEqualTo(1);
+            assertThat(jdbc.queryForObject("SELECT pg_backend_pid()", Integer.class)).isEqualTo(backendPid);
         }
     }
 }
