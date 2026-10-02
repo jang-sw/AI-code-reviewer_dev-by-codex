@@ -1,10 +1,10 @@
 # 현재 작업 상태
 
 - 작업: 실사용 AI 소스코드 리뷰 시스템. **개발 중, 릴리스 완료 아님.**
-- 이번 회차: 2026-10-02 16:08 KST 시작, 최대 18:08 KST까지 구현·검증 후 인계한다.
-- 기록 기준: `main` / `f623fd2` 이후 검증 기록. 회차 시작은 `d4a2352`와 Linux 검증 도구·테스트 2개 미추적 파일이었으며 이를 보존해 검증·커밋했다. 이전 이력과 이번 커밋은 모두 미푸시.
-- 이번 완료 조건: 사용자 요청에 따라 WSL Linux 검증 환경을 구축하고 Docker 없이 기존 Java25/PostgreSQL17 빌드·배포·복구 검증을 수행한다. 운영 서버 배포와 실제 모델 품질 승인은 별도다.
-- 이번 단계: WSL 전체 빌드·복구·systemd/HTTPS와 후보 설치, 별도 합성 V12→V13 업데이트·백업을 통한 구버전 복귀까지 통과했다. 코드·도구를 로컬 커밋했고 시험용 앱·Nginx·PG를 중지해11개 포트 연결 불가를 확인했다. 소유 keeper도 PID/시작 시각 대조 후 종료했다. 운영 배포·실제/유료 모델 호출 없음. LiteLLM 주소·모델은 아직 미정이며 제품은 계속 개발 중이다.
+- 이번 회차: 2026-10-03 07:55 KST 시작, 최대 09:55 KST까지 구현·검증 후 인계한다.
+- 기록 기준: `main` / `b86ec8e`, 회차 시작 작업 트리 깨끗함. 이전 이력과 커밋은 모두 미푸시.
+- 이번 완료 조건: 저장된 리뷰·AI/수동 이슈·처리 사유와 중단된 요청을 포함하는 V12→V13 업데이트·백업 복귀 검증을 보강하고 실제 WSL에서 실행한다. 운영 서버 배포와 실제 모델 품질 승인은 별도다.
+- 이번 단계: 누적 V12 데이터의 실제 PostgreSQL→V13 회귀와 전체 Java/백업 검증을 통과했다. 실제 WAR의 중단된 리뷰를 새 버전 및 구버전 백업에서 재개하는 별도 도구와 안전 경계 검증을 진행한다. 전용 WSL의 이전 앱·Nginx·서비스PG는 중지 상태다. 운영 배포·실제/유료 모델 호출 없음. LiteLLM 주소·모델은 아직 미정이며 제품은 계속 개발 중이다.
 - 확정 요구사항: `docs/REQUIREMENTS.md`. 내부 이슈함 우선, 최초 전체 이력, Java25/Spring/Maven/JSP/PostgreSQL 유지.
 - 재개 시 이 문서와 실제 Git 상태를 대조하고 아래 다음 작업부터 진행한다. 모든 릴리스 항목 검증 전 완료라고 보고하지 않는다.
 
@@ -48,6 +48,14 @@
 - Linux 부모 검증 도구는 non-root·PG17/Java25·PGDATA 마운트/링크/마커·PID/시작 시각·SQL 대조, clean verify/필수 PG gate·선택 백업/세 WAR 검증 연결과 소유권 인계를 제공한다. 백업은 새 UUID DB만 복원/제거하고 원본을 보존한다. 모의 회귀와 Linux 실제 신호 취소4건·전체 실행을 통과해 반영 가능한 상태다.
 
 ## 최신 실제 검증
+
+### 이번 회차: 누적 리뷰 데이터 업데이트·복귀
+
+- 실제 PG 신규 migration 회귀: V12의 AI·두 종류 수동 이슈/근거/사유/감사, 모든 요청 상태와 claim·시간·작성자 매핑을 보존한다. V13의 과거 진행값 NULL, 관계/상태/중복 제약, 감사 저장 실패 시 사유 rollback,8개 identity 연속 삽입을 검증했다.
+- WSL Linux 부모 `--backup-restore` 전체 Java907건 중897통과/선택10skip, 실패/오류0, 필수PG4suite gate·10테이블 백업/새 DB 복원·identity/queue 삽입·원본 보존·복원DB 제거 통과. 보고서: Linux `.local/linux-postgres-73b47cfc8e234115a0ad46058fc4c724`. 신규 업그레이드 WAR 시나리오는 아직 미실행이다.
+- 부모 도구의 업그레이드 선택 인자·WAR 해시·빌드 삭제 대상 분리·포트·보고서 계약 회귀40건은 Windows/Linux에서 각각 통과했다. 신규 하위 도구/전체 Python 검증은 진행 중이다.
+
+### 이전 회차: WSL Linux 전체 검증·설치·백업 복귀
 
 - WSL2 전용 ai-reviewer-validation에 Ubuntu24.04.5·커널6.18.40.1·Temurin25.0.4.1·PG17.11·Python3.12.3·systemd255를 설치했다. 소스는 `/home/reviewer/work/ai-reviewer`, 검증 PGDATA도 Linux ext4에 별도로 생성했다. 최종 Java906건 중896통과/선택10skip(외부7+부하3), 실패/오류0, 필수PG4suite gate 통과. Linux Python171건 중161통과/Windows PowerShell10skip, Windows171건 중166통과/POSIX5skip. 실제 Linux 취소4건 포함.
 - 최종 Linux 부모 통합 실행에서 10테이블 backup/restore·identity/queue 삽입·새 DB 제거·원본 보존 통과. WAR 재시작53.331초·동시 실행21.974초·DB 중단/복구46.080초 통과, 소유 WAR/schema/PG 정리 확인. 보고서: Linux `.local/linux-postgres-731ff1115c754dbdbc0c7a7dab3875ac`. 최종 WAR SHA256 `21b174681c22111919c408361747da3320c683dd041231811c5684ba9128f59e`.

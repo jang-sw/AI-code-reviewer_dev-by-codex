@@ -6,11 +6,14 @@ import com.aicreviewer.ai.ReviewResult;
 import com.aicreviewer.git.GitCommit;
 import com.aicreviewer.git.GitRepositoryClient;
 import com.aicreviewer.git.GitReviewBatch;
+import com.aicreviewer.issue.IssueService;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
 import java.util.UUID;
@@ -29,6 +32,7 @@ import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.dao.DataAccessException;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.AbstractDataSource;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
@@ -88,6 +92,186 @@ class ReviewRequestPostgresTest {
         if (admin != null && schema != null && schema.matches("queue_test_[0-9a-f]{32}")) {
             // Only the generated schema owned by this fixture is removed.
             admin.execute("drop schema if exists " + schema + " cascade");
+        }
+    }
+
+    @Test void populatedV12UpgradePreservesManualEvidenceRequestOwnershipAndSequencesOnPostgres() {
+        String migrationSchema = "queue_test_" + UUID.randomUUID().toString().replace("-", "");
+        admin.execute("create schema " + migrationSchema);
+        try {
+            var migrationSource = dataSource(migrationSchema);
+            var migrationJdbc = new JdbcTemplate(migrationSource);
+            migrationJdbc.setQueryTimeout(10);
+            Flyway.configure().dataSource(migrationSource).schemas(migrationSchema).defaultSchema(migrationSchema)
+                    .target("12").load().migrate();
+            Timestamp requested = Timestamp.from(Instant.parse("2026-01-02T03:04:05.123456Z"));
+            Timestamp attempted = Timestamp.from(requested.toInstant().plusSeconds(30));
+            Timestamp available = Timestamp.from(attempted.toInstant().plusSeconds(120));
+            Timestamp finished = Timestamp.from(attempted.toInstant().plusSeconds(15));
+            long owner = migrationJdbc.queryForObject("insert into app_user(username,password_hash,git_username,role) " +
+                    "values('migration-owner','non-authenticating-fixture','migration-owner','USER') returning id", Long.class);
+            long administrator = migrationJdbc.queryForObject("insert into app_user(username,password_hash,git_username,role) " +
+                    "values('migration-admin','non-authenticating-fixture','migration-admin','ADMIN') returning id", Long.class);
+            migrationJdbc.update("insert into git_author_mapping(user_id,repository_origin,author_email,created_at) values(?,?,?,?)",
+                    owner, "https://github.com", "synthetic-author@example.invalid", requested);
+            var projects = new LinkedHashMap<String, Long>();
+            for (String state : List.of("RUNNING", "QUEUED", "SUCCEEDED", "FAILED", "CANCELLED")) {
+                long id = migrationJdbc.queryForObject("insert into project(name,repository_url,provider,repository_host,repository_path," +
+                        "owner_id,status,review_branch,last_reviewed_sha,next_review_at,approved_at,created_at,updated_at) " +
+                        "values(?,?,'GITHUB','github.com',?,?,'APPROVED','main',?,?,?,?,?) returning id", Long.class,
+                        "누적 리뷰 " + state, "https://github.com/migration/" + state, "migration/" + state, owner,
+                        "RUNNING".equals(state) ? "a".repeat(40) : null, available,
+                        Timestamp.from(requested.toInstant().minusSeconds(3000)), Timestamp.from(requested.toInstant().minusSeconds(3600)), attempted);
+                projects.put(state, id);
+            }
+            long activeProject = projects.get("RUNNING");
+            long historicalRun = migrationJdbc.queryForObject("insert into review_run(project_id,status,started_at,finished_at,reviewed_commits) " +
+                    "values(?,'SUCCEEDED',?,?,1) returning id", Long.class, activeProject,
+                    Timestamp.from(requested.toInstant().minusSeconds(120)), Timestamp.from(requested.toInstant().minusSeconds(60)));
+            long activeRun = migrationJdbc.queryForObject("insert into review_run(project_id,status,started_at,reviewed_commits) " +
+                    "values(?,'RUNNING',?,2) returning id", Long.class, activeProject, attempted);
+            long aiCommit = migrationJdbc.queryForObject("insert into reviewed_commit(project_id,commit_sha,author_login,author_email,summary," +
+                    "coverage_type,coverage_details,reviewed_at) values(?,?,?,?,?,'FULL',?,?) returning id", Long.class,
+                    activeProject, "a".repeat(40), "migration-owner", "synthetic-author@example.invalid", "이전 AI 리뷰", "전체 본문 검토",
+                    Timestamp.from(requested.toInstant().minusSeconds(90)));
+            migrationJdbc.update("insert into review_issue(project_id,reviewed_commit_id,assignee_id,severity,title,file_path,line_number," +
+                    "description,suggestion,assignment_reason,status,created_at,updated_at) " +
+                    "values(?,?,?,'HIGH','보존할 AI 권고','src/Code.java',7,'합성 근거','수정 권고','GIT_EMAIL_MAPPING','RESOLVED',?,?)",
+                    activeProject, aiCommit, owner, requested, finished);
+            var manualIssues = new LinkedHashMap<String, Long>();
+            for (String reason : List.of("SOURCE_DIFF_UNAVAILABLE", "METADATA_CHANGE")) {
+                boolean metadata = "METADATA_CHANGE".equals(reason);
+                String sha = (metadata ? "c" : "b").repeat(40);
+                String path = metadata ? "scripts/실행.sh" : "assets/원본.bin";
+                String note = metadata ? "실행 권한 변경을 확인하여 제외함" : "바이너리 원본을 직접 확인하여 해결함";
+                String state = metadata ? "DISMISSED" : "RESOLVED";
+                long commit = migrationJdbc.queryForObject("insert into reviewed_commit(project_id,commit_sha,author_login,author_email,summary," +
+                        "coverage_type,coverage_details,reviewed_at) values(?,?,?,?,?,'MANUAL_ONLY',?,?) returning id", Long.class,
+                        activeProject, sha, "migration-owner", "synthetic-author@example.invalid", "수동 검토 배정 " + reason,
+                        "불변 tree 전체 경로 대조; AI 본문 검토 없음", attempted);
+                long file = migrationJdbc.queryForObject("insert into manual_review_file(reviewed_commit_id,project_id,file_path,old_object_sha," +
+                        "new_object_sha,old_mode,new_mode,reason_code,evidence_kind) values(?,?,?,?,?,'100644',?,?,'PINNED_TREES') returning id",
+                        Long.class, commit, activeProject, path, "d".repeat(40), (metadata ? "d" : "e").repeat(40),
+                        metadata ? "100755" : "100644", reason);
+                long issue = migrationJdbc.queryForObject("insert into review_issue(project_id,reviewed_commit_id,assignee_id,severity,title,file_path," +
+                        "line_number,description,suggestion,assignment_reason,issue_kind,manual_file_id,status,resolution_note,created_at,updated_at) " +
+                        "values(?,?,?,NULL,'수동 확인',?,NULL,'보존할 수동 근거','직접 확인','GIT_EMAIL_MAPPING','MANUAL_REVIEW',?,?,?,?,?) returning id",
+                        Long.class, activeProject, commit, owner, path, file, state, note, attempted, finished);
+                manualIssues.put(reason, issue);
+                migrationJdbc.update("insert into audit_event(actor_id,action,target_type,target_id,detail,created_at) " +
+                        "values(?,'ISSUE_STATUS_CHANGED','REVIEW_ISSUE',?,?,?)", owner, issue, "OPEN -> " + state + "; reason=" + note, finished);
+            }
+            for (var entry : projects.entrySet()) {
+                String state = entry.getKey();
+                boolean queued = "QUEUED".equals(state);
+                boolean running = "RUNNING".equals(state);
+                Long run = queued ? null : activeRun;
+                if (!queued && !running) {
+                    run = migrationJdbc.queryForObject("insert into review_run(project_id,status,started_at,finished_at,reviewed_commits,error_message) " +
+                            "values(?,?,?,?,0,?) returning id", Long.class, entry.getValue(), "SUCCEEDED".equals(state) ? "SUCCEEDED" : "FAILED",
+                            attempted, finished, "SUCCEEDED".equals(state) ? null : "이전 실패 또는 권한 취소 근거");
+                }
+                boolean scheduled = queued || "FAILED".equals(state);
+                migrationJdbc.update("insert into review_request(project_id,request_id,claim_token,state,source,requested_by,requested_at,available_at," +
+                        "last_attempt_at,attempt_count,run_id,finished_at,result_code) values(?,?,?,?,?,?,?,?,?,?,?,?,?)", entry.getValue(),
+                        UUID.randomUUID().toString(), queued ? null : UUID.randomUUID().toString(), state, scheduled ? "SCHEDULED" : "MANUAL",
+                        scheduled ? null : (running ? owner : administrator), requested, available, queued ? null : attempted,
+                        queued ? 0 : 3, run, queued || running ? null : finished,
+                        queued || running ? null : "SUCCEEDED".equals(state) ? "BATCH_COMPLETED" : "FAILED".equals(state) ? "REVIEW_FAILED" : "PROJECT_INELIGIBLE");
+            }
+            migrationJdbc.update("insert into audit_event(actor_id,action,target_type,target_id,detail,created_at) " +
+                    "values(?,'REVIEW_STARTED','REVIEW_RUN',?,?,?)", owner, activeRun, "project=" + activeProject, attempted);
+            migrationJdbc.update("insert into audit_event(actor_id,action,target_type,target_id,detail,created_at) " +
+                    "values(?,'REVIEW_SUCCEEDED','REVIEW_RUN',?,?,?)", owner, historicalRun, "이전 배치 완료",
+                    Timestamp.from(requested.toInstant().minusSeconds(60)));
+
+            // V13 adds nullable columns to nonempty review_run. Compare its actual V12
+            // columns, not SELECT * or a whole-row JSON hash that would change normally.
+            var preservedQueries = new LinkedHashMap<String, String>();
+            for (String table : List.of("app_user", "project", "reviewed_commit", "review_issue", "manual_review_file", "audit_event", "git_author_mapping")) {
+                preservedQueries.put(table, "select * from " + table + " order by id");
+            }
+            preservedQueries.put("review_request", "select * from review_request order by project_id");
+            preservedQueries.put("review_run", "select id,project_id,status,started_at,finished_at,reviewed_commits,error_message from review_run order by id");
+            var before = new LinkedHashMap<String, List<Map<String, Object>>>();
+            preservedQueries.forEach((table, query) -> before.put(table, migrationJdbc.queryForList(query)));
+            var migrationHistory = migrationJdbc.queryForList("select * from flyway_schema_history order by installed_rank");
+            assertThat(migrationHistory).hasSize(12);
+            var identityMaxima = new LinkedHashMap<String, Long>();
+            for (String table : preservedQueries.keySet()) {
+                if (!"review_request".equals(table)) {
+                    identityMaxima.put(table, migrationJdbc.queryForObject("select max(id) from " + table, Long.class));
+                }
+            }
+
+            Flyway.configure().dataSource(migrationSource).schemas(migrationSchema).defaultSchema(migrationSchema)
+                    .target("13").load().migrate();
+
+            preservedQueries.forEach((table, query) -> assertThat(migrationJdbc.queryForList(query)).as("Preserved V12 %s", table).isEqualTo(before.get(table)));
+            assertThat(migrationJdbc.queryForList("select * from flyway_schema_history where installed_rank<=12 order by installed_rank"))
+                    .isEqualTo(migrationHistory);
+            assertThat(migrationJdbc.queryForList("select version from flyway_schema_history where success=true order by installed_rank", String.class))
+                    .containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13");
+            assertThat(migrationJdbc.queryForObject("select count(*) from review_run where progress_stage is not null " +
+                    "or progress_updated_at is not null or last_saved_at is not null", Long.class)).isZero();
+            assertThat(migrationJdbc.queryForObject("select count(*) from review_request q join review_run r on r.id=q.run_id " +
+                    "and r.project_id=q.project_id where q.state='RUNNING' and r.status='RUNNING'", Long.class)).isEqualTo(1);
+            assertThat(migrationJdbc.queryForObject("select count(*) from review_issue i join manual_review_file f " +
+                    "on f.id=i.manual_file_id and f.reviewed_commit_id=i.reviewed_commit_id and f.project_id=i.project_id " +
+                    "where i.issue_kind='MANUAL_REVIEW' and i.severity is null and i.line_number is null and i.resolution_note<>''", Long.class)).isEqualTo(2);
+            assertThatThrownBy(() -> migrationJdbc.update("update review_issue set reviewed_commit_id=? where id=?", aiCommit,
+                    manualIssues.get("SOURCE_DIFF_UNAVAILABLE"))).isInstanceOf(DataIntegrityViolationException.class);
+            assertThatThrownBy(() -> migrationJdbc.update("update review_request set state='QUEUED' where project_id=?", activeProject))
+                    .isInstanceOf(DataIntegrityViolationException.class);
+            assertThatThrownBy(() -> migrationJdbc.update("insert into reviewed_commit(project_id,commit_sha,summary) values(?,?,?)",
+                    activeProject, "a".repeat(40), "중복 저장 금지")).isInstanceOf(DataIntegrityViolationException.class);
+            assertThatThrownBy(() -> migrationJdbc.update("update review_run set progress_stage='UNKNOWN' where id=?", activeRun))
+                    .isInstanceOf(DataIntegrityViolationException.class);
+
+            var migrationTransactions = new TransactionTemplate(new DataSourceTransactionManager(migrationSource));
+            migrationTransactions.setTimeout(10);
+            migrationJdbc.execute("alter table audit_event add constraint reject_migration_note_audit check(action <> 'MANUAL_REVIEW_NOTE_UPDATED')");
+            try {
+                assertThatThrownBy(() -> migrationTransactions.executeWithoutResult(status ->
+                        new IssueService(migrationJdbc).changeStatus(manualIssues.get("SOURCE_DIFF_UNAVAILABLE"), "RESOLVED",
+                                new ReviewActor(owner, "migration-owner", false), "이 사유는 감사 실패와 함께 되돌아가야 합니다")))
+                        .isInstanceOf(DataIntegrityViolationException.class);
+            } finally { migrationJdbc.execute("alter table audit_event drop constraint reject_migration_note_audit"); }
+            // Generated identities must continue beyond populated V12 values for every
+            // identity table. Roll back only new rows; sequence advancement is expected.
+            migrationTransactions.executeWithoutResult(status -> {
+                long newUser = migrationJdbc.queryForObject("insert into app_user(username,password_hash,git_username,role) " +
+                        "values('fresh-migration','non-authenticating-fixture','fresh-migration','USER') returning id", Long.class);
+                assertThat(newUser).isGreaterThan(identityMaxima.get("app_user"));
+                long newProject = migrationJdbc.queryForObject("insert into project(name,repository_url,provider,repository_host,repository_path,owner_id,status) " +
+                        "values('Fresh migration','https://github.com/migration/fresh','GITHUB','github.com','migration/fresh',?,'APPROVED') returning id", Long.class, newUser);
+                assertThat(newProject).isGreaterThan(identityMaxima.get("project"));
+                long newRun = migrationJdbc.queryForObject("insert into review_run(project_id,status) values(?,'RUNNING') returning id", Long.class, newProject);
+                assertThat(newRun).isGreaterThan(identityMaxima.get("review_run"));
+                long newCommit = migrationJdbc.queryForObject("insert into reviewed_commit(project_id,commit_sha,summary,coverage_type) " +
+                        "values(?,'" + "f".repeat(40) + "','Fresh manual fixture','MANUAL_ONLY') returning id", Long.class, newProject);
+                assertThat(newCommit).isGreaterThan(identityMaxima.get("reviewed_commit"));
+                long newFile = migrationJdbc.queryForObject("insert into manual_review_file(reviewed_commit_id,project_id,file_path,new_object_sha,new_mode,reason_code) " +
+                        "values(?,?,'fresh.bin',?,'100644','AI_INPUT_LIMIT') returning id", Long.class, newCommit, newProject, "f".repeat(40));
+                assertThat(newFile).isGreaterThan(identityMaxima.get("manual_review_file"));
+                long newIssue = migrationJdbc.queryForObject("insert into review_issue(project_id,reviewed_commit_id,assignee_id,severity,title,file_path,description,suggestion,issue_kind,manual_file_id) " +
+                        "values(?,?,?,NULL,'Fresh manual','fresh.bin','Evidence','Inspect','MANUAL_REVIEW',?) returning id", Long.class, newProject, newCommit, newUser, newFile);
+                assertThat(newIssue).isGreaterThan(identityMaxima.get("review_issue"));
+                long newAudit = migrationJdbc.queryForObject("insert into audit_event(actor_id,action,target_type,target_id,detail) " +
+                        "values(?,'RESTORE_DRILL','REVIEW_ISSUE',?,'Synthetic insert') returning id", Long.class, newUser, newIssue);
+                assertThat(newAudit).isGreaterThan(identityMaxima.get("audit_event"));
+                long newMapping = migrationJdbc.queryForObject("insert into git_author_mapping(user_id,repository_origin,author_email) " +
+                        "values(?,'https://github.com','fresh-author@example.invalid') returning id", Long.class, newUser);
+                assertThat(newMapping).isGreaterThan(identityMaxima.get("git_author_mapping"));
+                assertThat(migrationJdbc.update("insert into review_request(project_id,request_id,state,source,requested_at,available_at) " +
+                        "values(?,?,'QUEUED','SCHEDULED',?,?)", newProject, UUID.randomUUID().toString(), requested, available)).isEqualTo(1);
+                status.setRollbackOnly();
+            });
+            preservedQueries.forEach((table, query) -> assertThat(migrationJdbc.queryForList(query)).as("Unchanged after rejected writes/rolled-back inserts: %s", table)
+                    .isEqualTo(before.get(table)));
+        } finally {
+            // This independently named fixture never resets the suite's schema or public.
+            if (migrationSchema.matches("queue_test_[0-9a-f]{32}")) admin.execute("drop schema " + migrationSchema + " cascade");
         }
     }
 
