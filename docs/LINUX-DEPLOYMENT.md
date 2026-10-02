@@ -131,6 +131,6 @@ sha256sum "$backup_dir/database.dump" > "$backup_dir/database.sha256"
 - 실제 DB 최소권한, DB 지연/중단 후 복귀, backup/restore 및 migration/rollback 리허설.
 - 운영 모델 품질, 실제 GitLab/LiteLLM 인증, 예상 동시성/대형 저장소 처리시간·메모리·RPO/RTO.
 
-2026-09-26 Windows Git Bash의 문법·artifact fixture5건·WAR 구조 검증에 이어, 2026-10-02 전용 WSL Linux에서 실제 서비스 구동·합성 HTTPS·백업/새 DB 복원 후 로그인을 확인했다. 앱 계정의 DB 클러스터 특권 부재, root0600 환경파일, WAR·Java 쓰기 차단도 검사했다. 위 서버별 항목 중 운영 부팅·외부 TLS/갱신·장기 장애·업그레이드와 모델 품질은 아직 미검증이다. 서버 검증과 릴리스 점검이 끝나기 전에는 운영 완료로 표시하지 않는다.
+2026-09-26 Windows Git Bash의 문법·artifact fixture5건·WAR 구조 검증에 이어, 2026-10-02 전용 WSL Linux에서 실제 서비스 구동·합성 HTTPS·백업/새 DB 복원 후 로그인을 확인했다. 앱 계정의 DB 클러스터 특권 부재, root0600 환경파일, WAR·Java 쓰기 차단도 검사했다. V12의 합성 계정·프로젝트·대기 요청을 V13으로 올리고 업데이트 전 백업을 새 DB에 복원해 구 WAR로 복귀하는 리허설도 통과했다. 위 서버별 항목 중 운영 부팅·외부 TLS/갱신·장기 장애·운영 데이터 규모의 업그레이드와 모델 품질은 아직 미검증이다. 서버 검증과 릴리스 점검이 끝나기 전에는 운영 완료로 표시하지 않는다.
 
 [CI 설정](../.github/workflows/verify.yml)은 기존 secret 검사와 PostgreSQL 필수 검증이 성공한 뒤 배포 도구 fixture5건, Bash 문법, 그 실행에서 빌드한 WAR의 구조를 확인한다. 이때 계산한 해시는 CI 산출물 자체의 구조 검사용이며 서버 전송 후 독립된 승인 해시 비교를 대체하지 않는다. 이 단계는 서비스 설치·실행·배포를 하지 않으며 원격 GitHub Actions 실행 결과는 별도로 확인한다.

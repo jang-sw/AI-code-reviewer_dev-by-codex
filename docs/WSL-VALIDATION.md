@@ -159,7 +159,7 @@ WSL에서 systemd가 동작해도 서비스만으로 WSL 인스턴스가 계속 
 |---|---|
 | HTTPS 초기 사용자 흐름 | 가입·승인·로그인·대기 요청 등15개 확인 PASS |
 | bootstrap 제거·서비스 재시작 | 기존 관리자 재로그인 등9개 확인 PASS |
-| 전달 헤더 위조 | IP quota 관련6개 확인 PASS |
+| 전달 헤더 위조 | HTTPS 공통5개와 IP quota1개 확인 PASS |
 | systemd 강제 종료 후 자동 복구 | SIGKILL 후17.608초, 복구 후 HTTPS9개 확인 PASS |
 | systemd 정상 중지 | 정상 종료143을 실패로 표시하던 단위에 `SuccessExitStatus=143` 반영 후 `inactive`·`Result=success` 확인 |
 | 서비스 DB 백업·별도 앱 복원 | 새 UUID DB와 별도 WAR 포트8081에서 HTTPS9개 확인 PASS; 소유권 확인 후 새 복원 DB만 삭제, 원본 보존 |
@@ -170,6 +170,22 @@ HTTPS는 loopback의 `reviewer.test`와 합성 CA/SAN 인증서로 검증했다.
 
 WSL은 systemd 서비스만으로 배포판 실행을 유지하지 않아 이번 실행이 소유한 foreground keeper를 사용했다. 시험 hostname 보존을 위해 전용 배포판에 `generateHosts=false`와 전용 hosts 매핑을 적용했다. 이 준비는 운영 Linux의 부팅 검증을 대체하지 않는다. 세션 끝의 서비스·클러스터·keeper·시험 파일 정리 결과는 [WORK.md](../WORK.md)에 별도로 기록하며, 위 시험 통과만으로 전체 정리가 끝났다고 간주하지 않는다.
 
+### 후보 설치·V12→V13 업데이트·백업 복귀
+
+소스 기록 `f623fd27e4fa5a2fb05a43dfb33f287059ca09ad`와 위 최종 WAR로 Linux 후보를 두 번 생성해 동일한 압축 바이트를 확인했다. 아카이브 SHA-256은 `eba79eb01888675584525424aa29d023936b65850bfbd43ed9bf1bef53aec03e`다. 추출 전에 독립 실행 기록의 해시·23개 정규 파일·내부 전체 체크섬·고정 소유자/권한/시간·manifest·WSL 문서 포함을 확인하고 전용 `/opt/ai-reviewer/releases/wsl-session8-final`에 설치했다. 소스 식별자는 도구의 운영자 제공 기록이며 WAR 빌드 서명이나 릴리스 승인은 아니다.
+
+구버전 기준 `ec05f9b1c43479555377a97bc7217c159e5fddaa`는 별도 Linux 소스 디렉터리에서 `-DskipTests package`로 리허설용 WAR를 만들었다. 이 명령을 구버전 전체 테스트 통과로 세지 않는다. 구 WAR 해시는 `783971202a6f1ccc9d45580f1308f2a2ad8ac040dd8ddea4bb0d70f8949da57c`다. 원본 서비스 DB와 별개인 새 UUID DB, 임시 systemd 단위와 포트8082에서 다음을 확인했다.
+
+1. 구 WAR로 V1~V12를 적용하고 HTTPS 가입·관리자 승인·프로젝트 승인·QUEUED 요청 등15개 확인을 통과했다.
+2. 앱을 중지하고9개 업무 테이블 행의 합산 해시와 V1~V12 migration 기록(checksum 포함)의 해시를 기록한 뒤 root0600 custom dump를 만들었다.
+3. 같은 시험 DB에 최종 후보 WAR를 기동해 V13을 적용했다. HTTPS 기존 계정·프로젝트·요청 확인9개, 기존9개 업무 테이블의 행 지문과 V1~V12 checksum 보존, 새 진행 정보3개 열을 검증했다.
+4. 다시 중지한 뒤 **업데이트 전 백업을 또 다른 새 UUID DB로 복원**하고 구 WAR로 기동했다. HTTPS9개와 정확한 V1~V12·기존 업무 행 보존을 확인했다. V13 DB를 역방향 migration하지 않았다.
+5. 앱을 중지하고 DB OID·owner·실행 표식·클러스터 동일성·연결0을 대조해 시험 DB2개만 제거했다. 원본 `ai_reviewer`의10개 테이블 지문과 DB 식별자는 전후 일치했다.
+
+이 리허설의 worker·scheduler는 OFF이고 저장된 `review_run`은0행이다. 실행 중 리뷰나 축적된 리뷰 결과를 포함한 모든 업그레이드 경로를 입증하지 않는다. 관련 데이터 보존 회귀와 운영 서버의 실제 migration 정책은 별도로 유지한다. DB 증거는 `/var/lib/ai-reviewer-validation/be8791ed11c54c5485151331f74d3fda/upgrade-record.json`, HTTPS 결과는 Linux checkout의 `.local/service/upgrade/https-{old,final,rollback}.json`에 있다.
+
+최종 정리에서 원본/복원/업데이트 앱, Nginx, 서비스용PG와 부모 검증PG를 모두 중지했다. Nginx 자동 시작을 해제하고 loopback11개 시험 포트의 연결 불가·검증 lock 부재·소유 복원 DB 부재를 확인했다. 원본 합성 DB, 비밀 설정과 백업은 전용 WSL의 제한된 경로에 보존한다. 정리 요약은 `.local/service/session8-validation-summary.json`에 기록한다.
+
 ### 남은 검증
 
-운영 Linux 서버의 실제 부팅·지속 실행·공개 네트워크/TLS와 인증서 갱신, 업그레이드·rollback, 운영 백업 암호화·보존·RPO/RTO, 실제 GitLab/LiteLLM 인증과 모델 품질, 장시간 부하·다중 인스턴스 정책 검증은 남아 있다. 이번 WSL 합성 환경의 통과는 이 항목이나 릴리스 승인을 대신하지 않는다.
+운영 Linux 서버의 실제 부팅·지속 실행·공개 네트워크/TLS와 인증서 갱신, 운영 데이터 규모의 업그레이드·rollback, 백업 암호화·보존·RPO/RTO, 실제 GitLab/LiteLLM 인증과 모델 품질, 장시간 부하·다중 인스턴스 정책 검증은 남아 있다. 이번 WSL 합성 환경의 통과는 이 항목이나 릴리스 승인을 대신하지 않는다.

@@ -2,9 +2,9 @@
 
 - 작업: 실사용 AI 소스코드 리뷰 시스템. **개발 중, 릴리스 완료 아님.**
 - 이번 회차: 2026-10-02 16:08 KST 시작, 최대 18:08 KST까지 구현·검증 후 인계한다.
-- 기록 기준: `main` / `d4a2352`. 이전 회차의 Linux 검증 도구·테스트 2개 미추적 파일을 보존하고 이어간다. 이전 이력과 커밋은 모두 미푸시.
+- 기록 기준: `main` / `f623fd2` 이후 검증 기록. 회차 시작은 `d4a2352`와 Linux 검증 도구·테스트 2개 미추적 파일이었으며 이를 보존해 검증·커밋했다. 이전 이력과 이번 커밋은 모두 미푸시.
 - 이번 완료 조건: 사용자 요청에 따라 WSL Linux 검증 환경을 구축하고 Docker 없이 기존 Java25/PostgreSQL17 빌드·배포·복구 검증을 수행한다. 운영 서버 배포와 실제 모델 품질 승인은 별도다.
-- 이번 단계: WSL 전체 빌드·복구·systemd/HTTPS 검증과 Linux 검증 도구를 로컬 커밋했다. 후보의 Linux 재현 생성도 통과했으며 새 배포 안내에서 참조하는 WSL 문서를 후보 고정 목록에 추가했다. 별도 합성 DB의 V12→V13 업데이트와 백업을 통한 구버전 복귀를 추가 검증한다. 운영 배포·실제/유료 모델 호출 없음. LiteLLM 주소·모델은 아직 미정이다.
+- 이번 단계: WSL 전체 빌드·복구·systemd/HTTPS와 후보 설치, 별도 합성 V12→V13 업데이트·백업을 통한 구버전 복귀까지 통과했다. 코드·도구를 로컬 커밋했고 시험용 앱·Nginx·PG를 중지해11개 포트 연결 불가를 확인했다. 소유 keeper도 PID/시작 시각 대조 후 종료했다. 운영 배포·실제/유료 모델 호출 없음. LiteLLM 주소·모델은 아직 미정이며 제품은 계속 개발 중이다.
 - 확정 요구사항: `docs/REQUIREMENTS.md`. 내부 이슈함 우선, 최초 전체 이력, Java25/Spring/Maven/JSP/PostgreSQL 유지.
 - 재개 시 이 문서와 실제 Git 상태를 대조하고 아래 다음 작업부터 진행한다. 모든 릴리스 항목 검증 전 완료라고 보고하지 않는다.
 
@@ -54,7 +54,8 @@
 - 별도 서비스 DB17/reviewer_service:55449와 클러스터 특권 없는 계정, 전용 앱 UID·root0600 환경파일·앱의 WAR/Java 쓰기 차단·state/runtime 쓰기·Flyway13 확인. systemd SIGKILL 자동 복구17.608초, HTTPS initial15·bootstrap 제거/재시작 resume9·위조 전달헤더 quota6·강제 종료 뒤 resume9·새 UUID DB 복원 별도 WAR의 HTTPS resume9 모두 통과. 합성 CA/SAN 검증을 우회하지 않았으며 외부 포트 개방·실제 Git/AI 호출 없음. 복원 DB만 소유권 확인 후 제거하고 원본 DB를 보존했다. 서비스 시험 WAR는 최초 Linux 빌드 `35325503bc4e6605c91bb7874b3fa1213f4c5ca172b920337031a875480b3067`이며 최종 빌드와 제품 코드는 같다.
 - 발견/수정: 백업 OID가 PG JSON에서 문자열이어서 SQL bigint 변환을 추가했고, 소유권 미확정으로 보존했던 새 빈 DB2개는 정확한 OID/owner/빈 관계를 확인한 후 제거했다. JDBC 취소 시험1건이 socket timeout으로 실패하여 쿼리1초·관측5초는 유지하고 socket3→6초 및 취소 전후 동일 backend PID 검증을 추가했다. 위 최종 전체 재검증으로 해소했다. CPU 부하를 원인으로 확정하지 않는다. systemd 정상 종료143 실패 표시를 `SuccessExitStatus=143`으로 수정한 후 정상 중지 `inactive/Result=success` 확인. 일회성 복원 helper가 중지 후 상태값이 반드시143이라고 가정한 마지막 assertion은 실패했지만, HTTPS9개·정상 중지 성공·원복·소유 DB 정리는 각각 확인했다.
 - 초기 설치 helper의 클러스터 이름/주소 인용과 WSL 재기동 뒤 수동 DB·hosts 복원 문제를 수정했다. 전용 hosts와 `generateHosts=false`, 검증 중 소유 foreground keeper를 사용했다. 제품 소스 오류·운영 부팅 검증과 구분한다. 관련 안전 코드의 독립 읽기 검토에서 추가 차단 결함 없음.
-- Linux 최종 WAR의 구조/체크섬·artifact fixture5건·systemd 단위 검사 통과. 최초 Linux 후보2개 바이트/외부체크섬 일치 확인 후, 패키지 안에서도 새 WSL 문서 링크가 열리도록 고정 목록에 추가했다(23개 파일). 변경 후 Windows/Linux 후보 fixture26건씩 통과. 실제 후보 설치·업데이트/rollback 결과는 아직 수집 중이다.
+- Linux 최종 WAR의 구조/체크섬·artifact fixture5건·systemd 단위 검사 통과. 패키지의 WSL 문서 링크를 위해 고정 목록을23파일로 늘린 후 Windows/Linux 후보 fixture26건씩 통과했다. 최종 Linux 후보2개 바이트가 같고23파일 전체 체크섬·metadata·manifest 확인 후 설치했다. 후보 소스 기록f623fd2, 아카이브 SHA256 `eba79eb01888675584525424aa29d023936b65850bfbd43ed9bf1bef53aec03e`; `.local/session8-candidate-final-first`·`second`는 Linux에 보존한다.
+- 구버전 ec05f9b를 별도 Linux 디렉터리에서 테스트 생략 리허설 WAR로 빌드했다(구버전 전체 재검증 아님). 새 UUID DB에서 V12의 계정/프로젝트/QUEUED 생성→중지/backup→최종후보로V13 적용→중지/또새DB에V12백업복원→구WAR복귀를 통과했다. HTTPS15/9/9, V1~V12 checksum과9업무테이블 행 보존·V13진행3열·원본ai_reviewer의10테이블 지문 보존 확인. worker/scheduler OFF·review_run0행인 범위로 한정한다. 소유DB2개만정리,원본과root0600backup보존. 세부증거는 `docs/WSL-VALIDATION.md`와 Windows `.local/session8-validation-summary.json`에 기록했다.
 
 ### 이전 회차: WSL 구성요소 설치·재부팅 대기
 
@@ -130,7 +131,7 @@
 
 ## 다음 작업
 
-0. WSL Linux 설치·실제 PG/세 WAR·systemd/TLS·새 DB 복원 검증은 완료했다. 재개 시 전용 배포판과 소유 서비스 상태·소스 동기화를 확인한다. 다음 Linux 작업은 검증된 후보의 업데이트·migration/rollback 리허설과 운영 서버별 부팅·인증서/보존 정책이다. WSL의 결과를 운영 서버 승인으로 대체하지 않는다.
+0. WSL 설치·실제PG/세WAR·systemd/TLS·복원·후보 설치·합성V12→V13/backup rollback은 통과했다. 재개 시 전용 배포판·서비스 상태·소스 동기화를 확인한다. 다음 Linux 검증은 실제 리뷰/이슈가 누적된 데이터와 실행 중 요청을 포함하는 업데이트·복귀, 운영 서버별 부팅·인증서/보존 정책이다. WSL의 결과를 운영 서버 승인으로 대체하지 않는다.
 1. 공개 GitHub/GitLab 바이너리·빈 파일 실서비스5건은 통과했다. 실제 대형/설치형/비공개 응답으로 호환 범위를 확대하며 전체 변경 경로를 증명할 수 없는 응답이나 API 장애는 계속 실패 처리한다.
 2. LiteLLM 주소·모델이 정해지면 준비된 dry-run으로 예산을 확인하고, 승인된 호출 범위에서 합성 평가와 사람의 의미 검토를 진행한다. 실제 설치형 GitLab·비공개 GitHub 연결과 운영 모델 품질도 남아 있다.
 3. 실제 대형 저장소 부하/API할당량·다중 인스턴스 장시간 공정성/지연·장기 네트워크 단절·모니터링/보존 정책 구현·검증. 로컬 단일 WAR 중단과 DB fast stop 후 복구는 `docs/QUEUE-VALIDATION.md`·`docs/DB-RECOVERY-VALIDATION.md` 범위로 통과했다.
@@ -141,5 +142,5 @@
 - 운영 대상은 사용자 답변으로 Linux 서버, 도커 미사용으로 확정했다(2026-09-26). 사용자 요청에 따른 전용 WSL2 Ubuntu 로컬 Linux 환경 구축과 설치/복구 검증은 2026-10-02 수행했다. 실제 서버 배포는 별도 승인 대상이다.
 - origin: jang-sw/code-reviewer_by-codex. main 직접 푸시 별도 승인 없음 → 로컬 커밋만, 푸시/배포 없음.
 - `.local/pg-test`: Windows 개발검증 전용127.0.0.1:55432. Windows `.local/pg-validation` 및 staged snapshot의pg-validation:55439. Linux PGDATA는 Linux 홈의 별도 checkout에만 만들고 Windows PGDATA를 공유하지 않는다.
-- `.local`은 Git 제외. Linux 부모 검증의 소유 WAR/schema/PG는 정리됐으며 서비스 원본 합성 DB와 root 전용 설정/백업 증거는 전용 WSL에 보존한다. 별도 systemd/Nginx/PG 및 keeper의 최종 정리는 진행 중이다. 사용자 Windows Ollama와 별도55432 PG는 변경하지 않았고 Windows 재부팅은 수행하지 않았다.
+- `.local`은 Git 제외. Linux 부모 WAR/schema/PG와 복원용 UUID DB들은 정리했다. 원본/복원/업데이트 앱·Nginx·서비스 PG를 중지하고80/443/8080~8082/18089~18092/55439/55449 연결 불가·검증 lock 부재를 확인했다. 앱 unit은 disabled, Nginx 자동 시작 해제, 서비스 PG는 manual이다. 원본 합성 DB·root 전용 설정/백업·후보·시험 기록은 전용 WSL에 보존한다. 소유 keeper도 종료했다. 사용자 Windows Ollama/55432 PG를 변경하지 않았고 Windows 재부팅은 수행하지 않았다.
 - 런타임 Git 수집은 매번 pinned 전체 이력을 재검증, 기본1000페이지/metadata32MiB/저장SHA131072개 안전 한도. 제한을 자동 확장/절삭하지 않는다.
