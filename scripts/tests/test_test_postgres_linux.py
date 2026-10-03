@@ -54,6 +54,51 @@ class LinuxPostgresSafetyTest(unittest.TestCase):
         self.args.expected_previous_war_sha256 = hashlib.sha256(b'previous synthetic WAR').hexdigest()
         (self.workspace / 'scripts' / 'verify-review-upgrade.py').write_text('# synthetic fixture', encoding='utf-8')
 
+    def test_shared_auth_cli_defaults_and_selected_ports_reject_collisions(self):
+        args = MODULE.arguments(['--pg-bin', str(self.pg_bin), '--java', str(self.args.java), '--shared-auth'])
+        self.assertTrue(args.shared_auth)
+        self.runner.args = args
+        self.assertEqual(self.runner.selected_ports(), [55439, 18094, 18095])
+        for port in (55439, 18094):
+            args.shared_auth_port_b = port
+            with self.subTest(port=port), self.assertRaises(MODULE.SafetyError):
+                self.runner.selected_ports()
+
+    def test_shared_auth_is_opt_in_and_runs_after_clean_build_and_pg_gate(self):
+        events = []
+        with patch.object(self.runner, 'command', side_effect=lambda *a, **k: events.append('build/gate')), \
+                patch.object(self.runner, 'drill', side_effect=lambda *a: events.append(a)):
+            self.runner.verify()
+            self.assertEqual(events, ['build/gate', 'build/gate'])
+            events.clear()
+            self.args.shared_auth = True
+            self.args.shared_auth_port_a, self.args.shared_auth_port_b = 18094, 18095
+            self.runner.verify()
+        self.assertEqual(events, ['build/gate', 'build/gate',
+                                 ('shared-auth', ['--port-a', '18094', '--port-b', '18095'])])
+
+    def test_shared_auth_child_requires_confirmed_cleanup_as_well_as_pass(self):
+        (self.workspace / 'scripts' / 'verify-shared-auth.py').write_text('# synthetic fixture', encoding='utf-8')
+        self.runner.logs.mkdir()
+        report = self.runner.logs / ('shared-auth-' + self.runner.token + '.json')
+        for changed in ({'cleanupFailed': True}, {'checks': {}},
+                        {'checks': {'ownedWarsStopped': True, 'ownedSchemaRemoved': False}}, {}):
+            def child(command, **kwargs):
+                self.assertTrue(kwargs['cooperative_cancel'])
+                self.assertNotIn('--pg-ctl', command)
+                self.assertEqual(command[-4:], ['--port-a', '18094', '--port-b', '18095'])
+                outcome = {'result': 'PASS', 'externalServicesUsed': False, 'paidAiUsed': False,
+                           'cleanupFailed': False, 'checks': {'ownedWarsStopped': True, 'ownedSchemaRemoved': True}}
+                outcome.update(changed)
+                report.write_text(json.dumps(outcome), encoding='utf-8')
+            with self.subTest(changed=changed), patch.object(self.runner, 'command', side_effect=child):
+                if changed:
+                    with self.assertRaises(MODULE.SafetyError):
+                        self.runner.drill('shared-auth', ['--port-a', '18094', '--port-b', '18095'])
+                else:
+                    self.runner.drill('shared-auth', ['--port-a', '18094', '--port-b', '18095'])
+            report.unlink()
+
     def test_upgrade_requires_explicit_previous_war_and_recorded_hash_together(self):
         base = ['--pg-bin', str(self.pg_bin), '--java', str(self.args.java)]
         self.enable_upgrade()

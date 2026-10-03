@@ -40,4 +40,29 @@ V14 migration은 기존 사용자·프로젝트·리뷰·이슈를 보존하고 
 
 2026-10-03 WSL에서 빠른 H2/필터23건과 전체 Java924건 중914건이 통과했다(외부/선택 부하10skip). 필수PG5suite gate와 신규 PostgreSQL14건에서 서로 다른 연결의 계정/IP 동시 상한·용량 경쟁·rollback·잠금 제한·잠금 후 DB 시계·설정 충돌·V13 기존 자료 보존을 검증했다. 실제12테이블 백업/새 DB 복원과 V12→V14 WAR 업그레이드·V12백업복귀도 통과했다. 보고서는 Linux `.local/linux-postgres-9be02529b7c5458c9670100d1fc6655d`에 보존한다.
 
-두 실행 WAR의 HTTP 공유·재시작 검증은 진행 중이다. 동시 DB 테스트나 H2 통과를 실제 다중 서버 HTTP 검증으로 대신하지 않는다.
+같은 날 `--shared-auth` 실행은 전체 Java924건 중914통과/10skip·필수PG gate 뒤, 실제 WAR 두 개의 다음 동작을60.882초에 확인했다. A는1회, B는강제 종료를 포함해2회 시작했다. Linux 보고서는 `.local/linux-postgres-56b7ff70bad6457ea422bdea2294b5a9/shared-auth-56b7ff70bad6457ea422bdea2294b5a9.json`이다.
+
+- 두 서버를 번갈아 호출한 동일 계정10회 뒤 양쪽429, 거부 시 횟수·만료 불변, B 재시작 후에도 차단 유지
+- 성공 로그인에서 계정 횟수만 제거하고 IP 유지, 가입10회 뒤 양쪽429·승인 대기 계정10명, 로그인/가입 scope 독립
+- 다른 계정을 사용해도 두 서버 합산 IP100회 뒤 양쪽429
+- 소유 버킷 테이블의 일시적 이름 변경으로 저장소 오류를 주입했을 때 양쪽 로그인/가입503·고정 안내·비밀/SQL 비노출·계정 미생성, 원복 뒤 기존 제한 유지
+- SQL로 시험용 만료를 앞당긴 뒤 정상 요청 재개, WAR 둘 중지·소유 schema 제거·부모PG/lock 정리
+
+HTTP 호출은 순차 교차 요청이며 실제 동시 증가 경쟁은 앞의 PostgreSQL 테스트에서 검증했다. SQL 만료·테이블 이름 변경은 명시적인 시험 주입이고 시간 경과나 실제 네트워크 단절을 대신하지 않는다. 이 시험은 loopback HTTP이며 운영 ingress/TLS·서버 장애 조합·장시간 처리량을 보증하지 않는다.
+
+### 재현
+
+전용 WSL 또는 Linux native checkout에서 일반 사용자로 실행한다. [WSL 환경·소유권 제한](WSL-VALIDATION.md)을 따르며 운영 DB를 지정하지 않는다. 부모 도구가 자신의 PostgreSQL17을 시작하고 clean 빌드·필수PG 검증 뒤 하위 도구를 호출한다.
+
+```sh
+python3 scripts/test-postgres-linux.py \
+  --pg-bin /usr/lib/postgresql/17/bin \
+  --java /usr/lib/jvm/temurin-25-jdk-amd64/bin/java \
+  --shared-auth
+```
+
+기본 WAR 포트는127.0.0.1:18094·18095이며 `--shared-auth-port-a`·`--shared-auth-port-b`로 바꿀 수 있다. 선택한 모든 DB/WAR 포트는 서로 달라야 하고 기존 서버가 사용 중이면 중지시키지 않고 거부한다. 다른 검증 옵션과 함께 선택할 수 있다. `scripts/verify-shared-auth.py`는 부모가 준비한 `reviewer_integration`에 이번 호출의 UUID schema만 만들며 외부 Git·AI를 호출하지 않는다.
+
+하위 도구는 schema OID·owner·표식을 확인하고 두 WAR의 종료가 확인된 뒤에만 schema를 제거한다. 소유권이 바뀌거나 종료를 확인할 수 없으면 실패로 보고하고 상태를 보존한다. 새0600 보고서는 기존 파일을 덮어쓰지 않으며 취소는 정리 후에도 FAIL/종료130을 유지한다. Windows/Linux의 도구 안전 경계17건과 부모 회귀43건을 포함한 전체 Python217건도 통과했다(Windows5skip, Linux10skip).
+
+별도 일회성 Linux harness는 두 서버와 B 재시작 뒤 실제 가입이 시작된 시점에 하위 도구로 SIGTERM을 보냈다.28.676초, WAR 시작1/2회 상태에서 FAIL/KeyboardInterrupt/종료130을 유지하며 두 WAR·소유 schema·부모PG/lock을 정리하고 원본12테이블 지문을 보존했다. `.local/linux-postgres-3544d6040dd945e08038dfac5b70c0a1/cancel-harness.json`에 기록했다. 이 취소 실행은 Maven을 다시 실행한 것이 아니며 SIGKILL·전원 장애의 모든 시점을 검증하지 않는다.

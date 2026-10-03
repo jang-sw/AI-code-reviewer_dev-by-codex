@@ -30,6 +30,7 @@ ALLOWLIST = (
     "deploy/linux/reviewer.env.example",
     "deploy/linux/verify-artifact.sh",
     "docs/AI-EVALUATION.md",
+    "docs/AUTH-LIMITING.md",
     "docs/CANDIDATE-PACKAGE.md",
     "docs/DEPENDENCY-AUDIT.md",
     "docs/LINUX-DEPLOYMENT.md",

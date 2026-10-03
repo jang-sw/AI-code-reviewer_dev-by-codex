@@ -79,6 +79,10 @@ dump와 WAR 로그는 Linux checkout의 `.local/review-upgrade-<UUID>` 아래에
 
 ## 실행 기록
 
+2026-10-03 V14 검증에서 전체 Java924건 중914통과/선택10skip, 필수PG5suite gate와12테이블 백업/새 DB 복원이 통과했다. V12→V14·새 DB V12복원/구 WAR 재개는74.763초/WAR6회 시작으로 통과했다. 첫 V14 로그인 전 정책2행·NULL 지문·빈 버킷, 기존 업무 행과 V1~V12 checksum 보존, A AI1회/B AI3회, 원본12테이블 보존·소유DB2개 제거·부모PG 종료를 확인했다.
+
+이 V14 실행의 WAR SHA256은 `1860d76f2a9d6f2ba8a84ef3a61428c5a30e3af56645bca772143a0be0b4e2f8`이고 구WAR는 아래 V13 기록과 같은 V12 시험용 파일이다. 보고서는 Linux `.local/linux-postgres-9be02529b7c5458c9670100d1fc6655d/review-upgrade-9be02529b7c5458c9670100d1fc6655d.json`에 보존한다. 아래 V13 시간·해시·취소 증거를 V14에서 실행한 것으로 바꾸어 해석하지 않는다.
+
 2026-10-03 KST, 전용 Ubuntu24.04.5·Temurin25.0.4.1·PG17.11·Python3.12.3에서 부모 `--backup-restore --review-upgrade`를 실행했다. Java 소스 기준은 `d67ea98`이며 부모·하위 검증 도구는 이번 회차 작업본이었다. Java907건 중897통과/선택10skip(외부7·부하3), 필수PG4suite gate와 별도10테이블 백업/복원 검증을 통과했다. 하위 업그레이드 시나리오는 WAR6회 시작,65.283초에 완료했다.
 
 | 항목 | 상태 |

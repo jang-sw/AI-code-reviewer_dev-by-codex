@@ -4,7 +4,7 @@
 - 이번 회차: 2026-10-03 08:37 KST 시작, 최대 10:37 KST까지 구현·검증 후 인계한다.
 - 기록 기준: `main` / `092c7b3`, 회차 시작 작업 트리 깨끗함. 이전 커밋은 미푸시.
 - 이번 완료 조건: 로그인·가입 시도 제한을 DB에서 공유하여 다중 서버·재시작 시 우회를 막는다. 기존 횟수/고정 창/성공 후 IP 보존/용량 정책과 인코딩 URL·CSRF 보호를 유지하고 DB 장애 시 차단, 만료 정리·설정 불일치·동시성·WSL 재시작을 검증한다.
-- 이번 단계: V14 공유 제한 구현·독립 리뷰·전체 Java/PG·백업/업그레이드 검증을 통과했다. 두 실제 WAR의 HTTP 공유·재시작·장애 검증과 재현 도구를 이어서 확인한다. 운영 배포·실제/유료 모델 호출 없음. LiteLLM 주소·모델은 미정이며 제품은 계속 개발 중이다.
+- 이번 단계: V14 공유 제한·두 실제 WAR의 HTTP/재시작/오류·취소 정리·백업/업그레이드·25파일 후보 검증을 마쳤다. 첫 기능 커밋은 `a3f1854`; 후속 도구·문서도 검토 후 로컬 커밋한다. 시험 WAR/PG·keeper는 중지됐고 운영 배포·실제/유료 모델 호출은 없다. LiteLLM 주소·모델은 미정이며 제품은 계속 개발 중이다.
 - 확정 요구사항: `docs/REQUIREMENTS.md`. 내부 이슈함 우선, 최초 전체 이력, Java25/Spring/Maven/JSP/PostgreSQL 유지.
 - 재개 시 이 문서와 실제 Git 상태를 대조하고 아래 다음 작업부터 진행한다. 모든 릴리스 항목 검증 전 완료라고 보고하지 않는다.
 
@@ -54,7 +54,11 @@
 
 - 빠른 H2/필터23건 통과. 전체 WSL Java924건 중914통과/선택10skip, 실패/오류0, 필수PG5suite gate 통과. 신규PG14건은 서로 다른 연결의 계정/IP 동시 상한·용량 경쟁·rollback·잠금 제한·잠금 후 DB 시계·정책 불일치·V13 보존을 검증했다. `.local/linux-postgres-9be02529b7c5458c9670100d1fc6655d`.
 - 같은 실행의12테이블 백업/새 DB 복원·identity/queue 삽입·원본 보존/복원DB 제거 통과. V12→V14 새 정책2행/빈 bucket·기존 업무와 migration checksum 보존→동일 요청 재개→새 DB V12복원/구WAR복귀를74.763초/WAR6회 시작으로 통과했다. 현재WAR SHA256 `1860d76f2a9d6f2ba8a84ef3a61428c5a30e3af56645bca772143a0be0b4e2f8`. 실제 Git/AI 대신 loopback 합성 fixture를 사용했다.
-- Python 호환 도구100건 중99통과/POSIX1skip, Linux 부모 선택 인자/보고서/정리 회귀43건 통과. 독립 읽기 리뷰에서 추가 차단 결함 없음. 두 실행 WAR의 인증 HTTP 검증은 진행 중이며 통과로 세지 않는다.
+- 후속 `--shared-auth` 부모도 Java924건 중914통과/10skip·필수PG5suite gate 통과. 두 실제 WAR에 순차 교차 HTTP로 계정10/가입10/IP100 공유·양쪽429·B 강제 재시작 뒤 유지·성공 계정만 삭제/IP보존·저장소 오류 주입 시 양쪽503/계정미생성·원복 후 기존quota/만료 후 정상화 확인.60.882초/A1회·B2회 시작, 소유WAR/schema·부모PG/lock 정리. Linux `.local/linux-postgres-56b7ff70bad6457ea422bdea2294b5a9`. 최종 재빌드 WAR SHA256 `4053cf49efb714462e93c5acd2baffb738f1d64d41bd11daa716380734237d5c`,42,008,768바이트. 앞선 업그레이드 WAR와 제품 소스는 같고 바이트는 구분한다.
+- 일회성 Linux harness의 실제 SIGTERM은 B 재시작 뒤 가입 중28.676초에 FAIL/KeyboardInterrupt/종료130 유지, WAR1/2회·소유schema·부모PG/lock 정리·원본12테이블 지문 보존을 통과했다. Maven 재실행이 아닌 취소 시험이다. `.local/linux-postgres-3544d6040dd945e08038dfac5b70c0a1/cancel-harness.json`.
+- 전체 Python217건: Windows212통과/POSIX5skip, Linux207통과/PowerShell10skip. 신규 도구 경계17건·부모43건·후보26건 포함, 실패/오류0. 독립 제품/도구 읽기 리뷰에서 추가 차단 결함 없음. PowerShell backup 구문·최종WAR 구조/체크섬도 통과했다. WAR 검사 첫 상대경로 입력은 실행 전 거부됐고 절대경로로 바로잡아 통과했다.
+- Linux 최종 후보2개 바이트 일치,25개 파일 전체 체크섬/manifest·고정UID/GID/시간·원본WAR·빈비밀설정 확인. 아카이브 SHA256 `647a526874ac21861b9a723f10cd154116c375d98a700921bca3a49ed68faad8`,38,003,455바이트. `.local/session10-candidate-{first,second}`와 `.local/session10-candidate-result.json`. 소스 기록은 제품 커밋 `a3f18549e114919330369ba05b958dcbd70d6967`이며 후속 문서 작업본도 포함했다. sourceRevision은운영자제공기록·releaseApproved=false이며 이번후보설치/운영배포는하지않았다.
+- 최종 증거는 Linux/Windows `.local/session10-validation-summary.json`에 보존한다.14개 시험포트 닫힘·검증PID/lock없음·서비스3개inactive/disabled·소유keeper PID/시작/UID/명령 확인 후 종료를 확인했다. 사용자 Windows Ollama/개발PG와 운영 서비스는 변경하지 않았다.
 
 ### 이전 회차: 누적 리뷰 데이터 업데이트·복귀
 
@@ -149,7 +153,7 @@
 
 ## 다음 작업
 
-0. WSL 설치·실제PG/세WAR·systemd/TLS·복원·후보 설치에 이어 저장 리뷰/중단 요청의 V12→V13 업데이트·새 DB V12백업 복귀까지 통과했다. 재개 시 배포판·서비스 상태·소스 동기화를 확인한다. 다음 로컬 기능 우선순위는 현재 WAR별 메모리인 로그인/가입 시도 제한의 PostgreSQL 공유·만료·원자 처리와 두 WAR/재시작 검증이다. 기존 제한 정책을 유지하며 DB 장애 시 제한 우회가 없도록 설계한다.
+0. V14 공유 인증 제한·두WAR/재시작·503/복구·취소 정리·12테이블 백업·V12→V14 업데이트까지 통과했다. 재개 시 배포판·서비스 상태·소스 동기화를 확인한다. 다음 로컬 기능 우선순위는 외부 Git/AI의 명시HTTP429에서 제한된 Retry-After를 해석하고 원래 요청/저장SHA를 보존하며 대기·재개와 사용자 안내를 제공하는 것이다. 현재는FAILED 종료하며 일반403/불명 통신 실패를 무조건 자동 재호출하지 않는다.
 1. 공개 GitHub/GitLab 바이너리·빈 파일 실서비스5건은 통과했다. 실제 대형/설치형/비공개 응답으로 호환 범위를 확대하며 전체 변경 경로를 증명할 수 없는 응답이나 API 장애는 계속 실패 처리한다.
 2. LiteLLM 주소·모델이 정해지면 준비된 dry-run으로 예산을 확인하고, 승인된 호출 범위에서 합성 평가와 사람의 의미 검토를 진행한다. 실제 설치형 GitLab·비공개 GitHub 연결과 운영 모델 품질도 남아 있다.
 3. 실제 대형 저장소 부하/API할당량·다중 인스턴스 장시간 공정성/지연·장기 네트워크 단절·모니터링/보존 정책 구현·검증. 구체적인 다음 후보는 명시HTTP429의 제한된 Retry-After 해석·원래 요청/저장SHA 보존·공급자별 대기와 사용자 안내다(현재는FAILED 종료). 일반403/불명 통신 실패를 무조건 자동 재호출하지 않는다. 로컬 단일 WAR 중단과 DB fast stop 후 복구는 `docs/QUEUE-VALIDATION.md`·`docs/DB-RECOVERY-VALIDATION.md` 범위로 통과했다.
@@ -160,5 +164,5 @@
 - 운영 대상은 사용자 답변으로 Linux 서버, 도커 미사용으로 확정했다(2026-09-26). 사용자 요청에 따른 전용 WSL2 Ubuntu 로컬 Linux 환경 구축과 설치/복구 검증은 2026-10-02 수행했다. 실제 서버 배포는 별도 승인 대상이다.
 - origin: jang-sw/code-reviewer_by-codex. main 직접 푸시 별도 승인 없음 → 로컬 커밋만, 푸시/배포 없음.
 - `.local/pg-test`: Windows 개발검증 전용127.0.0.1:55432. Windows `.local/pg-validation` 및 staged snapshot의pg-validation:55439. Linux PGDATA는 Linux 홈의 별도 checkout에만 만들고 Windows PGDATA를 공유하지 않는다.
-- `.local`은 Git 제외. 이번 Linux 부모 WAR/PG와 새 UUID DB들을 정리하고80/443/8080~8082/18089~18093/55439/55449 총12개 포트 연결 불가·검증 PID/lock 부재를 확인했다. 이전 앱·Nginx·서비스PG도계속inactive이며 앱unit disabled·Nginx 자동시작해제·서비스PG manual 설정을 유지한다. 원본 합성 DB·root 전용 설정/백업·후보·시험 기록은 전용 WSL에 보존한다. 이번 소유 keeper도PID/시작시각·명령·UID대조후종료확인했다(`.local/session9-keeper-cleanup.json`). 사용자 Windows Ollama/55432 PG를 변경하지 않았고 Windows 재부팅은 수행하지 않았다.
+- `.local`은 Git 제외. 이번 Linux 부모 WAR/PG와 새 UUID DB/schema를 정리하고80/443/8080~8082/18089~18095/55439/55449 총14개 포트 연결 불가·검증 PID/lock 부재를 확인했다. 이전 앱·Nginx·서비스PG도계속inactive/disabled이며 서비스PG manual 설정을 유지한다. 원본 합성 DB·root 전용 설정/백업·후보·시험 기록은 전용 WSL에 보존한다. 이번 소유 keeper도PID/시작시각·명령·UID대조후종료확인했다(`.local/session10-keeper-cleanup.json`). 사용자 Windows Ollama/55432 PG를 변경하지 않았고 Windows 재부팅은 수행하지 않았다.
 - 런타임 Git 수집은 매번 pinned 전체 이력을 재검증, 기본1000페이지/metadata32MiB/저장SHA131072개 안전 한도. 제한을 자동 확장/절삭하지 않는다.

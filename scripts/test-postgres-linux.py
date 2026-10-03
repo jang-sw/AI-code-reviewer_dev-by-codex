@@ -314,6 +314,8 @@ class TestRun:
             ports.append(self.args.review_database_recovery_port)
         if getattr(self.args, 'review_upgrade', False):
             ports.append(self.args.review_upgrade_port)
+        if getattr(self.args, 'shared_auth', False):
+            ports.extend((self.args.shared_auth_port_a, self.args.shared_auth_port_b))
         require(len(set(ports)) == len(ports), 'Selected PostgreSQL and WAR ports must all differ.')
         return ports
 
@@ -375,6 +377,11 @@ class TestRun:
             outcome = json.loads(limited_text(report, 131072))
             require(outcome.get('result') == 'PASS' and outcome.get('externalServicesUsed') is False
                     and outcome.get('paidAiUsed') is False, 'A child drill did not produce a successful isolated report.')
+            if name == 'shared-auth':
+                require(outcome.get('cleanupFailed') is False
+                        and outcome.get('checks', {}).get('ownedWarsStopped') is True
+                        and outcome.get('checks', {}).get('ownedSchemaRemoved') is True,
+                        'Shared authentication verification did not confirm owned resource cleanup.')
         except (ValueError, TypeError, AttributeError):
             raise SafetyError('The child drill report was invalid.') from None
 
@@ -395,6 +402,9 @@ class TestRun:
             self.drill('review-db-recovery', ['--port', str(self.args.review_database_recovery_port)])
         if getattr(self.args, 'review_upgrade', False):
             self.upgrade()
+        if getattr(self.args, 'shared_auth', False):
+            self.drill('shared-auth', ['--port-a', str(self.args.shared_auth_port_a),
+                                       '--port-b', str(self.args.shared_auth_port_b)])
 
     def upgrade(self):
         self.verify_owned(self.owned)
@@ -475,13 +485,13 @@ def arguments(argv=None):
     parser.add_argument('--pg-bin', type=Path, required=True)
     parser.add_argument('--java', type=Path, required=True)
     parser.add_argument('--port', type=int, default=55439)
-    for name in ('review-restart', 'review-concurrency', 'review-database-recovery', 'backup-restore', 'review-upgrade'):
+    for name in ('review-restart', 'review-concurrency', 'review-database-recovery', 'backup-restore', 'review-upgrade', 'shared-auth'):
         parser.add_argument('--' + name, action='store_true')
     parser.add_argument('--previous-war', type=Path)
     parser.add_argument('--expected-previous-war-sha256')
     for name, default in (('review-restart-port', 18089), ('review-concurrency-port-a', 18090),
                           ('review-concurrency-port-b', 18091), ('review-database-recovery-port', 18092),
-                          ('review-upgrade-port', 18093)):
+                          ('review-upgrade-port', 18093), ('shared-auth-port-a', 18094), ('shared-auth-port-b', 18095)):
         parser.add_argument('--' + name, type=int, default=default)
     args = parser.parse_args(argv)
     for name, value in vars(args).items():

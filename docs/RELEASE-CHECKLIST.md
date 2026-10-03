@@ -14,6 +14,7 @@
 - [x] 커밋/index 비밀정보 검사와 CI 연결, 실제 값 비출력·링크 우회 방지 회귀
 - [x] 내부 이슈함·상태 변경·배정 대체 사유·감사 기록
 - [x] CSRF·출력 escaping·CSP·로그인 제한·비밀정보 로그 차단
+- [x] V14 DB 공유 로그인/가입 제한·재시작 유지·계정/IP 원자 횟수·DB 오류 시503, 독립 PG 동시 경쟁 및 실제 두 WAR HTTP·오류 주입·복구 ([범위](AUTH-LIMITING.md)); 운영 ingress·장시간 부하는 별도
 - [x] Git 작성자 origin/email 관리자 매핑·배정 근거, 실제 PostgreSQL 동작 검증
 - [x] 복수 비공개 호스트 credential 구성·격리 fixture·회전 절차
 - [x] 큰 merge 그룹의 여러 배치 처리·저장 SHA 재사용·명시적 안전 checkpoint 회귀 검증
@@ -40,7 +41,7 @@
 ## 검증
 
 - [x] 실제 PostgreSQL migration·배치 재시도·SQL 실패 롤백·advisory lock
-- [x] WSL의 저장 리뷰/수동 근거/처리 사유·중단 요청을 포함한 V12→V13 업데이트, 새 DB V12 백업 복원·구 WAR 재개, 원본 보존과 시험 자원 정리 ([범위](UPGRADE-VALIDATION.md)); 운영 규모·역방향 migration은 별도
+- [x] WSL의 저장 리뷰/수동 근거/처리 사유·중단 요청을 포함한 V12→V14 업데이트, 새 DB V12 백업 복원·구 WAR 재개, 원본12테이블 보존과 시험 자원 정리 ([범위](UPGRADE-VALIDATION.md)); 운영 규모·역방향 migration은 별도
 - [x] V11→V12 데이터 보존, 독립 PG 연결의 동시 접수/이전 토큰/늦은 결과/DB 실패 원자성·조회 경계18건, 실제 WAR 강제 종료 후 요청·진척·이슈 재개 ([범위](QUEUE-VALIDATION.md))
 - [x] 로컬 격리 PostgreSQL 중지·재시작, 같은 WAR에서 동일 요청 복구·저장 결과 재사용·이슈 중복 방지·진행 카드·생존/준비 probe 회복 ([범위](DB-RECOVERY-VALIDATION.md)); 장기 단절·운영 복구 시간 보장은 별개
 - [x] V10 기존 리뷰/이슈 보존 migration, 수동 확인 저장·처리·다음 커밋 진행의 실제 PostgreSQL/HTTP 검증
