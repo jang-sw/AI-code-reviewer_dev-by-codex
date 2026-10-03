@@ -22,10 +22,21 @@ final class LoginThrottleFilter extends OncePerRequestFilter {
             throws ServletException, IOException {
         if (LOGIN_REQUEST.matches(request)) {
             String username = request.getParameter("username");
-            LoginAttemptLimiter.Decision decision = limiter.acquire(username, request.getRemoteAddr());
+            LoginAttemptLimiter.Decision decision;
+            try {
+                decision = limiter.acquire(username, request.getRemoteAddr());
+            } catch (AttemptStoreUnavailableException unavailable) {
+                response.setStatus(503);
+                response.setHeader("Retry-After", "30");
+                response.setHeader("Cache-Control", "no-store");
+                response.setContentType("text/plain;charset=UTF-8");
+                response.getWriter().write("지금은 로그인을 처리할 수 없습니다. 잠시 후 다시 시도해 주세요.");
+                return;
+            }
             if (!decision.allowed()) {
                 response.setStatus(429);
                 response.setHeader("Retry-After", Long.toString(decision.retryAfterSeconds()));
+                response.setHeader("Cache-Control", "no-store");
                 response.setContentType("text/plain;charset=UTF-8");
                 response.getWriter().write("로그인 시도가 너무 많습니다. " + decision.retryAfterSeconds() + "초 후 다시 시도해 주세요.");
                 return;

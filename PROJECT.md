@@ -15,12 +15,13 @@
 - `source/src/main/webapp/WEB-INF/jsp/` JSP·공통 fragment. `source/src/test/` 자동 테스트.
 - `scripts/test-postgres.ps1`: Windows 격리 PostgreSQL 검증. `-BackupRestore -ReviewRestart`는 백업/복원과 실제 WAR 강제 중단 후 재기동, `-ReviewConcurrency`는 두 WAR의 잠금 경쟁과 다른 프로젝트 진행을 검증한다.
 - `scripts/test-postgres-linux.py`: 일반 Linux 사용자와 native 파일시스템의 전용 PostgreSQL17에서 전체 빌드·필수 DB 검증을 실행한다. `--backup-restore --review-restart --review-concurrency --review-database-recovery`로 백업과 세 복구 검증을 함께 실행한다.
-- 같은 Linux 도구의 `--review-upgrade`는 명시한 V12 WAR·체크섬을 받아 누적 리뷰 데이터의 V13 업데이트와 별도 DB의 V12 백업 복귀를 검증한다. [실행 조건과 범위](docs/UPGRADE-VALIDATION.md)를 따른다.
+- 같은 Linux 도구의 `--review-upgrade`는 명시한 V12 WAR·체크섬을 받아 누적 리뷰 데이터의 V14 업데이트와 별도 DB의 V12 백업 복귀를 검증한다. [실행 조건과 범위](docs/UPGRADE-VALIDATION.md)를 따른다.
 - `scripts/package-candidate.py`: 검증한 WAR·Linux 템플릿·운영 문서를 현재 개발 버전의 로컬 후보 묶음으로 생성한다. [사용법과 한계](docs/CANDIDATE-PACKAGE.md)를 확인한다. 실제 설치·업로드·릴리스 승인은 수행하지 않는다.
 
 ## 구현된 흐름
 
 1. 초기 관리자를 명시적 설정으로 생성한다. 사용자가 ID·비밀번호·Git 사용자명으로 회원가입을 신청하면 관리자가 승인·반려한다. 승인 전 로그인은 차단한다.
+   로그인·가입 시도 제한은 PostgreSQL에서 공유하며 재시작 후에도 유지한다. DB 확인 실패 시 처리를 차단한다. [설정·동작·검증 범위](docs/AUTH-LIMITING.md)를 따른다.
 2. 사용자는 저장소 HTTP(S) URL로 프로젝트를 신청한다. 프로젝트 ID는 입력하지 않는다. 관리자가 승인·반려·일시정지/재개한다.
 3. 기본 매 정시 또는 수동으로 승인 프로젝트의 리뷰를 DB 대기열에 접수한다. 재시작 후 중단 요청을 복구하고 누락된 예약은 한 요청으로 합친다. 첫 실행은 **전체 이력**을 부모 커밋이 앞서는 순서의 배치로 처리한다.
 4. Git API의 누락·잘림을 검사하고 AI에 전체 지원 diff를 전달한다. JSON 스키마/파일/행/크기·시간·context 예산을 검증한다.

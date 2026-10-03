@@ -25,7 +25,8 @@ SafetyError, require = LINUX.SafetyError, LINUX.require
 WORKSPACE = Path(__file__).absolute().parent.parent
 SOURCE = 'reviewer_integration'
 TABLES = ('app_user', 'project', 'review_request', 'review_run', 'reviewed_commit', 'review_issue',
-          'manual_review_file', 'audit_event', 'git_author_mapping', 'flyway_schema_history')
+          'manual_review_file', 'audit_event', 'git_author_mapping', 'flyway_schema_history',
+          'auth_attempt_policy', 'auth_attempt_bucket')
 DB_PATTERN = re.compile(r'jdbc:postgresql://127\.0\.0\.1:([0-9]{4,5})/reviewer_integration')
 RESTORE_PATTERN = re.compile(r'reviewer_restore_[a-f0-9]{32}')
 
@@ -253,7 +254,7 @@ class BackupDrill:
         with self.report.open('x', encoding='utf-8') as stream:
             json.dump(report, stream, indent=2)
             stream.write('\n')
-        print('PASS: 10 synthetic tables restored; fresh identities and queue constraints verified; owned restore database removed.')
+        print(f'PASS: {len(TABLES)} synthetic tables restored; fresh identities and queue constraints verified; owned restore database removed.')
 
 
 def arguments(argv=None):

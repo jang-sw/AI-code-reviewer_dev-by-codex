@@ -82,7 +82,7 @@ Nginx 예시는 공인 edge가 같은 서버에 있고 앱은127.0.0.1에만 바
 
 프록시는 `X-Forwarded-*`를 클라이언트 값과 이어 붙이지 않고 재작성한다. Tomcat은127.0.0.1만 프록시로 신뢰하도록 환경파일에서 지정한다. 이 설정 덕분에 앱의 IP 제한이 실제 클라이언트 주소를 볼 수 있지만, 외부 프록시/CDN/다른 호스트를 추가하면 신뢰 경계를 다시 설계해야 한다. 전달 헤더 위조 요청, HTTPS 리다이렉트, secure cookie, CSRF, 로그아웃을 staging에서 시험한다. [Nginx 헤더 설정](https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_set_header), [Spring Boot 프록시 설정](https://docs.spring.io/spring-boot/how-to/webserver.html#howto.webserver.use-behind-a-proxy-server)
 
-예시의 요청 제한은 인스턴스 한 대의 출발 설정이다. 앱도 계정/IP 제한을 적용하지만 여러 서버 간 공유 제한은 별도 필요하다. URL/쿼리 문자열에 이슈 내용이나 비밀을 보내지 않고, Nginx access log의 접근권한·보존기간도 정한다. 최초 적용 전 관리 화면을 인터넷 전체에 공개할지 조직망으로 제한할지 결정한다.
+예시의 요청 제한은 인스턴스 한 대의 출발 설정이다. V14 앱은 같은 DB에서 계정/IP 횟수를 공유하며, 프록시 제한은 DB 접근과 비밀번호 검증 부하를 줄인다. 모든 앱 서버의 제한 설정을 같게 유지하고 [공유 제한 전환 절차](AUTH-LIMITING.md)를 따른다. URL/쿼리 문자열에 이슈 내용이나 비밀을 보내지 않고, Nginx access log의 접근권한·보존기간도 정한다. 최초 적용 전 관리 화면을 인터넷 전체에 공개할지 조직망으로 제한할지 결정한다.
 
 ## 백업
 

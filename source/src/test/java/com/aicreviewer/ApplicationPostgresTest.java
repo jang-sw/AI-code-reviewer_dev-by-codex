@@ -74,6 +74,10 @@ class ApplicationPostgresTest {
 
     @BeforeEach
     void fixtures() {
+        // This opt-in loopback DB is exclusive to the test suite. Each HTTP scenario
+        // receives its own quota window; within-scenario throttling remains enabled.
+        jdbc.update("DELETE FROM auth_attempt_bucket");
+        jdbc.update("UPDATE auth_attempt_policy SET policy_fingerprint=NULL");
         String suffix = UUID.randomUUID().toString().replace("-", "").substring(0, 10);
         writer = "writer" + suffix;
         outsider = "other" + suffix;

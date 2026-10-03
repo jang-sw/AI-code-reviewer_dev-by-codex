@@ -1,6 +1,7 @@
 package com.aicreviewer.config;
 
 import com.aicreviewer.operations.OperationsTelemetryService;
+import com.aicreviewer.identity.SharedAttemptStore;
 import com.aicreviewer.review.ReviewCoordinator;
 import com.aicreviewer.review.ReviewDispatcher;
 import com.aicreviewer.review.ReviewRequestRepository;
@@ -38,14 +39,20 @@ import static org.mockito.Mockito.*;
 class SchedulingIsolationTest {
     @Test
     @Timeout(12)
-    void configuredSchedulerPollsQueueWhileBothOtherProductionTasksAreBlocked() throws Exception {
-        var entered = new CountDownLatch(2);
+    void configuredSchedulerPollsQueueWhileObservationReconciliationAndAuthCleanupAreBlocked() throws Exception {
+        var entered = new CountDownLatch(3);
         var release = new CountDownLatch(1);
         var polledWhileBothBlocked = new CountDownLatch(1);
         var jdbc = mock(JdbcTemplate.class);
         var requests = mock(ReviewRequestRepository.class);
         var coordinator = mock(ReviewCoordinator.class);
         var transactions = mock(PlatformTransactionManager.class);
+        var cleanupSource = mock(DataSource.class);
+        when(jdbc.getDataSource()).thenReturn(cleanupSource);
+        when(cleanupSource.getConnection()).thenAnswer(invocation -> {
+            hold(entered, release);
+            throw new java.sql.SQLException("Synthetic cleanup connection unavailable");
+        });
         when(transactions.getTransaction(any(TransactionDefinition.class))).thenReturn(new SimpleTransactionStatus());
         doAnswer(invocation -> {
             hold(entered, release);
@@ -83,10 +90,12 @@ class SchedulingIsolationTest {
                         try {
                             assertThat(context).hasNotFailed();
                             assertThat(context.getBean(TaskScheduler.class)).isInstanceOf(ThreadPoolTaskScheduler.class);
+                            // Execute the actual cleanup method immediately instead of waiting for its minute interval.
+                            context.getBean(TaskScheduler.class).schedule(new SharedAttemptStore(jdbc, transactions)::purgeExpired, Instant.now());
                             assertThat(entered.await(3, TimeUnit.SECONDS))
-                                    .as("Actual telemetry and reconciliation scheduled methods entered").isTrue();
+                                    .as("Actual telemetry, reconciliation and authentication cleanup methods entered").isTrue();
                             assertThat(polledWhileBothBlocked.await(7, TimeUnit.SECONDS))
-                                    .as("A new scheduled queue poll runs while both other tasks remain blocked").isTrue();
+                                    .as("A new scheduled queue poll runs while all three other tasks remain blocked").isTrue();
                             verifyNoInteractions(coordinator);
                         } finally {
                             release.countDown();

@@ -36,7 +36,7 @@ class UpgradeDrillBoundaryTest(unittest.TestCase):
         self.java = self.workspace / 'java'
         self.java.touch()
         self.old_war, old_hash = self.war('old.war', 12)
-        self.new_war, new_hash = self.war('new.war', 13)
+        self.new_war, new_hash = self.war('new.war', 14)
         self.args = types.SimpleNamespace(war=self.new_war, previous_war=self.old_war,
             java=self.java, pg_bin=self.pg_bin, psql=self.pg_bin / 'psql',
             expected_war_sha256=new_hash, expected_previous_war_sha256=old_hash,
@@ -77,12 +77,19 @@ class UpgradeDrillBoundaryTest(unittest.TestCase):
         self.assertEqual(self.args.expected_previous_war_sha256,
                          MODULE.verify_war(self.old_war, self.args.expected_previous_war_sha256, 12))
         self.assertEqual(self.args.expected_war_sha256,
-                         MODULE.verify_war(self.new_war, self.args.expected_war_sha256, 13))
-        for path, digest, maximum in ((self.old_war, self.args.expected_previous_war_sha256, 13),
+                         MODULE.verify_war(self.new_war, self.args.expected_war_sha256, 14))
+        for path, digest, maximum in ((self.old_war, self.args.expected_previous_war_sha256, 14),
                                       (self.new_war, self.args.expected_war_sha256, 12),
-                                      (self.new_war, '0' * 64, 13)):
+                                      (self.new_war, '0' * 64, 14),
+                                      (self.new_war, self.args.expected_war_sha256, 13)):
             with self.subTest(path=path.name, maximum=maximum), self.assertRaises(MODULE.VerificationError):
                 MODULE.verify_war(path, digest, maximum)
+
+    def test_current_war_requires_v14_and_rejects_previous_v13_or_future_v15(self):
+        for maximum in (13, 15):
+            path, digest = self.war(f'unsupported-{maximum}.war', maximum)
+            with self.subTest(maximum=maximum), self.assertRaises(MODULE.VerificationError):
+                MODULE.verify_war(path, digest, 14)
 
     def test_war_duplicate_missing_and_unexpected_resources_are_rejected(self):
         prefix = 'WEB-INF/classes/db/migration/'
@@ -156,25 +163,64 @@ class UpgradeDrillBoundaryTest(unittest.TestCase):
 
     def test_migration_and_fingerprint_probes_retain_legacy_checksums_and_columns(self):
         database = Mock()
-        rows = [{'version': str(value), 'checksum': value * 11, 'success': True} for value in range(1, 13)]
-        database.sql.return_value = json.dumps(rows)
-        self.assertEqual(MODULE.migration_snapshot(database, SCHEMA, 12), rows)
-        for bad in (rows[:-1], list(reversed(rows)), rows[:-1] + [rows[-1] | {'success': False}]):
-            database.sql.return_value = json.dumps(bad)
-            with self.subTest(rows=bad), self.assertRaises(MODULE.VerificationError):
-                MODULE.migration_snapshot(database, SCHEMA, 12)
+        for maximum in (12, 14):
+            rows = [{'version': str(value), 'checksum': value * 11, 'success': True} for value in range(1, maximum + 1)]
+            database.sql.return_value = json.dumps(rows)
+            self.assertEqual(MODULE.migration_snapshot(database, SCHEMA, maximum), rows)
+            for bad in (rows[:-1], list(reversed(rows)), rows[:-1] + [rows[-1] | {'success': False}]):
+                database.sql.return_value = json.dumps(bad)
+                with self.subTest(maximum=maximum, rows=bad), self.assertRaises(MODULE.VerificationError):
+                    MODULE.migration_snapshot(database, SCHEMA, maximum)
+        database.sql.reset_mock()
+        with self.assertRaises(MODULE.VerificationError):
+            MODULE.migration_snapshot(database, SCHEMA, 13)
+        database.sql.assert_not_called()
         database.sql.reset_mock()
         database.sql.return_value = '2:' + 'a' * 32
         values = MODULE.legacy_fingerprints(database, SCHEMA)
-        self.assertEqual(set(values), set(MODULE.TABLES))
+        self.assertEqual(set(values), set(MODULE.LEGACY_TABLES_V12))
+        self.assertEqual(10, len(values))
+        self.assertEqual(set(MODULE.BACKUP.TABLES) - set(values), {'auth_attempt_policy', 'auth_attempt_bucket'})
         queries = [call.args[0] for call in database.sql.call_args_list]
+        self.assertTrue(all('auth_attempt_' not in query for query in queries))
         run_query = next(query for query in queries if '.review_run)' in query)
         self.assertIn('SELECT ' + MODULE.OLD_RUN_COLUMNS + ' FROM', run_query)
         self.assertNotIn('progress_stage', run_query)
-        self.assertEqual(set(MODULE.application_fingerprints(values)), set(MODULE.TABLES) - {'flyway_schema_history'})
+        self.assertEqual(set(MODULE.application_fingerprints(values)), set(MODULE.LEGACY_TABLES_V12) - {'flyway_schema_history'})
         database.sql.reset_mock()
         with self.assertRaises(MODULE.VerificationError):
             MODULE.legacy_fingerprints(database, 'public')
+        database.sql.assert_not_called()
+
+    def test_v14_auth_state_requires_both_seeded_scopes_before_any_login(self):
+        database = Mock()
+        database.sql.return_value = json.dumps({'policies': [
+            {'scope': 'LOGIN', 'fingerprint': None}, {'scope': 'SIGNUP', 'fingerprint': None}], 'bucketCount': 0})
+        MODULE.verify_v14_auth_state_before_login(database, SCHEMA)
+        database.sql.assert_called_once()
+        query = database.sql.call_args.args[0]
+        self.assertTrue(query.startswith('SELECT '))
+        self.assertIn(SCHEMA + '.auth_attempt_policy', query)
+        self.assertIn(SCHEMA + '.auth_attempt_bucket', query)
+
+    def test_v14_auth_state_rejects_missing_duplicate_or_invalid_policy_and_preexisting_attempts(self):
+        valid = {'policies': [{'scope': 'LOGIN', 'fingerprint': None}, {'scope': 'SIGNUP', 'fingerprint': None}],
+                 'bucketCount': 0}
+        invalid = [None, {}, valid | {'policies': None}, valid | {'policies': []},
+                   valid | {'policies': valid['policies'][:1]},
+                   valid | {'policies': [valid['policies'][0]] * 2},
+                   valid | {'policies': [valid['policies'][0], {'scope': 'OTHER', 'fingerprint': None}]},
+                   valid | {'bucketCount': 1}, valid | {'bucketCount': False}, valid | {'bucketCount': '0'}]
+        for fingerprint in ('a' * 64, 'a' * 63, 'A' * 64, 7, 'private-invalid-value'):
+            invalid.append(valid | {'policies': [valid['policies'][0], {'scope': 'SIGNUP', 'fingerprint': fingerprint}]})
+        for state in invalid:
+            database = Mock()
+            database.sql.return_value = json.dumps(state)
+            with self.subTest(state=state), self.assertRaises(MODULE.VerificationError):
+                MODULE.verify_v14_auth_state_before_login(database, SCHEMA)
+        database = Mock()
+        with self.assertRaises(MODULE.VerificationError):
+            MODULE.verify_v14_auth_state_before_login(database, 'public')
         database.sql.assert_not_called()
 
     def test_recovery_rejects_changed_request_claim_duplicates_and_borrowed_progress(self):

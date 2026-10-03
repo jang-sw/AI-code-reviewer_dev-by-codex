@@ -7,16 +7,20 @@ import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 
 class SignupThrottleFilterTest {
+    private final MutableClock clock = new MutableClock();
+    private final AttemptLimiterFixture database = new AttemptLimiterFixture(clock);
+    @AfterEach void close() { database.close(); }
     @ParameterizedTest
     @ValueSource(strings = { "/signup", "/sign%75p", "/%73ignup", "/reviewer/sign%75p" })
     void encodedSignupPathsAndChangedUsernamesCannotBypassAddressQuota(String path) throws Exception {
-        var filter = new SignupThrottleFilter(new SignupAttemptLimiter(1, 60, 100, Clock.systemUTC()));
+        var filter = new SignupThrottleFilter(database.signup(1, 60, 100));
         var calls = new AtomicInteger();
         filter.doFilter(request("POST", "/signup", "first"), new MockHttpServletResponse(), (a, b) -> calls.incrementAndGet());
         var response = new MockHttpServletResponse();
@@ -30,8 +34,22 @@ class SignupThrottleFilterTest {
     }
 
     @Test
+    void unavailableSharedStoreBlocksSignupWithFixedRetryableResponse() throws Exception {
+        var filter = new SignupThrottleFilter(database.signup(1, 60, 100));
+        database.jdbc.execute("ALTER TABLE auth_attempt_bucket RENAME TO unavailable_fixture_bucket");
+        var calls = new AtomicInteger();
+        var response = new MockHttpServletResponse();
+        filter.doFilter(request("POST", "/sign%75p", "synthetic-private-applicant"), response, (a, b) -> calls.incrementAndGet());
+        assertThat(calls).hasValue(0);
+        assertThat(response.getStatus()).isEqualTo(503);
+        assertThat(response.getHeader("Retry-After")).isEqualTo("30");
+        assertThat(response.getHeader("Cache-Control")).isEqualTo("no-store");
+        assertThat(response.getContentAsString()).contains("잠시 후").doesNotContain("synthetic-private", "auth_attempt", "SELECT", "127.0.0.1");
+    }
+
+    @Test
     void signupGetAndLoginPostDoNotConsumeSignupQuota() throws Exception {
-        var filter = new SignupThrottleFilter(new SignupAttemptLimiter(1, 60, 100, Clock.systemUTC()));
+        var filter = new SignupThrottleFilter(database.signup(1, 60, 100));
         var calls = new AtomicInteger();
         for (var request : new MockHttpServletRequest[] {
                 request("GET", "/signup", "first"), request("POST", "/login", "first"), request("POST", "/signup", "first") }) {
@@ -44,8 +62,7 @@ class SignupThrottleFilterTest {
 
     @Test
     void boundedBucketsFailClosedAndExpireWithoutExtendingOnRetries() {
-        var clock = new MutableClock();
-        var limiter = new SignupAttemptLimiter(1, 60, 2, clock);
+        var limiter = database.signup(1, 60, 2);
         assertThat(limiter.acquire("10.0.0.1").allowed()).isTrue();
         for (int i = 2; i < 100; i++) assertThat(limiter.acquire("10.0.0." + i).allowed()).isFalse();
         clock.millis += 50_000;

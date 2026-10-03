@@ -20,10 +20,21 @@ final class SignupThrottleFilter extends OncePerRequestFilter {
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
         if (SIGNUP.matches(request)) {
-            var decision = limiter.acquire(request.getRemoteAddr());
+            LoginAttemptLimiter.Decision decision;
+            try {
+                decision = limiter.acquire(request.getRemoteAddr());
+            } catch (AttemptStoreUnavailableException unavailable) {
+                response.setStatus(503);
+                response.setHeader("Retry-After", "30");
+                response.setHeader("Cache-Control", "no-store");
+                response.setContentType("text/plain;charset=UTF-8");
+                response.getWriter().write("지금은 가입 요청을 처리할 수 없습니다. 잠시 후 다시 시도해 주세요.");
+                return;
+            }
             if (!decision.allowed()) {
                 response.setStatus(429);
                 response.setHeader("Retry-After", Long.toString(decision.retryAfterSeconds()));
+                response.setHeader("Cache-Control", "no-store");
                 response.setContentType("text/plain;charset=UTF-8");
                 response.getWriter().write("가입 요청이 너무 많습니다. " + decision.retryAfterSeconds() + "초 후 다시 시도해 주세요.");
                 return;
