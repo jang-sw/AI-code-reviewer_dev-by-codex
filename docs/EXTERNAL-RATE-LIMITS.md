@@ -54,6 +54,29 @@ python3 scripts/test-postgres-linux.py \
 
 보고서는 이번 호출의 `.local/linux-postgres-<실행 토큰>/review-rate-limit-<실행 토큰>.json`에 생성한다. PASS는 소유 WAR·schema·임시 작업 경로 정리와 원본14개 테이블 보존까지 필요하다. 대기 헤더·HTTP 본문·계정 비밀번호·원본 DB 행과 지문 값은 보고하지 않는다. 실패·취소 시 사유 분류와 확인된 정리 결과를 남긴다.
 
+### 두 서버의 실제 시간 대기
+
+`--review-rate-limit-wallclock`는 SQL로 요청·공유 대기 시각을 바꾸지 않는다. 두 WAR와 같은 UUID 시험 schema, 서로 다른 loopback Git origin X/Y, 합성 AI만 사용한다.
+
+```bash
+python3 scripts/test-postgres-linux.py \
+  --pg-bin /usr/lib/postgresql/17/bin \
+  --java /usr/lib/jvm/temurin-25-jdk-amd64/bin/java \
+  --review-rate-limit-wallclock
+```
+
+WAR 포트는18097/18098이며 `--review-rate-limit-wallclock-port-a`와 `--review-rate-limit-wallclock-port-b`로 변경한다. 함께 선택한 다른 검증 포트와 중복되면 시작 전에 거부한다. 전체 Java·필수PG 검증을 먼저 통과해야 하위 검증을 실행한다.
+
+1. 서버 A가 origin X의 `Retry-After: 65`를 받고 같은 요청을 대기 상태로 보존한다.
+2. A를 중지한 상태에서 서버 B가 같은 X의 다른 프로젝트를 처리한다. DB 공유 대기로 전환되고 실제429 횟수는0이며 X HTTP 호출은 늘지 않아야 한다.
+3. B의 단일 작업자가 별도 origin Y의 프로젝트를65초 안에 완료해야 한다. A도65초 안에 다시 시작하여 이후 두 WAR가 살아 있는 상태를 확인한다.
+4. X의 첫429 응답 헤더 전 monotonic 시각을 하한으로 삼아 이후 모든 X Git 요청이65초 이후인지 검사한다. 전체 도착 기록을 확인하므로 중간 polling 간격의 조기 호출도 실패한다. 실제 후속 호출이 없으면 통과하지 않는다.
+5. X의 두 요청이 원 ID·요청자·접수 시각을 유지하며 각각2커밋/2이슈로 완료되어야 한다. 중복 AI 호출·저장이나 누락이 있으면 실패한다.
+
+하위 도구의 기본 전체 제한은240초(설정120~600초)다. 느린 기동으로65초 관찰 구간을 놓쳐도 성공으로 처리하지 않는다. 보고서는 `.local/linux-postgres-<실행 토큰>/review-rate-limit-wallclock-<실행 토큰>.json`이며 소유 WAR/schema/work 정리와 기존14테이블 보존이 모두 확인되어야 PASS다. 취소는 FAIL/종료130을 유지한다.
+
+이 시험은 로컬65초·프로젝트3개 범위의 증거다. 실제 공급자 quota·TLS/proxy·서버 간 시계 오차·24시간/6번째429·장기 공정성·임의 부하의 시작 SLA를 검증하지 않는다. 두 서버가 모두 살아 있음을 확인하지만 재개 작업을 각 서버가 반드시 하나씩 담당하는 것은 아니다.
+
 ## 실제 실행 기록
 
 2026-10-07 WSL에서 최종 Java1029건 중1019통과/선택10skip, 필수PG6suite를 통과했다. 같은 실행의 실제 WAR429 검증은39.774초·WAR3회 시작으로 위 시나리오와 소유 자원 정리·원본14테이블 보존을 통과했다. Linux `.local/linux-postgres-989bcb3a692b4d7e9996461366afcb36/review-rate-limit-989bcb3a692b4d7e9996461366afcb36.json`에 보고서를 보존한다.
@@ -61,3 +84,5 @@ python3 scripts/test-postgres-linux.py \
 WAR SHA256은 `1de2c1ec5092cf4ce6ec83dde5c429cf813651648d2adaa968ae37977d66e604`,42,029,853바이트이며 제품 커밋은 `5f40695429e35f6eaf4c2e1cdc309230f5187a34`다. Python237건은 Windows232통과/5skip, Linux227통과/10skip였다. 이 중 새 도구 경계15건·부모45건을 포함한다. 실제 외부/유료 모델·운영 서비스는 사용하지 않았다.
 
 같은 WAR의 일회성 실제 SIGTERM 시험은 세 번째 Tomcat 기동과 원 요청의 AI 대기/다른 프로젝트 중지를 확인한 뒤 취소했다.23.190초·종료130·FAIL/KeyboardInterrupt를 유지하며 소유 WAR/schema/work와 부모 PG/lock 정리·원본14테이블 보존을 통과했다. `.local/linux-postgres-468ca8081fcb4417a24fa30663e9511e/cancel-harness.json`에 증거를 보존한다. 취소 시험은 Maven 재실행이 아니며, 검증 실패를 성공으로 바꾸지 않았다.
+
+같은 날 후속 두 WAR 실제 시간 시험은95.143초에 통과했다. X 제한 중 Y는10.990초에 완료됐고 A/B 모두18.351초에 재가동 상태였다. 첫 X 후속 HTTP는68.111초였으며 이후16개 호출 모두65초 경계 뒤였다. 같은 원 요청2개와 결과·AI 호출 횟수, 원본14테이블 보존·소유 자원 정리를 확인했다. 전체 Java1029건(1019통과/10skip)·필수PG6suite, Python257건(Windows252통과/5skip·Linux247통과/10skip)을 함께 확인했다. 보고서는 `.local/linux-postgres-48853240c5594c5682c4a6137abe01d0/review-rate-limit-wallclock-48853240c5594c5682c4a6137abe01d0.json`, WAR SHA256은 `cf8106f85597ccfc7cf12a682a7a8d2ec52641e11043b23c5a7d18f8fbbc2bdf`다. 이 실행은 후속 UTC 화면 수정 전 제품이다.

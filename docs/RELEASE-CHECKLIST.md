@@ -10,6 +10,7 @@
 - [x] 시간별 예약과 수동 백그라운드 실행, 프로젝트 중복 잠금
 - [x] 전체 이력의 안전한 배치, 실패 재시도·이슈 중복 방지·진행 지점
 - [x] 외부 HTTP429의 요청 보존·서비스 origin 공유 대기·최대5회/24시간 상한·UTC 사용자 안내, 독립PG 및 실제WAR 재시작/합성Git·AI 검증 ([범위](EXTERNAL-RATE-LIMITS.md)); 실제 공급자 quota·장시간 검증은 별도
+- [x] 두 실제 WAR의 SQL 시간 수정 없는65초 공유 대기, 별도 Git origin 처리·원 요청 재개·결과 중복 없음 검증; 로컬3프로젝트 범위이며 운영 공정성 보장은 별도
 - [x] GitHub/GitLab API adapter, Ollama/LiteLLM adapter와 실패 fixture 테스트
 - [x] OpenAI Responses 직접 adapter·전용 키 격리·완료/거절/크기/리디렉션 fixture
 - [x] 커밋/index 비밀정보 검사와 CI 연결, 실제 값 비출력·링크 우회 방지 회귀

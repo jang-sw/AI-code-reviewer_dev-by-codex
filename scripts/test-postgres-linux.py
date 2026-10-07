@@ -318,6 +318,8 @@ class TestRun:
             ports.extend((self.args.shared_auth_port_a, self.args.shared_auth_port_b))
         if getattr(self.args, 'review_rate_limit', False):
             ports.append(self.args.review_rate_limit_port)
+        if getattr(self.args, 'review_rate_limit_wallclock', False):
+            ports.extend((self.args.review_rate_limit_wallclock_port_a, self.args.review_rate_limit_wallclock_port_b))
         require(len(set(ports)) == len(ports), 'Selected PostgreSQL and WAR ports must all differ.')
         return ports
 
@@ -379,11 +381,15 @@ class TestRun:
             outcome = json.loads(limited_text(report, 131072))
             require(outcome.get('result') == 'PASS' and outcome.get('externalServicesUsed') is False
                     and outcome.get('paidAiUsed') is False, 'A child drill did not produce a successful isolated report.')
-            if name in ('shared-auth', 'review-rate-limit'):
+            if name in ('shared-auth', 'review-rate-limit', 'review-rate-limit-wallclock'):
                 require(outcome.get('cleanupFailed') is False
                         and outcome.get('checks', {}).get('ownedWarsStopped') is True
                         and outcome.get('checks', {}).get('ownedSchemaRemoved') is True,
                         'The isolated verification did not confirm owned resource cleanup.')
+            if name == 'review-rate-limit-wallclock':
+                require(outcome.get('checks', {}).get('ownedWorkRemoved') is True
+                        and outcome.get('checks', {}).get('originalTestTablesPreserved') is True,
+                        'The wall-clock verification did not confirm work cleanup and unchanged original tables.')
         except (ValueError, TypeError, AttributeError):
             raise SafetyError('The child drill report was invalid.') from None
 
@@ -409,6 +415,9 @@ class TestRun:
                                        '--port-b', str(self.args.shared_auth_port_b)])
         if getattr(self.args, 'review_rate_limit', False):
             self.drill('review-rate-limit', ['--port', str(self.args.review_rate_limit_port)])
+        if getattr(self.args, 'review_rate_limit_wallclock', False):
+            self.drill('review-rate-limit-wallclock', ['--port-a', str(self.args.review_rate_limit_wallclock_port_a),
+                                                     '--port-b', str(self.args.review_rate_limit_wallclock_port_b)])
 
     def upgrade(self):
         self.verify_owned(self.owned)
@@ -489,14 +498,16 @@ def arguments(argv=None):
     parser.add_argument('--pg-bin', type=Path, required=True)
     parser.add_argument('--java', type=Path, required=True)
     parser.add_argument('--port', type=int, default=55439)
-    for name in ('review-restart', 'review-concurrency', 'review-database-recovery', 'backup-restore', 'review-upgrade', 'shared-auth', 'review-rate-limit'):
+    for name in ('review-restart', 'review-concurrency', 'review-database-recovery', 'backup-restore', 'review-upgrade',
+                 'shared-auth', 'review-rate-limit', 'review-rate-limit-wallclock'):
         parser.add_argument('--' + name, action='store_true')
     parser.add_argument('--previous-war', type=Path)
     parser.add_argument('--expected-previous-war-sha256')
     for name, default in (('review-restart-port', 18089), ('review-concurrency-port-a', 18090),
                           ('review-concurrency-port-b', 18091), ('review-database-recovery-port', 18092),
                           ('review-upgrade-port', 18093), ('shared-auth-port-a', 18094), ('shared-auth-port-b', 18095),
-                          ('review-rate-limit-port', 18096)):
+                          ('review-rate-limit-port', 18096), ('review-rate-limit-wallclock-port-a', 18097),
+                          ('review-rate-limit-wallclock-port-b', 18098)):
         parser.add_argument('--' + name, type=int, default=default)
     args = parser.parse_args(argv)
     for name, value in vars(args).items():

@@ -130,6 +130,97 @@ class LinuxPostgresSafetyTest(unittest.TestCase):
                         self.runner.drill('review-rate-limit', ['--port', '18096'])
             report.unlink()
 
+    def test_wallclock_rate_limit_cli_defaults_custom_ports_and_invalid_bounds(self):
+        base = ['--pg-bin', str(self.pg_bin), '--java', str(self.args.java)]
+        defaults = MODULE.arguments(base)
+        self.assertFalse(defaults.review_rate_limit_wallclock)
+        self.assertEqual((defaults.review_rate_limit_wallclock_port_a, defaults.review_rate_limit_wallclock_port_b),
+                         (18097, 18098))
+        selected = MODULE.arguments(base + ['--review-rate-limit-wallclock',
+            '--review-rate-limit-wallclock-port-a', '19097', '--review-rate-limit-wallclock-port-b', '19098'])
+        self.runner.args = selected
+        self.assertTrue(selected.review_rate_limit_wallclock)
+        self.assertEqual(self.runner.selected_ports(), [55439, 19097, 19098])
+        for name in ('--review-rate-limit-wallclock-port-a', '--review-rate-limit-wallclock-port-b'):
+            for value in ('1023', '65536'):
+                with self.subTest(name=name, value=value), self.assertRaises(MODULE.SafetyError):
+                    MODULE.arguments(base + ['--review-rate-limit-wallclock', name, value])
+
+    def test_both_wallclock_ports_participate_in_all_selected_service_collision_checks(self):
+        args = MODULE.arguments(['--pg-bin', str(self.pg_bin), '--java', str(self.args.java),
+            '--review-restart', '--review-concurrency', '--review-database-recovery', '--shared-auth',
+            '--review-rate-limit', '--review-rate-limit-wallclock'])
+        # Only the port-selection function is exercised; no upgrade artifact or process is opened.
+        args.review_upgrade = True
+        self.runner.args = args
+        expected = [55439, 18089, 18090, 18091, 18092, 18093, 18094, 18095, 18096, 18097, 18098]
+        self.assertEqual(self.runner.selected_ports(), expected)
+        for name in ('review_rate_limit_wallclock_port_a', 'review_rate_limit_wallclock_port_b'):
+            original = getattr(args, name)
+            for port in expected:
+                if port == original:
+                    continue
+                setattr(args, name, port)
+                with self.subTest(name=name, port=port), self.assertRaises(MODULE.SafetyError):
+                    self.runner.selected_ports()
+                setattr(args, name, original)
+
+    def test_wallclock_drill_is_opt_in_and_follows_build_report_gate_and_existing_rate_limit_drill(self):
+        events = []
+        with patch.object(self.runner, 'command', side_effect=lambda *a, **k: events.append('build/gate')), \
+                patch.object(self.runner, 'drill', side_effect=lambda *a: events.append(a)):
+            self.runner.verify()
+            self.assertEqual(events, ['build/gate', 'build/gate'])
+            events.clear()
+            self.runner.args = MODULE.arguments(['--pg-bin', str(self.pg_bin), '--java', str(self.args.java),
+                '--review-rate-limit', '--review-rate-limit-wallclock'])
+            self.runner.verify()
+        self.assertEqual(events, ['build/gate', 'build/gate', ('review-rate-limit', ['--port', '18096']),
+                                 ('review-rate-limit-wallclock', ['--port-a', '18097', '--port-b', '18098'])])
+
+    def test_wallclock_drill_never_runs_after_a_failed_required_pg_report_gate(self):
+        self.runner.args = MODULE.arguments(['--pg-bin', str(self.pg_bin), '--java', str(self.args.java),
+                                            '--review-rate-limit-wallclock'])
+        with patch.object(self.runner, 'command', side_effect=[None, MODULE.SafetyError('synthetic missing PG report')]), \
+                patch.object(self.runner, 'drill') as drill, self.assertRaises(MODULE.SafetyError):
+            self.runner.verify()
+        drill.assert_not_called()
+
+    def test_wallclock_child_requires_all_cleanup_preservation_and_isolation_evidence(self):
+        (self.workspace / 'scripts' / 'verify-review-rate-limit-wallclock.py').write_text('# synthetic fixture', encoding='utf-8')
+        self.runner.logs.mkdir()
+        report = self.runner.logs / ('review-rate-limit-wallclock-' + self.runner.token + '.json')
+        required_checks = ('ownedWarsStopped', 'ownedSchemaRemoved', 'ownedWorkRemoved', 'originalTestTablesPreserved')
+        variants = [('result', 'FAIL'), ('externalServicesUsed', True), ('paidAiUsed', True),
+                    ('cleanupFailed', True), ('cleanupFailed', None)]
+        variants.extend((key, value) for key in required_checks for value in (False, None, 'true', 1))
+        variants.append((None, None))
+        for field, value in variants:
+            def child(command, **kwargs):
+                self.assertTrue(kwargs['cooperative_cancel'])
+                self.assertEqual(kwargs['timeout'], 900)
+                self.assertNotIn('--pg-ctl', command)
+                self.assertEqual(Path(command[1]).name, 'verify-review-rate-limit-wallclock.py')
+                self.assertEqual(command[-4:], ['--port-a', '18097', '--port-b', '18098'])
+                self.assertEqual(Path(command[command.index('--report') + 1]), report)
+                outcome = {'result': 'PASS', 'externalServicesUsed': False, 'paidAiUsed': False, 'cleanupFailed': False,
+                           'checks': {key: True for key in required_checks}}
+                if field in required_checks:
+                    if value is None:
+                        del outcome['checks'][field]
+                    else:
+                        outcome['checks'][field] = value
+                elif field is not None:
+                    outcome[field] = value
+                report.write_text(json.dumps(outcome), encoding='utf-8')
+            with self.subTest(field=field, value=value), patch.object(self.runner, 'command', side_effect=child):
+                if field is None:
+                    self.runner.drill('review-rate-limit-wallclock', ['--port-a', '18097', '--port-b', '18098'])
+                else:
+                    with self.assertRaises(MODULE.SafetyError):
+                        self.runner.drill('review-rate-limit-wallclock', ['--port-a', '18097', '--port-b', '18098'])
+            report.unlink()
+
     def test_upgrade_requires_explicit_previous_war_and_recorded_hash_together(self):
         base = ['--pg-bin', str(self.pg_bin), '--java', str(self.args.java)]
         self.enable_upgrade()
