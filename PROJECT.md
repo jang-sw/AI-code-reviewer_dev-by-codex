@@ -21,6 +21,7 @@
 - `--review-rate-limit-wallclock`는 두 WAR에서 실제65초 Git 대기, 다른 서버의 공유 제한, 별도 origin 프로젝트 처리와 원 요청 재개를 SQL 시간 변경 없이 검증한다. 장기 부하·실제 공급자 quota 검증과는 구분한다.
 - `--review-schedule`은 두 WAR의 1분 검증용 예약으로 프로젝트마다 최소5회 예약 실행과 양쪽 서버 중지 후 누락 일정의 한 번 따라잡기를 검사한다. 초기 시작 시 조정된 요청도 실행 횟수에 포함하며 SQL 시각 변경을 사용하지 않는다. [실제 WSL 결과·재현 명령과 보장 범위](docs/WORKER-CONCURRENCY-VALIDATION.md)를 따른다.
 - `scripts/package-candidate.py`: 검증한 WAR·Linux 템플릿·운영 문서를 현재 개발 버전의 로컬 후보 묶음으로 생성한다. [사용법과 한계](docs/CANDIDATE-PACKAGE.md)를 확인한다. 실제 설치·업로드·릴리스 승인은 수행하지 않는다.
+- [LiteLLM 로컬 구성](docs/LITELLM-LOCAL-VALIDATION.md): WSL venv의 고정 버전·임시 인증 키·기존 Ollama 연결을 검증했다. 설정 예시는 `deploy/litellm/`에 있으며 실행 종료 후 프록시·임시 키를 정리한다. 합성6사례 JSON6/6·품질0/6으로 운영 모델은 미승인이다.
 
 ## 구현된 흐름
 
@@ -57,7 +58,7 @@ Git 기본 호스트는 `github.com`이다. 설치형 GitLab은 관리자가 허
 ## 남은 릴리스 과제
 
 - 실제 대형 이력/변경 부하와 공급자별 수동 전환 호환성. 파일 내부 분할·원본 diff 복원·부분 AI/수동 혼합은 별도 확장이다. 증명할 수 없는 변경은 실패한다.
-- 실제 GitLab·LiteLLM 환경, 운영 모델 품질, 장시간·장애·부하 검증.
+- 실제 설치형/비공개 Git·운영 LiteLLM 환경, 운영 모델 품질, 장시간·장애·부하 검증. 로컬 LiteLLM 연결은 검증했으며 gemma3:1b는 품질에 미달했다.
 - 운영 AI는 LiteLLM 우선이며 주소·모델은 아직 미정이다. 사용자 요청에 따라 WSL2 Linux 검증을 수행했으며 실제 운영 서버의 부팅·인증서 갱신·업그레이드·장기 복구 검증은 남아 있다.
 - 운영 백업/복원·관측 용량/진행률·보존·업그레이드/롤백·의존성 취약점 검증.
 - 상세 기준은 `docs/RELEASE-CHECKLIST.md`와 `docs/AI-EVALUATION.md`를 따른다.

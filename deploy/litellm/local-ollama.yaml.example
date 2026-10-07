@@ -1,0 +1,39 @@
+# Local synthetic validation only; selected version and results are documented in
+# docs/LITELLM-LOCAL-VALIDATION.md. Start with --host 127.0.0.1, never 0.0.0.0.
+# Use a clean environment with LITELLM_MODE=PRODUCTION and
+# LITELLM_LOCAL_MODEL_COST_MAP=True. OLLAMA_API_BASE must be a verified local
+# loopback endpoint (normally http://127.0.0.1:11434). LITELLM_MASTER_KEY must be
+# a generated strong temporary proxy key; upstream provider keys are not needed.
+model_list:
+  - model_name: local-review-gemma
+    litellm_params:
+      model: ollama_chat/gemma3:1b
+      api_base: os.environ/OLLAMA_API_BASE
+      num_ctx: 8192
+      num_retries: 0
+      timeout: 120
+
+router_settings:
+  num_retries: 0
+  max_fallbacks: 0
+  timeout: 120
+  fallbacks: []
+  context_window_fallbacks: []
+  content_policy_fallbacks: []
+
+litellm_settings:
+  drop_params: false
+  set_verbose: false
+  turn_off_message_logging: true
+  request_timeout: 120
+  num_retries: 0
+  callbacks: []
+  success_callback: []
+  failure_callback: []
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  allow_client_side_credentials: false
+  background_health_checks: false
+  disable_spend_logs: true
+  disable_error_logs: true

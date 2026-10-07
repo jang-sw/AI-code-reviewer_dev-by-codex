@@ -58,11 +58,12 @@
 - [x] 공식 공개 GitLab fixture pinned 이력·루트 diff·재개 smoke (비공개/설치형 검증과 별개)
 - [x] 공개 GitHub 바이너리 루트·다음 커밋, GitLab 이미지 수정→본문·빈 파일 메타데이터 재증명5건 ([범위](PUBLIC-GIT-VALIDATION.md)); 실제 DB 저장·비공개/설치형 검증과 구분
 - [x] 설치된 Ollama gemma3:1b JSON 프로토콜 smoke
+- [x] WSL LiteLLM1.104.0 격리 구성·강한 임시 키 인증·기존 Windows Ollama 연결, 합성6사례 JSON6/6·최종118패키지 OSV 일치0건 ([실제 결과와 한계](LITELLM-LOCAL-VALIDATION.md)); 운영 모델 품질0/6·Prisma 유지보수 한계는 미해소
 - [ ] 데스크톱·모바일 시각 확인, 키보드 사용성
 - [x] 가입·승인·등록·페이지/상세·상태 저장 주요 흐름의 실제 WAR/모바일 검증
 - [x] 호출 제한 대기·상한 종료·키보드 직접 재접수·관리자 필터, 리뷰 기록 UTC 변환/미완료 시각·모바일 표 포커스와 이동 확인; 전체 화면 인수 검사는 별도
 - [x] 수동 사유400→필드 포커스/수정→원래 목록2페이지, 관리자 반려·재검토·승인 후 사유 감사 보존의390px/1280px 실제 브라우저·키보드·DB 확인
-- [ ] 실제 설치형 GitLab·비공개 GitHub·LiteLLM 연결
+- [ ] 실제 설치형 GitLab·비공개 GitHub·운영 LiteLLM 환경 연결 (로컬 LiteLLM 검증과 구분)
 - [ ] 실제 OpenAI 계정/모델 인증·응답 호환·비용·품질 검증 (유료 호출 미실행)
 - [ ] 운영 모델 품질 합격 (Gemma 오탐·설명 미달, Llama8B 시간 초과·근거 미달)
 - [ ] 장시간/부하·API rate limit·프로세스/DB/네트워크 장애 복구 실증
