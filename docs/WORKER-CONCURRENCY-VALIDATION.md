@@ -64,7 +64,19 @@ python3 scripts/test-postgres-linux.py \
   --review-schedule
 ```
 
-WAR 포트 기본값은 A18099/B18100이다. 필요한 경우 부모의 `--review-schedule-port-a`와 `--review-schedule-port-b`로 비어 있는 서로 다른 포트를 지정한다. 부모는 기본5회·자식 전체 예산780초로 실행하며 자식 명령의 상한은900초다. 이는 검증 대기 예산이며 실행 성능이나 서비스 응답 보장 시간이 아니다.
+WAR 포트 기본값은 A18099/B18100이다. 필요한 경우 부모의 `--review-schedule-port-a`와 `--review-schedule-port-b`로 비어 있는 서로 다른 포트를 지정한다. 부모는 기본5회·자식 전체 예산780초로 실행하며, 예약 자식 명령에는 지정 예산에90초의 정리 여유를 더한다. 이는 검증 대기 예산이며 실행 성능이나 서비스 응답 보장 시간이 아니다.
+
+현재PC에서 유한 반복 횟수와 자원 사용을 함께 확인하려면 Linux 부모에 아래 옵션을 추가한다. 실제 모델 호출이나 다운로드는 없으며 WAR당 `-Xmx384m`과 서버당 작업 동시성1을 유지한다. heap 설정은 프로세스 전체 메모리 상한이 아니다.
+
+```bash
+python3 scripts/test-postgres-linux.py \
+  --pg-bin /absolute/path/to/postgresql-17/bin \
+  --java /absolute/path/to/java-25/bin/java \
+  --review-schedule --review-schedule-cycles 8 \
+  --review-schedule-timeout-seconds 900 --review-schedule-observe-resources
+```
+
+관측은 Linux에서만 선택적으로 켜며 기본값은 OFF다. 10초 간격과 시작/종료 경계에서 자신이 시작한 두 WAR의 PID·시작시각을 확인해 실행 세대별 RSS/HWM·thread 수·CPU 누적값을 수집한다. DB는 고유 application name의 두 앱 연결 상태와 전용 schema의 relation 크기만 읽는다. 최대160회이며 누락된 관측이나 잘못된 값은0으로 채우지 않고 실패한다. 보고서에는 표본 수·첫/끝 시각·실측 peak와 중단 전/복구 후 프로젝트별 실제 성공 횟수를 남긴다. PID·application name·SQL·계정·환경변수 원문은 자원 집계에 넣지 않는다. 표본 사이의 순간값, heap 실제 사용량, 메모리 누수 없음이나 장기 운영 용량을 증명하는 검사는 아니다.
 
 이미 실행 중인 전용 로컬 검증 DB와 검증용 WAR가 있으면 자식 도구만 실행할 수도 있다. 위와 동일한 `TEST_DATABASE_URL`·전용 계정 조건을 적용하며 자식은 PostgreSQL을 시작하거나 종료하지 않는다. `--report`는 해당 checkout의 `.local` 아래에 아직 존재하지 않는 절대 경로를 지정한다.
 
@@ -95,3 +107,15 @@ python3 scripts/verify-review-schedule.py \
 SQL 시간 변경 없이 요청 출처·행위자·claim 보존과 중복 접수/저장 부재, 원본14테이블 및 소유 WAR/schema/work·부모PG 정리를 확인했다. 보고서는 Linux `.local/linux-postgres-61c70dc2d2a54a979466f84e12252532/review-schedule-61c70dc2d2a54a979466f84e12252532.json`에 있다. WAR SHA256은 `42f2490ee84112f9063cf60f050215eaeb33da81498b62470aaa64ab0d45b94e`다. Python274건은 Windows269통과/5skip, Linux264통과/10skip이며 신규 도구12건·부모55건을 포함한다. 운영 기본1시간 간격을 장기간 반복한 시험은 아니다.
 
 같은 WAR의 별도 실제SIGTERM 검증도31.997초에 통과했다. A2/B1회 기동, 느린 예약1개 RUNNING·다른2개 SUCCEEDED 시점에서 취소하여 자식이 FAIL/KeyboardInterrupt/종료130을 유지하고 소유 자원·부모PG/lock을 정리하는지 확인했다. 원본14테이블은 보존됐다. Linux `.local/linux-postgres-00657a6a20fa41fa81e5dd57fb6243c6/cancel-harness.json`에 증거를 보존한다.
+
+### 현재PC의8회 반복·자원 관측
+
+2026-10-07 KST i5-12500H·Windows RAM15.67GiB, WSL 메모리 약7.59GiB에서 실제 모델 없이 같은 합성3프로젝트를 검증했다. 전체 Java1186건 중1176통과/선택10skip·필수PG9suite 뒤 `--cycles 8 --timeout-seconds 900 --observe-resources`가662.446초에 통과했다. WAR SHA256은 `1aae662399647912ce599b9f760fd5c2d5a3aa63c110e892da67565df5406f24`다.
+
+느린 응답25.444초 보류 중 다른 프로젝트 진행과 예약 병합을 확인했다. 중단 전 성공8·9·9회, 두 서버171.987초 중단 후9·10·10회로 프로젝트마다 정확히1회만 추가됐다. 총29개 요청/실행에서 저장 커밋·이슈는 각각3개였고 프로젝트별 상세/diff/합성 AI 호출은 각각1회였다. 실제 모델 호출은0회다.
+
+68회 관측에서 A의 세 기동과 B의 두 기동을 모두 확인했다. WAR별 최고 RSS는 A476,626,944바이트(약454.5MiB), B470,814,720바이트(약449.0MiB)였고 heap설정은 각384MiB였다. 각 세대의 CPU 누적값·thread와 관측 시작/끝을 보고서에 남겼다. 두 앱의 DB 연결 합계는 관측상 최대6개, 전용 schema relation크기는 최대933,888바이트였다. 각 항목의 최대값은 서로 다른 시점일 수 있으며10초 표본으로 순간 부하·장기 누수·운영 용량을 확정하지 않는다.
+
+원본14테이블 보존과 소유 WAR/schema/work·부모PG 정리를 모두 통과했다. 증거는 Linux `.local/linux-postgres-b3a54150264247b7b8376b82c70f612f/review-schedule-b3a54150264247b7b8376b82c70f612f.json`이다. 운영1시간 간격의 장기간 반복, 실제 Git/API 할당량과 모델 추론 메모리는 이번 범위에 포함하지 않는다.
+
+같은 WAR의 자원 관측ON 실제SIGTERM 검증도31.965초에 통과했다. 느린 예약1개 RUNNING·다른2개 SUCCEEDED 시점에서 취소해 종료130/KeyboardInterrupt/FAIL을 유지했다. 취소 전4개 표본·3개 기동을 관측했지만 `complete=false`로 남기며, 원본14테이블·소유 WAR/schema/work·부모PG/lock 정리를 확인했다. `.local/session15-schedule-cancel.json`은 이 의도된 취소 시나리오의 통과 기록이며 예약 완료나 자원 관측 완료를 뜻하지 않는다.

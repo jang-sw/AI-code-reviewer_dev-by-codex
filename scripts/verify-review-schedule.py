@@ -41,6 +41,139 @@ OFFLINE_SECONDS = 125
 MAX_HISTORY = 64
 REQUEST_PATTERN = re.compile(r'source=SCHEDULED; request=([a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12})')
 CHECKS = ('ownedWarsStopped', 'ownedSchemaRemoved', 'ownedWorkRemoved', 'originalTestTablesPreserved')
+RESOURCE_INTERVAL_SECONDS = 10
+MAX_RESOURCE_SAMPLES = 160
+HEAP_LIMIT_MIB = 384
+
+
+def application_name(schema, node):
+    require(HELPERS.SCHEMA_PATTERN.fullmatch(schema) is not None and node in ('node-a', 'node-b'),
+            'Invalid resource observation scope')
+    return schema + '_' + node
+
+
+def proc_text(path):
+    with path.open('rb') as stream:
+        data = stream.read(32769)
+    require(len(data) <= 32768, 'Owned process observation exceeded its bound')
+    return data.decode('utf-8')
+
+
+def process_sample(process, ticks_per_second):
+    """Read only the current owned Popen; never discover or attach to other processes."""
+    require(type(process.pid) is int and process.pid > 0 and process.poll() is None,
+            'An owned process is unavailable for resource observation')
+    try:
+        root = Path('/proc') / str(process.pid)
+        def counters():
+            text = proc_text(root / 'stat')
+            head, separator, tail = text.rpartition(')')
+            require(separator and int(head.split(' ', 1)[0]) == process.pid, 'Invalid owned process counters')
+            fields = tail.split()
+            return int(fields[19]), int(fields[11]) + int(fields[12])
+        before, _ = counters()
+        values = dict(line.split(':', 1) for line in proc_text(root / 'status').splitlines() if ':' in line)
+        require(int(values['Pid']) == process.pid, 'Owned process status identity changed')
+        memory = {}
+        for key in ('VmRSS', 'VmHWM'):
+            match = re.fullmatch(r'\s*([0-9]+)\s+kB\s*', values[key])
+            require(match is not None, 'Owned process memory observation is unavailable')
+            memory[key] = int(match[1]) * 1024
+        threads = int(values['Threads'])
+        after, cpu_ticks = counters()
+        require(before == after and after > 0 and threads > 0 and cpu_ticks >= 0 and process.poll() is None,
+                'Owned process identity changed during resource observation')
+        return {'identity': (process.pid, after), 'rssBytes': memory['VmRSS'], 'hwmBytes': memory['VmHWM'],
+                'threads': threads, 'cpuSeconds': cpu_ticks / ticks_per_second}
+    except (OSError, ValueError, KeyError, IndexError, UnicodeError):
+        raise VerificationError('Owned process resource observation is unavailable') from None
+
+
+class ResourceMonitor:
+    """Ten-second aggregate observations, not a heap-usage or memory-leak verdict."""
+    def __init__(self, enabled, wars, database, schema):
+        require(type(enabled) is bool, 'Resource observation opt-in must be explicit')
+        self.enabled, self.wars, self.database, self.schema = enabled, wars, database, schema
+        self.started, self.last, self.samples, self.complete = time.monotonic(), None, 0, False
+        self.generations, self.database_samples = {}, None
+        self.ticks = 1
+        if enabled:
+            require(sys.platform.startswith('linux'), 'Resource observation requires Linux procfs')
+            self.ticks = os.sysconf('SC_CLK_TCK')
+            require(type(self.ticks) is int and self.ticks > 0, 'Linux process clock units are unavailable')
+
+    def sample(self, force=False):
+        if not self.enabled:
+            return
+        now = time.monotonic()
+        if not force and self.last is not None and now - self.last < RESOURCE_INTERVAL_SECONDS:
+            return
+        require(self.samples < MAX_RESOURCE_SAMPLES, 'The resource observation budget was exceeded')
+        elapsed = round(max(0, now - self.started), 3)
+        running_nodes = []
+        for index, war in enumerate(self.wars):
+            if war.process is None:
+                continue
+            node = ('node-a', 'node-b')[index]
+            running_nodes.append(node)
+            sample = process_sample(war.process, self.ticks)
+            key = (node, war.starts)
+            previous = self.generations.get(key)
+            if previous is None:
+                require(len(self.generations) < 8 and type(war.starts) is int and war.starts > 0,
+                        'The owned process generation budget was exceeded')
+                previous = {'node': node, 'generation': war.starts, 'identity': sample['identity'],
+                    'sampleCount': 0, 'firstSampleElapsedSeconds': elapsed, 'cpuSecondsAtFirstSample': sample['cpuSeconds'],
+                    'peakRssBytes': 0, 'peakHwmBytes': 0, 'peakThreads': 0}
+                self.generations[key] = previous
+            require(previous['identity'] == sample['identity']
+                    and sample['cpuSeconds'] >= previous.get('cpuSecondsAtLastSample', 0),
+                    'An owned process generation changed or its CPU counter regressed')
+            previous.update(sampleCount=previous['sampleCount'] + 1, lastSampleElapsedSeconds=elapsed,
+                cpuSecondsAtLastSample=sample['cpuSeconds'], lastRssBytes=sample['rssBytes'],
+                peakRssBytes=max(previous['peakRssBytes'], sample['rssBytes']),
+                peakHwmBytes=max(previous['peakHwmBytes'], sample['hwmBytes']), peakThreads=max(previous['peakThreads'], sample['threads']))
+        names = [application_name(self.schema, node) for node in ('node-a', 'node-b')]
+        try:
+            data = json.loads(self.database.sql(f"""SELECT json_build_object(
+                'connections',count(*),'active',count(*) FILTER(WHERE state='active'),
+                'nodeAConnections',count(*) FILTER(WHERE application_name='{names[0]}'),
+                'nodeBConnections',count(*) FILTER(WHERE application_name='{names[1]}'),
+                'idle',count(*) FILTER(WHERE state='idle'),'idleInTransaction',count(*) FILTER(WHERE state LIKE 'idle in transaction%'),
+                'schemaBytes',(SELECT COALESCE(sum(pg_total_relation_size(c.oid)),0) FROM pg_class c
+                    JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='{self.schema}' AND c.relkind IN ('r','m')))
+                FROM pg_stat_activity WHERE datname=current_database() AND application_name IN ('{names[0]}','{names[1]}');"""))
+            keys = ('connections', 'nodeAConnections', 'nodeBConnections', 'active', 'idle', 'idleInTransaction', 'schemaBytes')
+            require(isinstance(data, dict) and set(data) == set(keys)
+                    and all(type(data[key]) is int and data[key] >= 0 for key in keys)
+                    and sum(data[key] for key in ('active', 'idle', 'idleInTransaction')) <= data['connections']
+                    and data['nodeAConnections'] + data['nodeBConnections'] == data['connections']
+                    and all(data['nodeAConnections' if node == 'node-a' else 'nodeBConnections'] > 0 for node in running_nodes),
+                    'Invalid isolated database resource observation')
+        except (ValueError, TypeError):
+            raise VerificationError('Invalid isolated database resource observation') from None
+        if self.database_samples is None:
+            self.database_samples = {'sampleCount': 0, 'firstSampleElapsedSeconds': elapsed, 'peaks': dict(data)}
+        summary = self.database_samples
+        summary.update(sampleCount=summary['sampleCount'] + 1, lastSampleElapsedSeconds=elapsed, last=dict(data))
+        summary['peaks'] = {key: max(summary['peaks'][key], data[key]) for key in keys}
+        self.last, self.samples = now, self.samples + 1
+
+    def verify_complete(self):
+        if self.enabled:
+            expected = {(node, generation) for node, war in zip(('node-a', 'node-b'), self.wars)
+                        for generation in range(1, war.starts + 1)}
+            require(expected and set(self.generations) == expected and self.samples > 1 and self.database_samples is not None,
+                    'Requested resource observation missed an owned process generation')
+            self.complete = True
+
+    def summary(self):
+        return {'enabled': self.enabled, 'complete': self.complete, 'sampleIntervalSeconds': RESOURCE_INTERVAL_SECONDS,
+            'heapLimitMiBPerWar': HEAP_LIMIT_MIB, 'samples': self.samples,
+            'scope': 'Owned WAR RSS/HWM/threads and cumulative CPU since each process start; sample first/last times bound coverage. DB counts only owned application names and schema relation bytes. No heap-used, leak, host-capacity or production-duration conclusion.',
+            'processGenerations': [{key: value for key, value in row.items() if key != 'identity'}
+                                   for _, row in sorted(self.generations.items())],
+            'database': self.database_samples}
 
 
 class ScheduledWar(HELPERS.OwnedWar):
@@ -48,7 +181,10 @@ class ScheduledWar(HELPERS.OwnedWar):
     def launch(self, enabled):
         require(type(enabled) is bool, 'Explicit scheduler and worker state is required')
         environment = HELPERS.base_environment()
-        environment.update({'DB_URL': self.database.url + '?currentSchema=' + self.schema,
+        database_url = self.database.url + '?currentSchema=' + self.schema
+        if getattr(self.args, 'observe_resources', False):
+            database_url += '&ApplicationName=' + application_name(self.schema, self.args.resource_node)
+        environment.update({'DB_URL': database_url,
             'DB_USERNAME': self.database.user, 'DB_PASSWORD': self.database.password,
             'SERVER_ADDRESS': '127.0.0.1', 'SERVER_PORT': str(self.args.port), 'SESSION_COOKIE_SECURE': 'false',
             'BOOTSTRAP_ADMIN_USERNAME': self.username, 'BOOTSTRAP_ADMIN_GIT_USERNAME': self.username,
@@ -60,7 +196,7 @@ class ScheduledWar(HELPERS.OwnedWar):
             'AI_BASE_URL': self.fixture_url, 'AI_MODEL': HELPERS.MODEL, 'AI_API_KEY': '', 'AI_TIMEOUT_SECONDS': '120',
             'AI_CONTEXT_TOKENS': '32768', 'AI_MAX_OUTPUT_TOKENS': '4096', 'JDBC_QUERY_TIMEOUT_SECONDS': '5',
             'JDBC_SOCKET_TIMEOUT_SECONDS': '10', 'JDBC_CONNECT_TIMEOUT_SECONDS': '5'})
-        command = [str(self.args.java), '-Xmx384m', '-Djava.io.tmpdir=' + str(self.work), '-jar', str(self.args.war),
+        command = [str(self.args.java), '-Xmx' + str(HEAP_LIMIT_MIB) + 'm', '-Djava.io.tmpdir=' + str(self.work), '-jar', str(self.args.war),
             '--spring.config.location=classpath:/application.properties', '--spring.flyway.schemas=' + self.schema,
             '--spring.flyway.default-schema=' + self.schema, '--server.servlet.context-path=/' + self.schema]
         return command, environment
@@ -147,7 +283,9 @@ def preserve_slow(original, current):
             'A merged schedule tick replaced the live slow request or fabricated results')
 
 
-def collect(database, schema, projects, observations):
+def collect(database, schema, projects, observations, monitor=None):
+    if monitor is not None:
+        monitor.sample()
     values = {name: state(database, schema, project) for name, project in projects.items()}
     for name, value in values.items():
         observations.record(name, value)
@@ -218,18 +356,21 @@ def validate_history(value, observed, minimum):
     return {'scheduledRequests': len(requests), 'successfulRuns': len(runs), 'firstSavedCommits': 1, 'subsequentSavedCommits': 0}
 
 
-def exercise(wars, database, schema, fixture, origin, report, deadline, cycles):
+def exercise(wars, database, schema, fixture, origin, report, deadline, cycles, monitor):
     a, b = wars
     observations = Observations()
     a.start(False)
+    monitor.sample(force=True)
     browser = HELPERS.Browser(a.base)
     browser.login(a.username, a.password)
     projects = {name: CONCURRENT.register_project(browser, schema, origin, name) for name in CONCURRENT.PROJECTS}
-    initial = collect(database, schema, projects, observations)
+    initial = collect(database, schema, projects, observations, monitor)
     require(all(value['request'] is None and value['runs'] == 0 for value in initial.values()) and not fixture.observed(),
             'Paused setup created an unexpected review request')
+    monitor.sample(force=True)
     a.stop()
     a.start(True)
+    monitor.sample(force=True)
     wait_for(fixture.slow_entered.is_set, min(deadline, time.monotonic() + 35), [a], 'The first scheduled slow request did not enter AI')
     held_at = time.monotonic()
     slow = state(database, schema, projects['slow'])
@@ -238,8 +379,9 @@ def exercise(wars, database, schema, fixture, origin, report, deadline, cycles):
     require(slow['request']['source'] == 'SCHEDULED' and slow['request']['actor'] is None and slow['next'] is not None,
             'The first request was not scheduled with its next real due time')
     b.start(True)
+    monitor.sample(force=True)
     def merged_and_fast():
-        values = collect(database, schema, projects, observations)
+        values = collect(database, schema, projects, observations, monitor)
         preserve_slow(slow, values['slow'])
         require(not fixture.release_slow.is_set() and not fixture.errors, 'The synthetic slow latch did not remain valid')
         return values['slow']['next'] > slow['next'] and all(values[name]['successes'] >= 1 for name in ('fast1', 'fast2'))
@@ -252,14 +394,16 @@ def exercise(wars, database, schema, fixture, origin, report, deadline, cycles):
     fixture.release_slow.set()
     latest = {}
     def repeated():
-        latest.update(collect(database, schema, projects, observations))
+        latest.update(collect(database, schema, projects, observations, monitor))
         require(not fixture.errors, 'The synthetic fixture rejected duplicate or invalid review traffic')
         return idle(latest, cycles, margin=20)
     wait_for(repeated, deadline, wars, 'The real scheduled cycles did not complete in a safe idle interval')
     before_counts = {name: value['successes'] for name, value in latest.items()}
+    report['successfulRunsBeforeOutage'] = before_counts
+    monitor.sample(force=True)
     b.stop()
     a.stop()
-    stopped = collect(database, schema, projects, observations)
+    stopped = collect(database, schema, projects, observations, monitor)
     require(idle(stopped, cycles) and all(stopped[name]['successes'] == before_counts[name] for name in projects),
             'A new scheduled execution raced the idle shutdown')
     report['checks']['minimumRealCyclesPerProjectCompleted'] = True
@@ -267,8 +411,9 @@ def exercise(wars, database, schema, fixture, origin, report, deadline, cycles):
     while time.monotonic() - offline_started < OFFLINE_SECONDS:
         require(time.monotonic() < deadline, 'The schedule deadline expired during the real offline interval')
         require(all(war.process is None for war in wars), 'A supposedly stopped WAR was still owned as running')
+        monitor.sample()
         time.sleep(1)
-    unchanged = collect(database, schema, projects, observations)
+    unchanged = collect(database, schema, projects, observations, monitor)
     require(all(unchanged[name]['request'] == stopped[name]['request'] and unchanged[name]['runs'] == stopped[name]['runs']
                 and unchanged[name]['next'] == stopped[name]['next'] and unchanged[name]['now'] >= stopped[name]['next'] + 60
                 for name in projects), 'Two real due times did not pass with durable requests unchanged while both servers were stopped')
@@ -276,25 +421,30 @@ def exercise(wars, database, schema, fixture, origin, report, deadline, cycles):
     # can be inspected before another normal tick. No SQL time adjustment occurs.
     while time.time() % 60 > 2:
         require(time.monotonic() < deadline, 'The schedule deadline expired waiting for a real minute boundary')
+        monitor.sample()
         time.sleep(0.2)
     restart_epoch = time.time()
     report['bothWarsOfflineSeconds'] = round(time.monotonic() - offline_started, 3)
     a.start(True)
+    monitor.sample(force=True)
     b.start(True)
+    monitor.sample(force=True)
     require(time.time() // 60 == restart_epoch // 60, 'Restart crossed the observation minute; single catch-up cannot be established')
     def caught_up():
-        latest.update(collect(database, schema, projects, observations))
+        latest.update(collect(database, schema, projects, observations, monitor))
         require(all(latest[name]['runs'] <= before_counts[name] + 1 for name in projects), 'Missed schedule ticks were replayed as extra runs')
         require(time.time() // 60 == restart_epoch // 60, 'The next normal minute arrived before catch-up could be isolated')
         return idle(latest, cycles + 1, margin=15) and all(latest[name]['successes'] == before_counts[name] + 1 for name in projects)
     wait_for(caught_up, deadline, wars, 'The persisted schedule did not catch up once per project after downtime')
+    monitor.sample(force=True)
     b.stop()
     a.stop()
-    final = collect(database, schema, projects, observations)
+    final = collect(database, schema, projects, observations, monitor)
     require(all(final[name]['runs'] == before_counts[name] + 1 and final[name]['request']['state'] == 'SUCCEEDED'
                 and final[name]['commits'] == 1 and final[name]['issues'] == 1 and final[name]['wrongAssignees'] == 0
                 and final[name]['cursor'] == CONCURRENT.PROJECTS[name]['sha'] for name in projects),
             'The final schedule state duplicated or lost requests, reviewed commits, issues or checkpoints')
+    report['successfulRunsAfterCatchUp'] = {name: value['successes'] for name, value in final.items()}
     report['projects'] = {name: validate_history(history(database, schema, project), observations.requests[name], cycles + 1)
                           for name, project in projects.items()}
     counts = fixture.observed()
@@ -315,6 +465,7 @@ def arguments(argv=None):
     parser.add_argument('--cycles', type=int, default=5)
     parser.add_argument('--timeout-seconds', type=int, default=780)
     parser.add_argument('--startup-timeout-seconds', type=int, default=45)
+    parser.add_argument('--observe-resources', action='store_true', help='Require bounded Linux procfs and isolated DB resource observations')
     args = parser.parse_args(argv)
     for name in ('war', 'java', 'psql'):
         value = getattr(args, name).resolve(strict=True) if name == 'war' else getattr(args, name).absolute()
@@ -324,6 +475,7 @@ def arguments(argv=None):
             and all(1024 <= port <= 65535 for port in (args.port_a, args.port_b)), 'Distinct valid loopback WAR ports are required')
     require(3 <= args.cycles <= 10 and args.cycles * 60 + 240 <= args.timeout_seconds <= 1200
             and 15 <= args.startup_timeout_seconds <= 120, 'Invalid real-cycle count or bounded scheduling budget')
+    require(not args.observe_resources or sys.platform.startswith('linux'), 'Resource observation requires Linux procfs')
     args.report = LINUX.absolute_path(args.report)
     require(WORKSPACE / '.local' in args.report.parents, 'Schedule evidence must remain in this checkout .local directory')
     LINUX.checked_path(args.report.parent, directory=True)
@@ -348,6 +500,7 @@ def run(args, report):
     database, identity, public_before = None, None, None
     fixture = CONCURRENT.ConcurrencyFixture()
     owned, failure, cleanup_failed = False, None, False
+    monitor = None
     LINUX.checked_path(logs, directory=True, allow_missing=True)
     logs.mkdir(mode=0o700)
     report['logDirectory'] = str(logs)
@@ -369,10 +522,12 @@ def run(args, report):
         SHARED.verify_schema(database, schema, identity)
         origin = fixture.start()
         for index, port in enumerate((args.port_a, args.port_b)):
-            options = types.SimpleNamespace(**vars(args), port=port)
+            options = types.SimpleNamespace(**vars(args), port=port, resource_node=('node-a', 'node-b')[index])
             wars.append(ScheduledWar(options, database, schema, origin, works[index], works[index].parent, deadline))
         wars[1].password = wars[0].password
-        exercise(wars, database, schema, fixture, origin, report, deadline, args.cycles)
+        monitor = ResourceMonitor(getattr(args, 'observe_resources', False), wars, database, schema)
+        exercise(wars, database, schema, fixture, origin, report, deadline, args.cycles, monitor)
+        monitor.verify_complete()
     except BaseException as error:
         failure = error
     finally:
@@ -416,6 +571,8 @@ def run(args, report):
         report['cleanupFailed'] = cleanup_failed or not stopped or owned
         report['warStarts'] = [war.starts for war in wars]
         report['elapsedMillis'] = round((time.monotonic() - started) * 1000)
+        if monitor is not None:
+            report['resources'] = monitor.summary()
     if failure is not None:
         raise failure
     require(not report['cleanupFailed'], 'Owned schedule resources could not be safely removed')

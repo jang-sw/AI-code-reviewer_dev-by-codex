@@ -375,7 +375,8 @@ class TestRun:
                             '--expected-postmaster-pid', str(self.owned[0]),
                             '--expected-postmaster-started-at', str(self.owned[1]), '--parent-run-token', self.token])
         try:
-            self.command(command, log=self.logs / (name + '.log'), timeout=900, cooperative_cancel=True)
+            timeout = getattr(self.args, 'review_schedule_timeout_seconds', 780) + 90 if name == 'review-schedule' else 900
+            self.command(command, log=self.logs / (name + '.log'), timeout=timeout, cooperative_cancel=True)
         finally:
             if name == 'review-db-recovery':
                 self.adopt_handoff(report, self.token)
@@ -392,6 +393,11 @@ class TestRun:
                 require(outcome.get('checks', {}).get('ownedWorkRemoved') is True
                         and outcome.get('checks', {}).get('originalTestTablesPreserved') is True,
                         'The repeated-time verification did not confirm work cleanup and unchanged original tables.')
+            if name == 'review-schedule' and getattr(self.args, 'review_schedule_observe_resources', False):
+                resource = outcome.get('resources', {})
+                require(resource.get('enabled') is True and resource.get('complete') is True
+                        and type(resource.get('samples')) is int and resource['samples'] > 1,
+                        'Requested schedule resource observation was incomplete.')
         except (ValueError, TypeError, AttributeError):
             raise SafetyError('The child drill report was invalid.') from None
 
@@ -421,8 +427,12 @@ class TestRun:
             self.drill('review-rate-limit-wallclock', ['--port-a', str(self.args.review_rate_limit_wallclock_port_a),
                                                      '--port-b', str(self.args.review_rate_limit_wallclock_port_b)])
         if getattr(self.args, 'review_schedule', False):
-            self.drill('review-schedule', ['--port-a', str(self.args.review_schedule_port_a),
-                                          '--port-b', str(self.args.review_schedule_port_b)])
+            options = ['--port-a', str(self.args.review_schedule_port_a), '--port-b', str(self.args.review_schedule_port_b),
+                       '--cycles', str(getattr(self.args, 'review_schedule_cycles', 5)),
+                       '--timeout-seconds', str(getattr(self.args, 'review_schedule_timeout_seconds', 780))]
+            if getattr(self.args, 'review_schedule_observe_resources', False):
+                options.append('--observe-resources')
+            self.drill('review-schedule', options)
 
     def upgrade(self):
         self.verify_owned(self.owned)
@@ -508,6 +518,9 @@ def arguments(argv=None):
         parser.add_argument('--' + name, action='store_true')
     parser.add_argument('--previous-war', type=Path)
     parser.add_argument('--expected-previous-war-sha256')
+    parser.add_argument('--review-schedule-cycles', type=int, default=5)
+    parser.add_argument('--review-schedule-timeout-seconds', type=int, default=780)
+    parser.add_argument('--review-schedule-observe-resources', action='store_true')
     for name, default in (('review-restart-port', 18089), ('review-concurrency-port-a', 18090),
                           ('review-concurrency-port-b', 18091), ('review-database-recovery-port', 18092),
                           ('review-upgrade-port', 18093), ('shared-auth-port-a', 18094), ('shared-auth-port-b', 18095),
@@ -519,6 +532,12 @@ def arguments(argv=None):
     for name, value in vars(args).items():
         if name == 'port' or '_port' in name:
             require(1024 <= value <= 65535, 'Invalid local test port.')
+    require(3 <= args.review_schedule_cycles <= 10
+            and args.review_schedule_cycles * 60 + 240 <= args.review_schedule_timeout_seconds <= 1200,
+            'Invalid bounded schedule cycle count or deadline.')
+    require(args.review_schedule or (args.review_schedule_cycles == 5 and args.review_schedule_timeout_seconds == 780
+                                    and not args.review_schedule_observe_resources),
+            'Schedule settings require the explicit schedule verification opt-in.')
     require((args.previous_war is not None) == args.review_upgrade
             and (args.expected_previous_war_sha256 is not None) == args.review_upgrade,
             'Upgrade verification requires an explicit previous WAR and recorded checksum together.')

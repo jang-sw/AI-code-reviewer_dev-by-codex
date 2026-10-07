@@ -88,12 +88,131 @@ class ScheduleDrillTest(unittest.TestCase):
                 self.assertEqual(environment['AI_API_KEY'], '')
                 self.assertEqual(environment['SERVER_ADDRESS'], '127.0.0.1')
                 self.assertEqual(environment['GIT_ALLOWED_HOSTS'], '127.0.0.1')
+                self.assertIn('-Xmx384m', command)
                 self.assertNotIn('JAVA_TOOL_OPTIONS', environment)
                 self.assertNotIn('SPRING_CONFIG_LOCATION', environment)
                 self.assertIn('--spring.config.location=classpath:/application.properties', command)
                 self.assertIn('--spring.flyway.default-schema=' + SCHEMA, command)
         with self.assertRaises(MODULE.VerificationError):
             war.launch('true')
+
+    def test_resource_opt_in_is_linux_only_and_scopes_database_connections_without_inherited_values(self):
+        with patch.object(MODULE.sys, 'platform', 'win32'), self.assertRaises(MODULE.VerificationError):
+            MODULE.arguments(self.argv() + ['--observe-resources'])
+        with patch.object(MODULE.sys, 'platform', 'linux'), patch.object(MODULE.socket, 'socket'):
+            parsed = MODULE.arguments(self.argv(cycles=8, timeout_seconds=900) + ['--observe-resources'])
+        self.assertTrue(parsed.observe_resources)
+        database = types.SimpleNamespace(url='jdbc:postgresql://127.0.0.1:55439/reviewer_integration', user='reviewer_test', password='')
+        for node in ('node-a', 'node-b'):
+            options = types.SimpleNamespace(**vars(self.args), port=18099, observe_resources=True, resource_node=node)
+            war = MODULE.ScheduledWar(options, database, SCHEMA, ORIGIN, self.workspace, self.workspace, 100)
+            _, environment = war.launch(True)
+            self.assertEqual(environment['DB_URL'], database.url + '?currentSchema=' + SCHEMA + '&ApplicationName=' + SCHEMA + '_' + node)
+        for schema, node in (('public', 'node-a'), (SCHEMA, 'unowned')):
+            with self.assertRaises(MODULE.VerificationError):
+                MODULE.application_name(schema, node)
+
+    @staticmethod
+    def proc_stat(pid=123, started=9000, cpu=150):
+        fields = ['0'] * 22
+        fields[0], fields[11], fields[12], fields[19] = 'S', str(cpu), '50', str(started)
+        return str(pid) + ' (owned Java fixture) ' + ' '.join(fields)
+
+    def test_proc_observation_reads_only_owned_pid_and_rejects_missing_or_replaced_counters(self):
+        process = Mock(pid=123)
+        process.poll.return_value = None
+        status = 'Pid:\t123\nVmRSS:\t2048 kB\nVmHWM:\t4096 kB\nThreads:\t12\n'
+        with patch.object(MODULE, 'proc_text', side_effect=[self.proc_stat(), status, self.proc_stat()]) as reader:
+            result = MODULE.process_sample(process, 100)
+        self.assertEqual(result, {'identity': (123, 9000), 'rssBytes': 2097152, 'hwmBytes': 4194304, 'threads': 12, 'cpuSeconds': 2})
+        self.assertEqual([call.args[0].as_posix() for call in reader.call_args_list], ['/proc/123/stat', '/proc/123/status', '/proc/123/stat'])
+        variants = ([self.proc_stat(), status.replace('VmRSS:', 'Missing:'), self.proc_stat()],
+                    [self.proc_stat(), status.replace('2048 kB', 'unknown'), self.proc_stat()],
+                    [self.proc_stat(), status, self.proc_stat(started=9001)],
+                    [self.proc_stat(), status.replace('Pid:\t123', 'Pid:\t999'), self.proc_stat()])
+        for values in variants:
+            with self.subTest(values=values), patch.object(MODULE, 'proc_text', side_effect=values), self.assertRaises(MODULE.VerificationError):
+                MODULE.process_sample(process, 100)
+        with patch.object(MODULE, 'proc_text', side_effect=OSError('private-process-path')):
+            with self.assertRaises(MODULE.VerificationError) as error:
+                MODULE.process_sample(process, 100)
+        self.assertNotIn('private-process-path', str(error.exception))
+        process.poll.return_value = 1
+        with patch.object(MODULE, 'proc_text') as reader, self.assertRaises(MODULE.VerificationError):
+            MODULE.process_sample(process, 100)
+        reader.assert_not_called()
+
+    def monitor(self, enabled=True):
+        wars = [Mock(starts=1, process=Mock(pid=123)), Mock(starts=1, process=None)]
+        database = Mock()
+        database.sql.return_value = json.dumps({'connections': 2, 'nodeAConnections': 2, 'nodeBConnections': 0,
+            'active': 1, 'idle': 1, 'idleInTransaction': 0, 'schemaBytes': 4096})
+        with patch.object(MODULE.sys, 'platform', 'linux'), patch.object(MODULE.os, 'sysconf', return_value=100, create=True), \
+                patch.object(MODULE.time, 'monotonic', return_value=0):
+            monitor = MODULE.ResourceMonitor(enabled, wars, database, SCHEMA)
+        return monitor, wars, database
+
+    def test_resource_monitor_bounds_frequency_tracks_generations_and_reports_only_aggregates(self):
+        monitor, wars, database = self.monitor()
+        sample = {'identity': (123, 9000), 'rssBytes': 2000, 'hwmBytes': 3000, 'threads': 9, 'cpuSeconds': 2}
+        with patch.object(MODULE, 'process_sample', return_value=sample), patch.object(MODULE.time, 'monotonic', return_value=0):
+            monitor.sample()
+        with patch.object(MODULE, 'process_sample') as sampler, patch.object(MODULE.time, 'monotonic', return_value=9.99):
+            monitor.sample()
+        sampler.assert_not_called()
+        self.assertEqual(database.sql.call_count, 1)
+        wars[0].starts, wars[0].process, wars[1].process = 2, Mock(pid=456), Mock(pid=789)
+        database.sql.return_value = json.dumps({'connections': 2, 'nodeAConnections': 1, 'nodeBConnections': 1,
+            'active': 1, 'idle': 1, 'idleInTransaction': 0, 'schemaBytes': 4096})
+        samples = [dict(sample, identity=(456, 9500), cpuSeconds=0.5), dict(sample, identity=(789, 9800), cpuSeconds=0.25)]
+        with patch.object(MODULE, 'process_sample', side_effect=samples), patch.object(MODULE.time, 'monotonic', return_value=10):
+            monitor.sample()
+        monitor.verify_complete()
+        report = monitor.summary()
+        self.assertTrue(report['complete'])
+        self.assertEqual([(row['node'], row['generation']) for row in report['processGenerations']], [('node-a', 1), ('node-a', 2), ('node-b', 1)])
+        self.assertEqual(report['processGenerations'][1]['cpuSecondsAtFirstSample'], 0.5)
+        self.assertEqual(report['database']['sampleCount'], 2)
+        self.assertEqual(report['database']['lastSampleElapsedSeconds'], 10)
+        encoded = json.dumps(report)
+        self.assertNotIn(SCHEMA, encoded)
+        self.assertNotIn('identity', encoded)
+        self.assertNotIn('9000', encoded)
+        query = database.sql.call_args.args[0]
+        self.assertTrue(query.startswith('SELECT '))
+        self.assertIn("application_name IN ('" + SCHEMA + "_node-a','" + SCHEMA + "_node-b')", query)
+        self.assertIn("n.nspname='" + SCHEMA + "'", query)
+        self.assertNotIn('query,', query)
+        monitor.samples = MODULE.MAX_RESOURCE_SAMPLES
+        with patch.object(MODULE.time, 'monotonic', return_value=20), self.assertRaises(MODULE.VerificationError):
+            monitor.sample()
+
+    def test_resource_monitor_rejects_missing_db_values_cpu_regression_and_unobserved_generations(self):
+        sample = {'identity': (123, 9000), 'rssBytes': 2000, 'hwmBytes': 3000, 'threads': 9, 'cpuSeconds': 2}
+        for content in ('{}', '{"connections":null}', 'private-unparseable-response'):
+            monitor, _, database = self.monitor()
+            database.sql.return_value = content
+            with patch.object(MODULE, 'process_sample', return_value=sample), self.assertRaises(MODULE.VerificationError):
+                monitor.sample(force=True)
+            self.assertFalse(monitor.summary()['complete'])
+        monitor, _, database = self.monitor()
+        database.sql.return_value = json.dumps({'connections': 0, 'nodeAConnections': 0, 'nodeBConnections': 0,
+            'active': 0, 'idle': 0, 'idleInTransaction': 0, 'schemaBytes': 4096})
+        with patch.object(MODULE, 'process_sample', return_value=sample), self.assertRaises(MODULE.VerificationError):
+            monitor.sample(force=True)  # A running ready WAR must have its own matched DB connection.
+        monitor, wars, _ = self.monitor()
+        with patch.object(MODULE, 'process_sample', return_value=sample):
+            monitor.sample(force=True)
+        for changed in (dict(sample, identity=(123, 9999)), dict(sample, cpuSeconds=1)):
+            with patch.object(MODULE, 'process_sample', return_value=changed), self.assertRaises(MODULE.VerificationError):
+                monitor.sample(force=True)
+        with self.assertRaises(MODULE.VerificationError):
+            monitor.verify_complete()  # node-b has started but never supplied a sample.
+        disabled, _, database = self.monitor(enabled=False)
+        with patch.object(MODULE, 'process_sample') as sampler:
+            disabled.sample(force=True)
+        sampler.assert_not_called()
+        database.sql.assert_not_called()
 
     def test_launch_failure_does_not_expose_os_details_and_closes_owned_log(self):
         options = types.SimpleNamespace(**vars(self.args), port=18099)

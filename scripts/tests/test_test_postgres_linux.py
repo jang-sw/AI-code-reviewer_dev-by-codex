@@ -225,6 +225,8 @@ class LinuxPostgresSafetyTest(unittest.TestCase):
         base = ['--pg-bin', str(self.pg_bin), '--java', str(self.args.java)]
         defaults = MODULE.arguments(base)
         self.assertFalse(defaults.review_schedule)
+        self.assertEqual((defaults.review_schedule_cycles, defaults.review_schedule_timeout_seconds,
+                          defaults.review_schedule_observe_resources), (5, 780, False))
         self.assertEqual((defaults.review_schedule_port_a, defaults.review_schedule_port_b), (18099, 18100))
         self.runner.args = MODULE.arguments(base + ['--review-schedule', '--review-schedule-port-a', '19099',
                                                    '--review-schedule-port-b', '19100'])
@@ -263,7 +265,8 @@ class LinuxPostgresSafetyTest(unittest.TestCase):
                                                 '--review-schedule'])
             self.runner.verify()
         self.assertEqual(events, ['build/gate', 'build/gate',
-                                 ('review-schedule', ['--port-a', '18099', '--port-b', '18100'])])
+                                 ('review-schedule', ['--port-a', '18099', '--port-b', '18100',
+                                                      '--cycles', '5', '--timeout-seconds', '780'])])
 
     def test_schedule_never_runs_after_failed_mandatory_pg_gate(self):
         self.runner.args = MODULE.arguments(['--pg-bin', str(self.pg_bin), '--java', str(self.args.java),
@@ -285,7 +288,7 @@ class LinuxPostgresSafetyTest(unittest.TestCase):
         for field, value in variants:
             def child(command, **kwargs):
                 self.assertTrue(kwargs['cooperative_cancel'])
-                self.assertEqual(kwargs['timeout'], 900)
+                self.assertEqual(kwargs['timeout'], 870)
                 self.assertEqual(Path(command[1]).name, 'verify-review-schedule.py')
                 self.assertEqual(command[-4:], ['--port-a', '18099', '--port-b', '18100'])
                 self.assertNotIn('--pg-ctl', command)
@@ -306,6 +309,48 @@ class LinuxPostgresSafetyTest(unittest.TestCase):
                 else:
                     with self.assertRaises(MODULE.SafetyError):
                         self.runner.drill('review-schedule', ['--port-a', '18099', '--port-b', '18100'])
+            report.unlink()
+
+    def test_extended_schedule_forwards_bounded_options_without_relaxing_build_gate(self):
+        base = ['--pg-bin', str(self.pg_bin), '--java', str(self.args.java)]
+        for flags in (['--review-schedule-cycles', '8'], ['--review-schedule-observe-resources'],
+                      ['--review-schedule', '--review-schedule-cycles', '11'],
+                      ['--review-schedule', '--review-schedule-cycles', '8', '--review-schedule-timeout-seconds', '719'],
+                      ['--review-schedule', '--review-schedule-timeout-seconds', '1201']):
+            with self.subTest(flags=flags), self.assertRaises(MODULE.SafetyError):
+                MODULE.arguments(base + flags)
+        self.runner.args = MODULE.arguments(base + ['--review-schedule', '--review-schedule-cycles', '8',
+            '--review-schedule-timeout-seconds', '900', '--review-schedule-observe-resources'])
+        events = []
+        with patch.object(self.runner, 'command', side_effect=lambda *a, **k: events.append('build/gate')), \
+                patch.object(self.runner, 'drill', side_effect=lambda *a: events.append(a)):
+            self.runner.verify()
+        self.assertEqual(events, ['build/gate', 'build/gate', ('review-schedule', ['--port-a', '18099', '--port-b', '18100',
+            '--cycles', '8', '--timeout-seconds', '900', '--observe-resources'])])
+
+    def test_requested_resource_evidence_is_required_and_child_cleanup_gets_ninety_seconds(self):
+        self.runner.args.review_schedule_timeout_seconds = 900
+        self.runner.args.review_schedule_observe_resources = True
+        (self.workspace / 'scripts' / 'verify-review-schedule.py').write_text('# synthetic fixture', encoding='utf-8')
+        self.runner.logs.mkdir()
+        report = self.runner.logs / ('review-schedule-' + self.runner.token + '.json')
+        for resources in (None, {}, {'enabled': True, 'complete': False, 'samples': 20},
+                          {'enabled': True, 'complete': True, 'samples': True},
+                          {'enabled': True, 'complete': True, 'samples': 20}):
+            def child(command, **kwargs):
+                self.assertEqual(kwargs['timeout'], 990)
+                self.assertTrue(kwargs['cooperative_cancel'])
+                outcome = {'result': 'PASS', 'externalServicesUsed': False, 'paidAiUsed': False, 'cleanupFailed': False,
+                    'checks': {key: True for key in ('ownedWarsStopped', 'ownedSchemaRemoved', 'ownedWorkRemoved', 'originalTestTablesPreserved')}}
+                if resources is not None:
+                    outcome['resources'] = resources
+                report.write_text(json.dumps(outcome), encoding='utf-8')
+            with self.subTest(resources=resources), patch.object(self.runner, 'command', side_effect=child):
+                if resources == {'enabled': True, 'complete': True, 'samples': 20}:
+                    self.runner.drill('review-schedule', [])
+                else:
+                    with self.assertRaises(MODULE.SafetyError):
+                        self.runner.drill('review-schedule', [])
             report.unlink()
 
     def test_upgrade_requires_explicit_previous_war_and_recorded_hash_together(self):
