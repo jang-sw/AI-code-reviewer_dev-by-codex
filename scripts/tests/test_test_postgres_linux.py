@@ -221,6 +221,93 @@ class LinuxPostgresSafetyTest(unittest.TestCase):
                         self.runner.drill('review-rate-limit-wallclock', ['--port-a', '18097', '--port-b', '18098'])
             report.unlink()
 
+    def test_schedule_cli_is_opt_in_and_custom_ports_are_bounded(self):
+        base = ['--pg-bin', str(self.pg_bin), '--java', str(self.args.java)]
+        defaults = MODULE.arguments(base)
+        self.assertFalse(defaults.review_schedule)
+        self.assertEqual((defaults.review_schedule_port_a, defaults.review_schedule_port_b), (18099, 18100))
+        self.runner.args = MODULE.arguments(base + ['--review-schedule', '--review-schedule-port-a', '19099',
+                                                   '--review-schedule-port-b', '19100'])
+        self.assertEqual(self.runner.selected_ports(), [55439, 19099, 19100])
+        for name in ('--review-schedule-port-a', '--review-schedule-port-b'):
+            for value in ('1023', '65536'):
+                with self.subTest(name=name, value=value), self.assertRaises(MODULE.SafetyError):
+                    MODULE.arguments(base + ['--review-schedule', name, value])
+
+    def test_schedule_ports_cannot_collide_with_any_selected_test(self):
+        args = MODULE.arguments(['--pg-bin', str(self.pg_bin), '--java', str(self.args.java),
+            '--review-restart', '--review-concurrency', '--review-database-recovery', '--shared-auth',
+            '--review-rate-limit', '--review-rate-limit-wallclock', '--review-schedule'])
+        args.review_upgrade = True
+        self.runner.args = args
+        ports = [55439, 18089, 18090, 18091, 18092, 18093, 18094, 18095, 18096, 18097, 18098, 18099, 18100]
+        self.assertEqual(self.runner.selected_ports(), ports)
+        for name in ('review_schedule_port_a', 'review_schedule_port_b'):
+            original = getattr(args, name)
+            for port in ports:
+                if port == original:
+                    continue
+                setattr(args, name, port)
+                with self.subTest(name=name, port=port), self.assertRaises(MODULE.SafetyError):
+                    self.runner.selected_ports()
+                setattr(args, name, original)
+
+    def test_schedule_follows_build_and_mandatory_pg_gate_only_when_selected(self):
+        events = []
+        with patch.object(self.runner, 'command', side_effect=lambda *a, **k: events.append('build/gate')), \
+                patch.object(self.runner, 'drill', side_effect=lambda *a: events.append(a)):
+            self.runner.verify()
+            self.assertEqual(events, ['build/gate', 'build/gate'])
+            events.clear()
+            self.runner.args = MODULE.arguments(['--pg-bin', str(self.pg_bin), '--java', str(self.args.java),
+                                                '--review-schedule'])
+            self.runner.verify()
+        self.assertEqual(events, ['build/gate', 'build/gate',
+                                 ('review-schedule', ['--port-a', '18099', '--port-b', '18100'])])
+
+    def test_schedule_never_runs_after_failed_mandatory_pg_gate(self):
+        self.runner.args = MODULE.arguments(['--pg-bin', str(self.pg_bin), '--java', str(self.args.java),
+                                            '--review-schedule'])
+        with patch.object(self.runner, 'command', side_effect=[None, MODULE.SafetyError('synthetic missing PG report')]), \
+                patch.object(self.runner, 'drill') as drill, self.assertRaises(MODULE.SafetyError):
+            self.runner.verify()
+        drill.assert_not_called()
+
+    def test_schedule_requires_all_cleanup_preservation_and_isolation_evidence(self):
+        (self.workspace / 'scripts' / 'verify-review-schedule.py').write_text('# synthetic fixture', encoding='utf-8')
+        self.runner.logs.mkdir()
+        report = self.runner.logs / ('review-schedule-' + self.runner.token + '.json')
+        required_checks = ('ownedWarsStopped', 'ownedSchemaRemoved', 'ownedWorkRemoved', 'originalTestTablesPreserved')
+        variants = [('result', 'FAIL'), ('externalServicesUsed', True), ('paidAiUsed', True),
+                    ('cleanupFailed', True), ('cleanupFailed', None)]
+        variants.extend((key, value) for key in required_checks for value in (False, None, 'true', 1))
+        variants.append((None, None))
+        for field, value in variants:
+            def child(command, **kwargs):
+                self.assertTrue(kwargs['cooperative_cancel'])
+                self.assertEqual(kwargs['timeout'], 900)
+                self.assertEqual(Path(command[1]).name, 'verify-review-schedule.py')
+                self.assertEqual(command[-4:], ['--port-a', '18099', '--port-b', '18100'])
+                self.assertNotIn('--pg-ctl', command)
+                self.assertEqual(Path(command[command.index('--report') + 1]), report)
+                outcome = {'result': 'PASS', 'externalServicesUsed': False, 'paidAiUsed': False, 'cleanupFailed': False,
+                           'checks': {key: True for key in required_checks}}
+                if field in required_checks:
+                    if value is None:
+                        del outcome['checks'][field]
+                    else:
+                        outcome['checks'][field] = value
+                elif field is not None:
+                    outcome[field] = value
+                report.write_text(json.dumps(outcome), encoding='utf-8')
+            with self.subTest(field=field, value=value), patch.object(self.runner, 'command', side_effect=child):
+                if field is None:
+                    self.runner.drill('review-schedule', ['--port-a', '18099', '--port-b', '18100'])
+                else:
+                    with self.assertRaises(MODULE.SafetyError):
+                        self.runner.drill('review-schedule', ['--port-a', '18099', '--port-b', '18100'])
+            report.unlink()
+
     def test_upgrade_requires_explicit_previous_war_and_recorded_hash_together(self):
         base = ['--pg-bin', str(self.pg_bin), '--java', str(self.args.java)]
         self.enable_upgrade()

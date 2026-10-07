@@ -212,6 +212,14 @@ WAR SHA256은 `5b91855b81a098fea0fbf48383a6a662b006f1fcb9ff4f36c8e01801c90a3a96`
 
 최종 WAR의 실제 SIGTERM 취소도41.206초·종료130/FAIL 유지·소유 자원 정리·원본14테이블 보존을 통과했다. 브라우저에서는 합성 KST 자료의 UTC 시작/완료/리뷰 시각과 마이크로초 datetime·없는 완료 시각을 검증했다.390px/1280px 본문 넘침 없음, 모바일 표 키보드 이동/포커스를 확인하고 임시 bridge와 WAR/schema/PG를 종료했다. 첫 최종 화면 시험은 점유 포트 사전 검사에서 시작 전 중단했으며, 가용 확인 후 새 실행으로 통과했다. 점유 원인은 미확정이다. Linux `.local/session12-utc-ui-final-harness.json`, Windows `.local/session12-utc-ui-observation.json`과 화면 이미지에 증거를 보존한다.
 
+### 예약ON 반복과 사유 처리 화면
+
+2026-10-07 후속 `--review-schedule`에서 전체 Java1070건 중1060통과/선택10skip·필수PG6suite 이후, 두 WAR의 검증용1분 예약을479.629초에 검증했다. 느린 요청 병합·다른 프로젝트 진행, 두 서버167.727초 중지 후 정확히1회 따라잡기, 총20회 실행에서 커밋/이슈 각각3개·프로젝트별AI1회 재사용을 확인했다. SQL 시간 변경은 없으며 실제 운영1시간 주기의 장기 실행을 대신하지 않는다. [재현·관찰값·한계](WORKER-CONCURRENCY-VALIDATION.md)를 따른다.
+
+WAR SHA256은 `42f2490ee84112f9063cf60f050215eaeb33da81498b62470aaa64ab0d45b94e`,42,033,854바이트다. Python274건은 Windows269통과/5skip, Linux264통과/10skip였다. 첫 Java 검증은 새 FlashMap 테스트 assertion 오버로드로 컴파일에 실패했고, 의미 동일한 boolean 검사로 수정한 뒤 전체 검증을 통과했다. 별도 실제SIGTERM31.997초 시험은 FAIL/130 유지·원본14테이블 보존·소유 자원과 부모PG/lock 정리를 확인했다.
+
+같은 WAR를 예약/처리OFF·SQL 합성 자료로 실행해 일반 사용자 수동 사유 오류 복구와 관리자 반려/재검토/승인 뒤 사유 보존을 실제 브라우저로 확인했다.390px/1280px 본문 넘침 없음, 오류 링크의 입력 포커스·키보드 저장·원래 목록2페이지 복귀, 관리자 모바일 표40px 키보드 이동을 확인했다. 오류 시DB/감사 무변경, 수정 뒤사유1건 및 최종 승인 뒤과거사유감사2건을 대조했다. 임시 loopback HTTP bridge와 소유WAR/schema/work·PG를 정리했고 원본14테이블을 보존했다. Windows `.local/session13-ui-observation.json`, Linux `.local/session13-ui-harness.json`에 증거를 보존한다. 실제 서비스 계정·유료 모델을 호출하거나 systemd/TLS에 새 WAR를 설치하지 않았다.
+
 ### 남은 검증
 
 운영 Linux 서버의 실제 부팅·지속 실행·공개 네트워크/TLS와 인증서 갱신, 운영 데이터 규모의 업그레이드·rollback, 백업 암호화·보존·RPO/RTO, 실제 GitLab/LiteLLM 인증과 모델 품질, 장시간 부하·다중 인스턴스 정책 검증은 남아 있다. 이번 WSL 합성 환경의 통과는 이 항목이나 릴리스 승인을 대신하지 않는다.

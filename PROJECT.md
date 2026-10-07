@@ -19,6 +19,7 @@
 - `--shared-auth`는 같은 DB의 두 WAR에서 로그인·가입 제한 공유, 재시작 유지, 저장소 오류 시503과 복구를 검증한다. [동작·재현 명령](docs/AUTH-LIMITING.md)을 따른다.
 - `--review-rate-limit`는 실제 WAR와 합성 Git/AI429에서 요청·저장 결과 보존, origin 공유 대기와 재시작 후 재개를 검증한다. [정책·시간 가속 범위·재현 명령](docs/EXTERNAL-RATE-LIMITS.md)을 따른다.
 - `--review-rate-limit-wallclock`는 두 WAR에서 실제65초 Git 대기, 다른 서버의 공유 제한, 별도 origin 프로젝트 처리와 원 요청 재개를 SQL 시간 변경 없이 검증한다. 장기 부하·실제 공급자 quota 검증과는 구분한다.
+- `--review-schedule`은 두 WAR의 1분 검증용 예약으로 프로젝트마다 최소5회 예약 실행과 양쪽 서버 중지 후 누락 일정의 한 번 따라잡기를 검사한다. 초기 시작 시 조정된 요청도 실행 횟수에 포함하며 SQL 시각 변경을 사용하지 않는다. [실제 WSL 결과·재현 명령과 보장 범위](docs/WORKER-CONCURRENCY-VALIDATION.md)를 따른다.
 - `scripts/package-candidate.py`: 검증한 WAR·Linux 템플릿·운영 문서를 현재 개발 버전의 로컬 후보 묶음으로 생성한다. [사용법과 한계](docs/CANDIDATE-PACKAGE.md)를 확인한다. 실제 설치·업로드·릴리스 승인은 수행하지 않는다.
 
 ## 구현된 흐름
