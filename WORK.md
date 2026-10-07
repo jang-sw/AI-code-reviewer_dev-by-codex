@@ -2,9 +2,9 @@
 
 - 작업: 실사용 AI 소스코드 리뷰 시스템. **개발 중, 릴리스 완료 아님.**
 - 이번 회차: 2026-10-07 21:04 KST 시작, 최대23:04 KST까지 진행한다.
-- 기록 기준: `main` / `81fd8b5`(제품 `349181b`)에서 시작. 시작 작업 트리는 깨끗했고 로컬 origin/main 기준5개 커밋이 미푸시였다. 이번 커밋도 로컬만 유지한다(원격 fetch/CI 확인은 별도).
+- 기록 기준: `main` / 제품 `ab1689e`, 예약 검증 `522dbdc`(이번 시작 `81fd8b5`). 시작 작업 트리는 깨끗했고 로컬 origin/main 기준5개 커밋이 미푸시였다. 이번 커밋도 로컬만 유지한다(원격 fetch/CI 확인은 별도).
 - 이번 완료 조건: 두 실제 WAR에서 예약을 켜고 검증용1분 주기로 여러 번 처리한다. 느린 프로젝트의 예약 병합·다른 프로젝트 진행·서버 재시작·기존 리뷰 재사용과 중복 없는 결과를 SQL 시간 변경 없이 검증한다. 관련 제품/화면 결함이 확인되면 수정과 회귀 검증을 수행한다.
-- 이번 단계: 사유 입력/조회 개선과 두 WAR 실제 예약 반복·중지 후 따라잡기·SIGTERM 정리를 검증했다. 전체 Java1070건(1060통과/선택10skip)·필수PG6suite, Python274건 양쪽 OS와390px/1280px 실제 브라우저를 통과했다. 제품 수정 `ab1689e`는 로컬 커밋했고 예약 도구와 문서 반영 및 최종 후보 포장/자원 정리를 진행한다. 푸시·운영 배포·실제/유료 모델 호출은 하지 않는다. LiteLLM 주소·모델은 미정이며 제품은 계속 개발 중이다.
+- 이번 단계: 사유 입력/조회 개선과 두 WAR 실제 예약 반복·중지 후 따라잡기·SIGTERM 정리를 검증했다. 전체 Java1070건(1060통과/선택10skip)·필수PG6suite, Python274건 양쪽 OS와390px/1280px 실제 브라우저를 통과했다. 제품과 예약 도구를 로컬 커밋했으며 최종26파일 후보의 재현 생성·소유 자원 정리도 통과했다. 푸시·운영 배포·실제/유료 모델 호출은 수행하지 않았다. LiteLLM 주소·모델은 미정이며 제품은 계속 개발 중이다.
 - 확정 요구사항: `docs/REQUIREMENTS.md`. 내부 이슈함 우선, 최초 전체 이력, Java25/Spring/Maven/JSP/PostgreSQL 유지.
 - 재개 시 이 문서와 실제 Git 상태를 대조하고 아래 다음 작업부터 진행한다. 모든 릴리스 항목 검증 전 완료라고 보고하지 않는다.
 
@@ -59,7 +59,8 @@
 - 실제 두 WAR 예약 반복479.629초 PASS. A3/B2회 기동, 느린 AI25.639초 보류 중 예약 병합·다른 두 프로젝트 완료, 두 서버167.727초 중지 후 프로젝트마다 정확히1회 따라잡기 확인. 최종 요청/실행6·7·7회, 각 커밋/이슈1개·Git 상세/diff/AI1회, 원본14테이블 및 소유WAR/schema/work·부모PG 정리 PASS. SQL 시간 변경 없음. 운영1시간 주기·장시간 부하 합격으로 확대하지 않는다.
 - 실제SIGTERM 취소31.997초 PASS. A2/B1회 기동 후 느린 예약1개 RUNNING·다른2개 SUCCEEDED를 관측하고 취소했다. FAIL/KeyboardInterrupt/종료130 유지·소유WAR/schema/work·원본14테이블·부모PG/lock 정리 PASS. `.local/linux-postgres-00657a6a20fa41fa81e5dd57fb6243c6/cancel-harness.json`.
 - 최종 WAR 실제 브라우저390px/1280px에서 일반 사용자 사유400→오류 링크의 필드 포커스→수정 저장→원래OPEN2페이지 복귀, 관리자 반려 사유 읽기→재검토→승인→감사2건 보존 확인. 모바일 표 키보드40px 이동/포커스와 본문 가로 넘침 없음. 오류 뒤DB는OPEN/빈 사유/감사0, 수정 뒤RESOLVED/사유/감사1, 최종 계정APPROVED/현재사유NULL/과거사유감사2 확인. `.local/session13-ui-observation.json`, Linux `.local/session13-ui-harness.json`과 화면5개에 보존한다. loopback HTTP bridge와 소유WAR/schema/work·부모PG 정리, 원본14테이블 보존 PASS. SQL 합성 초기자료와 예약/처리OFF 화면 검증이며 외부 호출 없음.
-- WAR 구조·해시 검사를 통과했고 제품 수정은 `ab1689e`로 로컬 커밋했다. 최종 후보 포장·전체 자원 정리는 아직 미완료다.
+- WAR 구조·해시 검사를 통과했고 제품 수정은 `ab1689e`, 예약 검증은 `522dbdc`로 로컬 커밋했다. 해당 소스의282개 tracked 파일을 Linux에 동기화하고 각각의 해시를 대조했다. 최종 WAR로 후보2개를 만들어26파일·전체 체크섬·manifest·고정metadata·압축 바이트 일치를 확인했다. 후보 SHA256 `ff224a616c64271cd81fcb655abcc29a2f7e1a63b9bc85b785e84bcfb5dff720`,38,038,493바이트. Linux `.local/session13-candidate-{first,second}`, Windows `.local/session13-candidate`에 보존한다. 제공 소스 식별자522dbdc·releaseApproved=false이며 설치하지 않았다.
+- Linux/Windows `.local/session13-validation-summary.json`에 XML 집계·예약·취소·화면·후보·정리 증거를 묶었다. Linux21개 시험포트·Windowsbridge18081 닫힘, 검증WAR·PG PID·run lock 부재, 서비스3개inactive/disabled와 소유keeper의PID/시작시각/UID/명령 대조 후 종료 PASS. 최종 staged 도구/문서 독립 읽기 리뷰에 차단 결함 없으며 비밀정보·공백 검사를 통과했다.
 
 ### 이전 회차: 두 서버의 실제 대기 시간·화면 검증
 
@@ -199,5 +200,5 @@
 - 운영 대상은 사용자 답변으로 Linux 서버, 도커 미사용으로 확정했다(2026-09-26). 사용자 요청에 따른 전용 WSL2 Ubuntu 로컬 Linux 환경 구축과 설치/복구 검증은 2026-10-02 수행했다. 실제 서버 배포는 별도 승인 대상이다.
 - origin: jang-sw/code-reviewer_by-codex. main 직접 푸시 별도 승인 없음 → 로컬 커밋만, 푸시/배포 없음.
 - `.local/pg-test`: Windows 개발검증 전용127.0.0.1:55432. Windows `.local/pg-validation` 및 staged snapshot의pg-validation:55439. Linux PGDATA는 Linux 홈의 별도 checkout에만 만들고 Windows PGDATA를 공유하지 않는다.
-- `.local`은 Git 제외. 이번 Linux 부모 WAR/PG와 새 UUID schema를 정리하고80/443/8080~8082/18080/18081/18089~18098/55439/55449 총19개 포트 연결 불가·검증 PID/lock 부재를 확인했다. Windows 임시bridge18081도 닫혔다. 이전 앱·Nginx·서비스PG는 계속inactive/disabled이며 서비스PG manual 설정을 유지한다. 원본 합성 DB·root 전용 설정/백업·후보·시험 기록은 전용 WSL에 보존한다. 소유keeper도PID/시작시각·명령·UID대조후종료확인했다(`.local/session12-keeper-cleanup.json`). 사용자Windows Ollama/55432 PG를변경하지않았고 Windows재부팅은수행하지않았다.
+- `.local`은 Git 제외. 이번 Linux 부모 WAR/PG와 새 UUID schema를 정리하고80/443/8080~8082/18080/18081/18089~18100/55439/55449 총21개 포트 연결 불가·검증 PID/lock 부재를 확인했다. Windows 임시bridge18081도 닫혔다. 이전 앱·Nginx·서비스PG는 계속inactive/disabled이며 서비스PG manual 설정을 유지한다. 원본 합성 DB·root 전용 설정/백업·후보·시험 기록은 전용 WSL에 보존한다. 소유keeper도PID/시작시각·명령·UID대조후종료확인했다(`.local/session13-keeper-cleanup.json`). 사용자Windows Ollama/55432 PG를변경하지않았고 Windows재부팅은수행하지않았다.
 - 런타임 Git 수집은 매번 pinned 전체 이력을 재검증, 기본1000페이지/metadata32MiB/저장SHA131072개 안전 한도. 제한을 자동 확장/절삭하지 않는다.
