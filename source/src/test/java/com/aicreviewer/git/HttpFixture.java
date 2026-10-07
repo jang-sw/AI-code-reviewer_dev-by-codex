@@ -32,6 +32,7 @@ public final class HttpFixture implements AutoCloseable {
                 exchange.getResponseHeaders().set("Content-Type", "application/json");
                 byte[] body = reply.body().getBytes(StandardCharsets.UTF_8);
                 exchange.sendResponseHeaders(reply.status(), body.length);
+                exchange.getResponseBody().flush();
                 if (reply.bodyDelayMs() > 0) Thread.sleep(reply.bodyDelayMs());
                 exchange.getResponseBody().write(body);
             } catch (InterruptedException ex) { Thread.currentThread().interrupt(); }

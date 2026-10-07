@@ -53,7 +53,7 @@ public class GitRepositoryClient {
             @Value("${app.git.max-diff-bytes:262144}") int maxDiffBytes,
             @Value("${app.git.max-response-bytes:2097152}") int maxResponseBytes,
             @Value("${app.git.operation-timeout-seconds:300}") int operationTimeoutSeconds,
-            GitCredentialProperties credentialProperties) {
+            GitCredentialProperties credentialProperties, RateLimitGate rateLimitGate) {
         this.allowedHosts = Set.copyOf(allowedHosts);
         this.githubApi = SafeHttpTransport.baseUri(githubApi);
         this.credentials = new GitCredentialRegistry(this.allowedHosts, token, tokenHost, tokenOrigin, credentialProperties);
@@ -64,7 +64,14 @@ public class GitRepositoryClient {
         this.maxDiffBytes = maxDiffBytes;
         if (operationTimeoutSeconds < 1 || operationTimeoutSeconds > 3600) throw new IllegalArgumentException("Invalid Git operation time limit");
         this.operationTimeoutSeconds = operationTimeoutSeconds;
-        this.http = new SafeHttpTransport(Duration.ofSeconds(timeoutSeconds), maxResponseBytes);
+        this.http = new SafeHttpTransport(Duration.ofSeconds(timeoutSeconds), maxResponseBytes, rateLimitGate);
+    }
+
+    public GitRepositoryClient(Set<String> allowedHosts, String githubApi, String token, String tokenHost,
+            String tokenOrigin, int timeoutSeconds, int maxPages, int maxDiffBytes, int maxResponseBytes,
+            int operationTimeoutSeconds, GitCredentialProperties credentialProperties) {
+        this(allowedHosts, githubApi, token, tokenHost, tokenOrigin, timeoutSeconds, maxPages, maxDiffBytes,
+                maxResponseBytes, operationTimeoutSeconds, credentialProperties, RateLimitGate.NOOP);
     }
 
     public GitRepositoryClient(Set<String> allowedHosts, String githubApi, String token, String tokenHost,

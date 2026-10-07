@@ -2,6 +2,7 @@ package com.aicreviewer.ai;
 
 import com.aicreviewer.git.GitCommit;
 import com.aicreviewer.git.IntegrationException;
+import com.aicreviewer.git.RateLimitGate;
 import com.aicreviewer.git.SafeHttpTransport;
 import java.net.URI;
 import java.net.http.HttpRequest;
@@ -68,9 +69,16 @@ public class AiReviewClient {
             @Value("${app.ai.max-output-tokens:4096}") int maxOutputTokens,
             @Value("${app.ai.openai-model:}") String openAiModel,
             @Value("${OPENAI_API_KEY:}") String openAiApiKey,
-            @Value("${app.ai.max-review-calls:8}") int maxReviewCalls) {
+            @Value("${app.ai.max-review-calls:8}") int maxReviewCalls, RateLimitGate rateLimitGate) {
         this(provider, baseUrl, model, apiKey, timeoutSeconds, maxDiffBytes, maxResponseBytes,
-                contextTokens, maxOutputTokens, openAiModel, openAiApiKey, maxReviewCalls, null);
+                contextTokens, maxOutputTokens, openAiModel, openAiApiKey, maxReviewCalls, null, rateLimitGate);
+    }
+
+    public AiReviewClient(String provider, String baseUrl, String model, String apiKey, int timeoutSeconds,
+            int maxDiffBytes, int maxResponseBytes, int contextTokens, int maxOutputTokens,
+            String openAiModel, String openAiApiKey, int maxReviewCalls) {
+        this(provider, baseUrl, model, apiKey, timeoutSeconds, maxDiffBytes, maxResponseBytes,
+                contextTokens, maxOutputTokens, openAiModel, openAiApiKey, maxReviewCalls, RateLimitGate.NOOP);
     }
 
     /** Existing callers retain the bounded default of eight complete file groups. */
@@ -90,7 +98,7 @@ public class AiReviewClient {
 
     private AiReviewClient(String provider, String baseUrl, String model, String apiKey, int timeoutSeconds,
             int maxDiffBytes, int maxResponseBytes, int contextTokens, int maxOutputTokens,
-            String openAiModel, String openAiApiKey, int maxReviewCalls, URI fixtureEndpoint) {
+            String openAiModel, String openAiApiKey, int maxReviewCalls, URI fixtureEndpoint, RateLimitGate rateLimitGate) {
         if (!Set.of("ollama", "litellm", "openai").contains(provider)) throw new IllegalArgumentException("AI provider must be ollama, litellm or openai");
         String selectedModel = provider.equals("openai") ? openAiModel : model;
         if (selectedModel == null || selectedModel.isBlank() || selectedModel.length() > 200
@@ -121,7 +129,7 @@ public class AiReviewClient {
         this.contextTokens = contextTokens;
         this.maxOutputTokens = maxOutputTokens;
         this.maxReviewCalls = maxReviewCalls;
-        this.http = new SafeHttpTransport(Duration.ofSeconds(timeoutSeconds), maxResponseBytes);
+        this.http = new SafeHttpTransport(Duration.ofSeconds(timeoutSeconds), maxResponseBytes, rateLimitGate);
         this.timeoutNanos = Duration.ofSeconds(timeoutSeconds).toNanos();
     }
 
@@ -134,13 +142,20 @@ public class AiReviewClient {
 
     static AiReviewClient openAiFixture(URI endpoint, String model, String apiKey, int timeoutSeconds,
             int maxDiffBytes, int maxResponseBytes, int contextTokens, int maxOutputTokens, int maxReviewCalls) {
+        return openAiFixture(endpoint, model, apiKey, timeoutSeconds, maxDiffBytes, maxResponseBytes,
+                contextTokens, maxOutputTokens, maxReviewCalls, RateLimitGate.NOOP);
+    }
+
+    static AiReviewClient openAiFixture(URI endpoint, String model, String apiKey, int timeoutSeconds,
+            int maxDiffBytes, int maxResponseBytes, int contextTokens, int maxOutputTokens, int maxReviewCalls,
+            RateLimitGate rateLimitGate) {
         if (endpoint == null || !"http".equals(endpoint.getScheme()) || !"127.0.0.1".equals(endpoint.getHost())
                 || endpoint.getPort() < 1 || endpoint.getPort() > 65535 || !"/v1/responses".equals(endpoint.getRawPath())
                 || endpoint.getRawUserInfo() != null || endpoint.getRawQuery() != null || endpoint.getRawFragment() != null) {
             throw new IllegalArgumentException("OpenAI HTTP fixtures require an explicit loopback endpoint");
         }
         return new AiReviewClient("openai", "", "", "", timeoutSeconds, maxDiffBytes, maxResponseBytes,
-                contextTokens, maxOutputTokens, model, apiKey, maxReviewCalls, endpoint);
+                contextTokens, maxOutputTokens, model, apiKey, maxReviewCalls, endpoint, rateLimitGate);
     }
 
     public ReviewResult review(GitCommit commit) {

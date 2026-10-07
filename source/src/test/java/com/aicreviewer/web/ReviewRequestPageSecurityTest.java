@@ -95,4 +95,68 @@ class ReviewRequestPageSecurityTest {
                 .andExpect(status().isForbidden());
         assertThat(jdbc.queryForObject("SELECT request_id FROM review_request WHERE project_id=?", String.class, projectId)).isEqualTo(requestId);
     }
+
+    @ParameterizedTest @ValueSource(strings = {"GIT_RATE_LIMITED", "AI_RATE_LIMITED"})
+    void rateLimitWaitIsVisibleOnlyToOwnerAndAdminWithoutRequeueOrSourceMetadata(String code) throws Exception {
+        Instant retryAt = Instant.parse("2026-01-01T03:04:05Z"); // Already due; claim, not the UI clock, ends waiting.
+        jdbc.update("UPDATE review_request SET result_code=?,available_at=?,attempt_count=2 WHERE project_id=?",
+                code, Timestamp.from(retryAt), projectId);
+        for (String username : new String[] {"queue-owner", "queue-admin"}) {
+            for (String path : new String[] {"/projects/" + projectId, "/reviews?projectId=" + projectId}) {
+                var response = mvc.perform(get(path).with(user(accounts.loadUserByUsername(username))))
+                        .andExpect(status().isOk()).andReturn();
+                var snapshot = (ReviewRequestView) response.getModelAndView().getModel().get("reviewRequest");
+                assertThat(snapshot.state()).isEqualTo("QUEUED");
+                assertThat(snapshot.active()).isTrue();
+                assertThat(snapshot.rateLimited()).isTrue();
+                assertThat(snapshot.retryAt()).isEqualTo(retryAt);
+                assertThat(snapshot.retryAtLabel()).isEqualTo("2026-01-01 03:04:05");
+                assertThat(snapshot.rateLimitLabel()).startsWith(code.equals("GIT_RATE_LIMITED") ? "Git 서버" : "AI 서비스");
+                assertThat(snapshot.toString()).doesNotContain(requestId, "claim_token", "requestedBy", "github.com", code);
+                assertThat(response.getModelAndView().getModel()).doesNotContainKey("reviewProgress");
+            }
+        }
+        mvc.perform(get("/projects/" + projectId).with(user(accounts.loadUserByUsername("queue-other")))).andExpect(status().isNotFound());
+        mvc.perform(get("/reviews").param("projectId", Long.toString(projectId)).with(user(accounts.loadUserByUsername("queue-other"))))
+                .andExpect(status().isForbidden());
+        assertThat(jdbc.queryForObject("SELECT result_code FROM review_request WHERE project_id=?", String.class, projectId)).isEqualTo(code);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM review_run", Long.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audit_event", Long.class)).isZero();
+    }
+
+    @Test void terminalRateLimitFailureExplainsManualActionWithoutInventingRetryTime() throws Exception {
+        jdbc.update("UPDATE review_request SET state='FAILED',result_code='RATE_LIMIT_EXHAUSTED',finished_at=CURRENT_TIMESTAMP WHERE project_id=?", projectId);
+        for (String path : new String[] {"/projects/" + projectId, "/reviews?projectId=" + projectId}) {
+            var response = mvc.perform(get(path).with(user(accounts.loadUserByUsername("queue-owner"))))
+                    .andExpect(status().isOk()).andReturn();
+            var snapshot = (ReviewRequestView) response.getModelAndView().getModel().get("reviewRequest");
+            assertThat(snapshot.active()).isFalse();
+            assertThat(snapshot.rateLimited()).isFalse();
+            assertThat(snapshot.rateLimitExhausted()).isTrue();
+            assertThat(snapshot.retryAt()).isNull();
+            assertThat(snapshot.resultLabel()).contains("서비스 상태를 확인한 후 직접 다시 요청", "새 예약으로 자동 재접수하지 않습니다");
+        }
+        assertThat(jdbc.queryForObject("SELECT state FROM review_request WHERE project_id=?", String.class, projectId)).isEqualTo("FAILED");
+    }
+
+    @Test void projectReapprovalDoesNotHideManualRetryGuidanceOrResetItsRequest() throws Exception {
+        jdbc.update("UPDATE review_request SET state='FAILED',result_code='RATE_LIMIT_EXHAUSTED',finished_at=CURRENT_TIMESTAMP WHERE project_id=?", projectId);
+        for (String projectState : new String[] {"PAUSED", "APPROVED"}) {
+            jdbc.update("UPDATE project SET status=? WHERE id=?", projectState, projectId);
+            for (String username : new String[] {"queue-owner", "queue-admin"}) {
+                for (String path : new String[] {"/projects/" + projectId, "/reviews?projectId=" + projectId}) {
+                    var response = mvc.perform(get(path).with(user(accounts.loadUserByUsername(username))))
+                            .andExpect(status().isOk()).andReturn();
+                    var snapshot = (ReviewRequestView) response.getModelAndView().getModel().get("reviewRequest");
+                    assertThat(snapshot.rateLimitExhausted()).isTrue();
+                    assertThat(snapshot.active()).isFalse();
+                    assertThat(snapshot.resultLabel()).contains("새 예약으로 자동 재접수하지 않습니다");
+                    assertThat(snapshot.toString()).doesNotContain(requestId, "RATE_LIMIT_EXHAUSTED");
+                }
+            }
+        }
+        assertThat(jdbc.queryForObject("SELECT request_id FROM review_request WHERE project_id=?", String.class, projectId)).isEqualTo(requestId);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM review_run", Long.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audit_event", Long.class)).isZero();
+    }
 }

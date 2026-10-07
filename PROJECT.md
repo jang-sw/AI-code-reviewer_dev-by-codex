@@ -15,7 +15,7 @@
 - `source/src/main/webapp/WEB-INF/jsp/` JSP·공통 fragment. `source/src/test/` 자동 테스트.
 - `scripts/test-postgres.ps1`: Windows 격리 PostgreSQL 검증. `-BackupRestore -ReviewRestart`는 백업/복원과 실제 WAR 강제 중단 후 재기동, `-ReviewConcurrency`는 두 WAR의 잠금 경쟁과 다른 프로젝트 진행을 검증한다.
 - `scripts/test-postgres-linux.py`: 일반 Linux 사용자와 native 파일시스템의 전용 PostgreSQL17에서 전체 빌드·필수 DB 검증을 실행한다. `--backup-restore --review-restart --review-concurrency --review-database-recovery`로 백업과 세 복구 검증을 함께 실행한다.
-- 같은 Linux 도구의 `--review-upgrade`는 명시한 V12 WAR·체크섬을 받아 누적 리뷰 데이터의 V14 업데이트와 별도 DB의 V12 백업 복귀를 검증한다. [실행 조건과 범위](docs/UPGRADE-VALIDATION.md)를 따른다.
+- 같은 Linux 도구의 `--review-upgrade`는 명시한 V12 WAR·체크섬을 받아 누적 리뷰 데이터의 V15 업데이트와 별도 DB의 V12 백업 복귀를 검증한다. [실행 조건과 범위](docs/UPGRADE-VALIDATION.md)를 따른다.
 - `--shared-auth`는 같은 DB의 두 WAR에서 로그인·가입 제한 공유, 재시작 유지, 저장소 오류 시503과 복구를 검증한다. [동작·재현 명령](docs/AUTH-LIMITING.md)을 따른다.
 - `scripts/package-candidate.py`: 검증한 WAR·Linux 템플릿·운영 문서를 현재 개발 버전의 로컬 후보 묶음으로 생성한다. [사용법과 한계](docs/CANDIDATE-PACKAGE.md)를 확인한다. 실제 설치·업로드·릴리스 승인은 수행하지 않는다.
 
@@ -34,6 +34,7 @@
 10. 관리자는 운영 상태에서 최신 실패·미실행·오래된 실행 시작을50건씩 확인한다. 수동 업무는 확인 사유와 함께 처리하며 AI 권고와 구분한다.
 11. 관리자 ‘서버 상태’는 별도 주기로 수집한 DB 전체 요약과 실패·지연 화면 알림을 제공한다. 수집 실패나90초 이상 지난 관측은 현재 수치로 표시하지 않는다. 상태만 반환하는 공개 생존/준비 확인과 관리자 metrics의 범위는 [모니터링 가이드](docs/MONITORING.md)를 따른다.
 12. 프로젝트 상세와 리뷰 기록에서 현재 요청에 연결된 실행의 마지막 처리 단계·새 저장 건수·마지막 저장 시각을 확인한다. 이전 시도의 결과는 재사용하며 수동 확인 배정을 담당자의 확인 완료로 세지 않는다. 전체 이력 대비 비율이나 남은 시간은 표시하지 않는다.
+13. 외부 Git/AI의429는 같은 요청을 보존하며 대기한다. origin별 공유 대기, 최대5회/24시간 상한, UTC 재개 가능 시각을 제공하고 한도 초과 시 직접 다시 요청하도록 안내한다. [정책과 검증 범위](docs/EXTERNAL-RATE-LIMITS.md)를 따른다.
 
 ## 실행·검증
 

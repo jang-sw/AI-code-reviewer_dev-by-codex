@@ -36,7 +36,7 @@ class UpgradeDrillBoundaryTest(unittest.TestCase):
         self.java = self.workspace / 'java'
         self.java.touch()
         self.old_war, old_hash = self.war('old.war', 12)
-        self.new_war, new_hash = self.war('new.war', 14)
+        self.new_war, new_hash = self.war('new.war', 15)
         self.args = types.SimpleNamespace(war=self.new_war, previous_war=self.old_war,
             java=self.java, pg_bin=self.pg_bin, psql=self.pg_bin / 'psql',
             expected_war_sha256=new_hash, expected_previous_war_sha256=old_hash,
@@ -77,19 +77,19 @@ class UpgradeDrillBoundaryTest(unittest.TestCase):
         self.assertEqual(self.args.expected_previous_war_sha256,
                          MODULE.verify_war(self.old_war, self.args.expected_previous_war_sha256, 12))
         self.assertEqual(self.args.expected_war_sha256,
-                         MODULE.verify_war(self.new_war, self.args.expected_war_sha256, 14))
-        for path, digest, maximum in ((self.old_war, self.args.expected_previous_war_sha256, 14),
+                         MODULE.verify_war(self.new_war, self.args.expected_war_sha256, 15))
+        for path, digest, maximum in ((self.old_war, self.args.expected_previous_war_sha256, 15),
                                       (self.new_war, self.args.expected_war_sha256, 12),
-                                      (self.new_war, '0' * 64, 14),
+                                      (self.new_war, '0' * 64, 15),
                                       (self.new_war, self.args.expected_war_sha256, 13)):
             with self.subTest(path=path.name, maximum=maximum), self.assertRaises(MODULE.VerificationError):
                 MODULE.verify_war(path, digest, maximum)
 
-    def test_current_war_requires_v14_and_rejects_previous_v13_or_future_v15(self):
-        for maximum in (13, 15):
+    def test_current_war_requires_v15_and_rejects_previous_v13_v14_or_future_v16(self):
+        for maximum in (13, 14, 16):
             path, digest = self.war(f'unsupported-{maximum}.war', maximum)
             with self.subTest(maximum=maximum), self.assertRaises(MODULE.VerificationError):
-                MODULE.verify_war(path, digest, 14)
+                MODULE.verify_war(path, digest, 15)
 
     def test_war_duplicate_missing_and_unexpected_resources_are_rejected(self):
         prefix = 'WEB-INF/classes/db/migration/'
@@ -163,7 +163,7 @@ class UpgradeDrillBoundaryTest(unittest.TestCase):
 
     def test_migration_and_fingerprint_probes_retain_legacy_checksums_and_columns(self):
         database = Mock()
-        for maximum in (12, 14):
+        for maximum in (12, 15):
             rows = [{'version': str(value), 'checksum': value * 11, 'success': True} for value in range(1, maximum + 1)]
             database.sql.return_value = json.dumps(rows)
             self.assertEqual(MODULE.migration_snapshot(database, SCHEMA, maximum), rows)
@@ -172,20 +172,31 @@ class UpgradeDrillBoundaryTest(unittest.TestCase):
                 with self.subTest(maximum=maximum, rows=bad), self.assertRaises(MODULE.VerificationError):
                     MODULE.migration_snapshot(database, SCHEMA, maximum)
         database.sql.reset_mock()
-        with self.assertRaises(MODULE.VerificationError):
-            MODULE.migration_snapshot(database, SCHEMA, 13)
+        for unsupported in (13, 14, 16):
+            with self.subTest(unsupported=unsupported), self.assertRaises(MODULE.VerificationError):
+                MODULE.migration_snapshot(database, SCHEMA, unsupported)
         database.sql.assert_not_called()
         database.sql.reset_mock()
         database.sql.return_value = '2:' + 'a' * 32
         values = MODULE.legacy_fingerprints(database, SCHEMA)
         self.assertEqual(set(values), set(MODULE.LEGACY_TABLES_V12))
         self.assertEqual(10, len(values))
-        self.assertEqual(set(MODULE.BACKUP.TABLES) - set(values), {'auth_attempt_policy', 'auth_attempt_bucket'})
+        self.assertEqual(set(MODULE.BACKUP.TABLES) - set(values),
+                         {'auth_attempt_policy', 'auth_attempt_bucket', 'integration_cooldown_guard', 'integration_cooldown'})
+        self.assertEqual(len(MODULE.BACKUP.TABLES), 14)
         queries = [call.args[0] for call in database.sql.call_args_list]
-        self.assertTrue(all('auth_attempt_' not in query for query in queries))
+        self.assertTrue(all('auth_attempt_' not in query and 'integration_cooldown' not in query for query in queries))
         run_query = next(query for query in queries if '.review_run)' in query)
         self.assertIn('SELECT ' + MODULE.OLD_RUN_COLUMNS + ' FROM', run_query)
         self.assertNotIn('progress_stage', run_query)
+        expected_request_columns = ('project_id,request_id,claim_token,state,source,requested_by,requested_at,available_at,'
+                                    'last_attempt_at,attempt_count,run_id,finished_at,result_code')
+        self.assertEqual(MODULE.OLD_REQUEST_COLUMNS, expected_request_columns)
+        request_query = next(query for query in queries if '.review_request)' in query)
+        self.assertIn('SELECT ' + expected_request_columns + ' FROM', request_query)
+        self.assertNotIn('SELECT *', request_query)
+        self.assertNotIn('rate_limit_count', request_query)
+        self.assertNotIn('rate_limited_at', request_query)
         self.assertEqual(set(MODULE.application_fingerprints(values)), set(MODULE.LEGACY_TABLES_V12) - {'flyway_schema_history'})
         database.sql.reset_mock()
         with self.assertRaises(MODULE.VerificationError):
@@ -221,6 +232,40 @@ class UpgradeDrillBoundaryTest(unittest.TestCase):
         database = Mock()
         with self.assertRaises(MODULE.VerificationError):
             MODULE.verify_v14_auth_state_before_login(database, 'public')
+        database.sql.assert_not_called()
+
+    def test_v15_initial_state_checks_exact_guards_empty_cooldowns_and_all_existing_request_defaults(self):
+        database = Mock()
+        for request_count in (1, 3):
+            database.sql.return_value = json.dumps({'guards': ['AI', 'GIT'], 'cooldownCount': 0,
+                'requestCount': request_count, 'defaultedRequestCount': request_count})
+            MODULE.verify_v15_rate_limit_state_before_workers(database, SCHEMA)
+        query = database.sql.call_args.args[0]
+        self.assertTrue(query.startswith('SELECT '))
+        self.assertIn(SCHEMA + '.integration_cooldown_guard', query)
+        self.assertIn('json_agg(service ORDER BY service)', query)
+        self.assertIn(SCHEMA + '.integration_cooldown', query)
+        self.assertIn(SCHEMA + '.review_request WHERE rate_limit_count=0 AND rate_limited_at IS NULL', query)
+        self.assertNotIn('origin_hash', query)
+
+    def test_v15_initial_state_refuses_changed_defaults_wrong_guards_or_existing_cooldowns(self):
+        valid = {'guards': ['AI', 'GIT'], 'cooldownCount': 0, 'requestCount': 2, 'defaultedRequestCount': 2}
+        invalid = [None, {}, valid | {'guards': None}, valid | {'guards': []},
+                   valid | {'guards': ['AI']}, valid | {'guards': ['AI', 'AI']},
+                   valid | {'guards': ['AI', 'GIT', 'OTHER']}, valid | {'guards': ['AI', 'OTHER']},
+                   valid | {'cooldownCount': 1}, valid | {'cooldownCount': False}, valid | {'cooldownCount': '0'},
+                   valid | {'requestCount': 0, 'defaultedRequestCount': 0},
+                   valid | {'requestCount': True}, valid | {'requestCount': '2'},
+                   valid | {'defaultedRequestCount': 1}, valid | {'defaultedRequestCount': 3},
+                   valid | {'defaultedRequestCount': False}, valid | {'defaultedRequestCount': '2'}]
+        for state in invalid:
+            database = Mock()
+            database.sql.return_value = json.dumps(state)
+            with self.subTest(state=state), self.assertRaises(MODULE.VerificationError):
+                MODULE.verify_v15_rate_limit_state_before_workers(database, SCHEMA)
+        database = Mock()
+        with self.assertRaises(MODULE.VerificationError):
+            MODULE.verify_v15_rate_limit_state_before_workers(database, 'public')
         database.sql.assert_not_called()
 
     def test_recovery_rejects_changed_request_claim_duplicates_and_borrowed_progress(self):
@@ -337,6 +382,7 @@ class UpgradeDrillBoundaryTest(unittest.TestCase):
             self.assertNotIn('synthetic-private-response-and-password', str(report) + output.getvalue())
             self.assertFalse(report['externalServicesUsed'])
             self.assertFalse(report['paidAiUsed'])
+            self.assertIn('V12/V15 WARs', report['scope'])
             self.args.report.unlink()
 
     def test_report_is_created_exclusively_and_never_follows_a_link(self):

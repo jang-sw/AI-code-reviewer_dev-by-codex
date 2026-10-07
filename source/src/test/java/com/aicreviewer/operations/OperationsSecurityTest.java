@@ -104,4 +104,32 @@ class OperationsSecurityTest {
         mvc.perform(get("/admin/operations").param("filter", "QUEUED").with(user(accounts.loadUserByUsername("ops-member"))))
                 .andExpect(status().isForbidden());
     }
+
+    @Test
+    void rateLimitFilterRequiresCurrentAdministratorAndShowsOnlySafeRetryMetadata() throws Exception {
+        Long projectId = jdbc.queryForObject("SELECT id FROM project WHERE repository_path='private/operations'", Long.class);
+        String requestId = java.util.UUID.randomUUID().toString();
+        jdbc.update("INSERT INTO review_request(project_id,request_id,state,source,requested_at,available_at,result_code) VALUES(?,?,'QUEUED','SCHEDULED',TIMESTAMP WITH TIME ZONE '2000-01-01 00:00:00+00',TIMESTAMP WITH TIME ZONE '2000-01-01 01:02:03+00','GIT_RATE_LIMITED')",
+                projectId, requestId);
+        mvc.perform(get("/admin/operations").param("filter", "RATE_LIMITED")).andExpect(status().is3xxRedirection());
+        mvc.perform(get("/admin/operations").param("filter", "RATE_LIMITED").with(user(accounts.loadUserByUsername("ops-member"))))
+                .andExpect(status().isForbidden());
+        for (String code : new String[] {"GIT_RATE_LIMITED", "AI_RATE_LIMITED"}) {
+            jdbc.update("UPDATE review_request SET result_code=? WHERE project_id=?", code, projectId);
+            var response = mvc.perform(get("/admin/operations").param("filter", "RATE_LIMITED").with(user(accounts.loadUserByUsername("ops-admin"))))
+                    .andExpect(status().isOk()).andReturn();
+            var page = (OperationsService.OperationsPage) response.getModelAndView().getModel().get("operations");
+            assertThat(page.filter()).isEqualTo("RATE_LIMITED");
+            assertThat(page.projects()).hasSize(1);
+            var project = page.projects().getFirst();
+            assertThat(project.rateLimited()).isTrue();
+            assertThat(project.retryAtLabel()).isEqualTo("2000-01-01 01:02:03");
+            assertThat(project.rateLimitLabel()).isEqualTo(code.equals("GIT_RATE_LIMITED") ? "Git 서버 호출 제한" : "AI 서비스 호출 제한");
+            assertThat(project.toString()).doesNotContain(requestId, "claim_token", "requested_by", "private/operations", code);
+        }
+        var previouslyAuthenticated = accounts.loadUserByUsername("ops-admin");
+        jdbc.update("UPDATE app_user SET enabled=FALSE WHERE username='ops-admin'");
+        mvc.perform(get("/admin/operations").param("filter", "RATE_LIMITED").with(user(previouslyAuthenticated)))
+                .andExpect(status().is3xxRedirection());
+    }
 }

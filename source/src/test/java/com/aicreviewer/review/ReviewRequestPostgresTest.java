@@ -6,6 +6,7 @@ import com.aicreviewer.ai.ReviewResult;
 import com.aicreviewer.git.GitCommit;
 import com.aicreviewer.git.GitRepositoryClient;
 import com.aicreviewer.git.GitReviewBatch;
+import com.aicreviewer.git.RateLimitedException;
 import com.aicreviewer.issue.IssueService;
 import java.sql.Connection;
 import java.sql.SQLException;
@@ -341,7 +342,7 @@ class ReviewRequestPostgresTest {
         terminateOwnedSession(tracked);
 
         try (var recoveredLease = new PostgresProjectReviewLock(source).tryAcquire(projectId).orElseThrow()) {
-            var recovered = newRequests().claim(request, NOW.plusSeconds(1));
+            var recovered = newRequests().claim(request, NOW.plusSeconds(30));
             assertThat(recovered.claimToken()).isNotEqualTo(oldClaim.claimToken());
             assertThat(recovered.requestId()).isEqualTo(oldClaim.requestId());
             assertThat(recovered.runId()).isNotEqualTo(oldClaim.runId());
@@ -388,6 +389,7 @@ class ReviewRequestPostgresTest {
             try {
                 assertThat(entered.await(10, TimeUnit.SECONDS)).isTrue();
                 terminateOwnedSession(tracked);
+                makeRetryDue();
                 assertThat(coordinator(newRequests(), new PostgresProjectReviewLock(source)).processRequest(request))
                         .isEqualTo(ReviewCoordinator.Outcome.SUCCEEDED);
             } finally { release.countDown(); }
@@ -421,6 +423,7 @@ class ReviewRequestPostgresTest {
             assertThat(jdbc.queryForObject("select status from review_run", String.class)).isEqualTo("RUNNING");
         } finally { jdbc.execute("alter table review_request drop constraint queue_fixture_finalization_failure"); }
 
+        makeRetryDue();
         assertThat(coordinator(newRequests(), new PostgresProjectReviewLock(source)).processRequest(request))
                 .isEqualTo(ReviewCoordinator.Outcome.SUCCEEDED);
         assertThat(cursor()).isEqualTo(FIRST.sha());
@@ -468,6 +471,7 @@ class ReviewRequestPostgresTest {
             assertThat(jdbc.queryForObject("select count(*) from audit_event where action='REVIEW_FAILED'", Integer.class)).isZero();
         } finally { jdbc.execute("alter table review_request drop constraint queue_fixture_failure_ack"); }
         doReturn(new GitReviewBatch(List.of(FIRST), FIRST.sha())).when(git).batch(any(), any(), any(), anySet(), anyInt());
+        makeRetryDue();
         assertThat(coordinator(newRequests(), new PostgresProjectReviewLock(source)).processRequest(request))
                 .isEqualTo(ReviewCoordinator.Outcome.SUCCEEDED);
         assertThat(count("review_issue")).isEqualTo(1);
@@ -494,6 +498,7 @@ class ReviewRequestPostgresTest {
         assertThat(count("reviewed_commit")).isEqualTo(1);
         assertThat(cursor()).isNull();
         doReturn(result("Resumed result")).when(ai).review(SECOND);
+        makeRetryDue();
         assertThat(coordinator(newRequests(), new PostgresProjectReviewLock(source)).processRequest(request))
                 .isEqualTo(ReviewCoordinator.Outcome.SUCCEEDED);
         assertThat(cursor()).isEqualTo(SECOND.sha());
@@ -501,6 +506,82 @@ class ReviewRequestPostgresTest {
         verify(ai, times(1)).review(FIRST);
         verify(ai, times(2)).review(SECOND);
         verify(git).batch(any(), any(), isNull(), eq(Set.of(FIRST.sha())), anyInt());
+    }
+
+    @Test void rateLimitWaitingSurvivesNewRepositoryAndReusesStoredCommitAfterDueTime() {
+        requests.enqueueManual(projectId, "owner", NOW);
+        var original = requests.find(projectId).orElseThrow();
+        when(git.batch(any(), any(), any(), anySet(), anyInt())).thenAnswer(invocation -> {
+            Set<String> stored = invocation.getArgument(3);
+            return new GitReviewBatch(stored.isEmpty() ? List.of(FIRST, SECOND) : List.of(SECOND), SECOND.sha());
+        });
+        when(ai.review(SECOND)).thenThrow(new RateLimitedException(RateLimitedException.Service.AI, Instant.now().plusSeconds(300), true));
+        assertThat(coordinator(requests, new PostgresProjectReviewLock(source)).processRequest(original))
+                .isEqualTo(ReviewCoordinator.Outcome.DEFERRED);
+        var restarted = newRequests();
+        var waiting = restarted.find(projectId).orElseThrow();
+        assertThat(waiting.state()).isEqualTo("QUEUED");
+        assertThat(waiting.requestId()).isEqualTo(original.requestId());
+        assertThat(waiting.requestedBy()).isEqualTo(original.requestedBy());
+        assertThat(waiting.requestedAt()).isEqualTo(original.requestedAt());
+        assertThat(waiting.rateLimitCount()).isEqualTo(1);
+        assertThat(waiting.rateLimitedAt()).isNotNull();
+        assertThat(waiting.resultCode()).isEqualTo("AI_RATE_LIMITED");
+        assertThat(count("reviewed_commit")).isEqualTo(1);
+        assertThat(count("review_issue")).isEqualTo(1);
+        assertThat(cursor()).isNull();
+        assertThat(restarted.candidates(waiting.availableAt().minusSeconds(1), 10)).isEmpty();
+        assertThat(coordinator(restarted, new PostgresProjectReviewLock(source)).processRequest(original))
+                .isEqualTo(ReviewCoordinator.Outcome.SKIPPED);
+        verify(ai, times(1)).review(SECOND);
+        makeRetryDue();
+        doReturn(result("Successful retry")).when(ai).review(SECOND);
+        assertThat(coordinator(restarted, new PostgresProjectReviewLock(source)).processRequest(original))
+                .isEqualTo(ReviewCoordinator.Outcome.SUCCEEDED);
+        assertThat(count("reviewed_commit")).isEqualTo(2);
+        assertThat(count("review_issue")).isEqualTo(2);
+        assertThat(cursor()).isEqualTo(SECOND.sha());
+        assertThat(restarted.find(projectId).orElseThrow().requestId()).isEqualTo(original.requestId());
+        assertThat(jdbc.queryForList("select reviewed_commits from review_run order by id", Integer.class)).containsExactly(1, 1);
+        verify(ai, times(1)).review(FIRST);
+        verify(ai, times(2)).review(SECOND);
+        verify(git).batch(any(), any(), isNull(), eq(Set.of(FIRST.sha())), anyInt());
+    }
+
+    @Test void rateLimitTransactionRollsBackAndObsoleteLeaseCannotDeferItsReplacement() {
+        requests.enqueueManual(projectId, "owner", NOW);
+        var original = requests.find(projectId).orElseThrow();
+        ReviewRequestRepository.Claim old;
+        try (var lease = new PostgresProjectReviewLock(source).tryAcquire(projectId).orElseThrow()) {
+            old = requests.claim(original, NOW);
+            var before = requests.find(projectId).orElseThrow();
+            jdbc.execute("alter table audit_event add constraint reject_queue_rate_limit check(action <> 'REVIEW_RATE_LIMITED')");
+            try {
+                assertThatThrownBy(() -> transactions.execute(status -> requests.deferRateLimited(old,
+                        new RateLimitedException(RateLimitedException.Service.GIT, NOW.plusSeconds(180), true), NOW)))
+                        .isInstanceOf(DataAccessException.class);
+                assertThat(requests.find(projectId)).contains(before);
+                assertThat(jdbc.queryForObject("select status from review_run", String.class)).isEqualTo("RUNNING");
+                assertThat(jdbc.queryForObject("select error_message from review_run", String.class)).isNull();
+            } finally { jdbc.execute("alter table audit_event drop constraint reject_queue_rate_limit"); }
+            var deferred = transactions.execute(status -> requests.deferRateLimited(old,
+                    new RateLimitedException(RateLimitedException.Service.GIT, NOW.plusSeconds(180), true), NOW));
+            assertThat(deferred).isEqualTo(ReviewRequestRepository.RateLimitOutcome.DEFERRED);
+        }
+        var restored = newRequests();
+        try (var lease = new PostgresProjectReviewLock(source).tryAcquire(projectId).orElseThrow()) {
+            assertThat(restored.claim(original, NOW.plusSeconds(179))).isNull();
+            var fresh = restored.claim(original, NOW.plusSeconds(180));
+            assertThat(fresh).isNotNull();
+            assertThat(fresh.claimToken()).isNotEqualTo(old.claimToken());
+            var current = restored.find(projectId).orElseThrow();
+            var stale = transactions.execute(status -> requests.deferRateLimited(old,
+                    new RateLimitedException(RateLimitedException.Service.AI, null, true), NOW.plusSeconds(181)));
+            assertThat(stale).isEqualTo(ReviewRequestRepository.RateLimitOutcome.STALE);
+            assertThat(restored.find(projectId)).contains(current);
+            assertThat(current.rateLimitCount()).isEqualTo(1);
+            assertThat(current.attemptCount()).isEqualTo(2);
+        }
     }
 
     @Test void scheduleTickCannotReplacePendingManualIdentityOrQueueTheSamePeriodAgain() {
@@ -660,6 +741,12 @@ class ReviewRequestPostgresTest {
     }
 
     private String cursor() { return jdbc.queryForObject("select last_reviewed_sha from project where id=?", String.class, projectId); }
+
+    private void makeRetryDue() {
+        // Simulate elapsed polling backoff while keeping real transaction/session recovery coverage.
+        jdbc.update("update review_request set available_at = ? where project_id = ?",
+                Timestamp.from(Instant.now().minusSeconds(1)), projectId);
+    }
 
     private void terminateOwnedSession(CapturedSessionDataSource tracked) {
         int pid = tracked.pid.get();

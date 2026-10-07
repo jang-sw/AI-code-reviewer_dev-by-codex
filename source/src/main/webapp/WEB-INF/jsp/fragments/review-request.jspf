@@ -17,11 +17,13 @@
     <c:if test="${reviewRequest.active}"><dt>접수 후 경과</dt><dd><c:out value="${reviewRequest.elapsedMinutes}"/>분</dd></c:if>
     <c:if test="${not empty reviewRequest.lastAttemptAt}"><dt>최근 처리 시작 (UTC)</dt><dd><c:out value="${reviewRequest.lastAttemptAt}"/></dd><dt>처리 시도</dt><dd><c:out value="${reviewRequest.attemptCount}"/>회</dd></c:if>
     <c:if test="${not empty reviewRequest.finishedAt}"><dt>요청 종료 (UTC)</dt><dd><c:out value="${reviewRequest.finishedAt}"/></dd></c:if>
+    <c:if test="${reviewRequest.rateLimited and not empty reviewRequest.retryAt}"><dt>재시도 가능 시각 (UTC)</dt><dd><time datetime="<c:out value='${reviewRequest.retryAt}'/>"><c:out value="${reviewRequest.retryAtLabel}"/></time></dd></c:if>
   </dl>
-  <c:if test="${reviewRequest.state == 'QUEUED'}"><p>요청이 저장되어 실행을 기다리고 있습니다. 서버가 재시작되어도 접수 기록은 유지됩니다.</p></c:if>
+  <c:if test="${reviewRequest.rateLimited}"><p class="notice"><c:out value="${reviewRequest.rateLimitLabel}"/> 요청과 이미 저장한 커밋 리뷰·이슈는 유지되며 다음 시도에서 재사용합니다.</p><p class="hint">표시된 시각 이후에 다시 처리할 수 있습니다. 해당 시각의 실행이나 완료를 보장하지 않으며, 처리 순서와 서버 상태에 따라 더 기다릴 수 있습니다. 새로 요청하지 않아도 작업자가 이어서 처리합니다.</p></c:if>
+  <c:if test="${reviewRequest.state == 'QUEUED' and not reviewRequest.rateLimited}"><p>요청이 저장되어 실행을 기다리고 있습니다. 서버가 재시작되어도 접수 기록은 유지됩니다.</p></c:if>
   <c:if test="${reviewRequest.state == 'RUNNING'}"><p>처리 중으로 기록된 요청입니다. 프로세스가 중단되었다면 기존 실행의 종료 여부를 확인한 뒤 저장된 커밋부터 다시 처리합니다. 이 상태만으로 현재 실행 여부를 확정할 수는 없습니다.</p></c:if>
-  <c:if test="${reviewRequest.recovered}"><p class="hint">중단된 요청의 처리 시도를 다시 시작한 기록입니다. 이미 저장한 커밋 리뷰와 이슈는 재사용합니다.</p></c:if>
+  <c:if test="${reviewRequest.recovered}"><p class="hint">이 요청에는 두 번 이상의 처리 시도가 기록되어 있습니다. 이미 저장한 커밋 리뷰와 이슈는 재사용합니다.</p></c:if>
   <c:if test="${not empty reviewRequest.resultLabel}"><p><c:out value="${reviewRequest.resultLabel}"/></p></c:if>
-  <c:if test="${reviewRequest.active}"><p class="hint">접수 후 경과에는 실행·재시작 복구를 기다린 시간이 포함됩니다. 완료 예정 시간이 아닙니다. 상태를 확인하려면 화면을 새로고침하세요.</p></c:if>
+  <c:if test="${reviewRequest.active}"><p class="hint">접수 후 경과에는 실행·재시작 복구·호출 제한으로 기다린 시간이 포함됩니다. 완료 예정 시간이 아닙니다. 상태를 확인하려면 화면을 새로고침하세요.</p></c:if>
 </section>
 </c:if>

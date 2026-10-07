@@ -8,6 +8,7 @@ import com.aicreviewer.git.GitCommit;
 import com.aicreviewer.git.GitRepositoryClient;
 import com.aicreviewer.git.GitReviewBatch;
 import com.aicreviewer.git.IntegrationException;
+import com.aicreviewer.git.RateLimitedException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -136,6 +137,20 @@ public class ReviewCoordinator {
                 // A failed commit response can mean either rollback or a committed acknowledgement.
                 // Leave the durable state unchanged; the next lease owner reconciles stored progress.
                 throw exception;
+            }
+            if (claim != null && exception instanceof RateLimitedException limited) {
+                var outcome = transactions.execute(status -> {
+                    checkInterrupted();
+                    var deferred = requests.deferRateLimited(claim, limited, Instant.now());
+                    checkInterrupted();
+                    return deferred;
+                });
+                return switch (outcome) {
+                    case DEFERRED -> Outcome.DEFERRED;
+                    case EXHAUSTED -> Outcome.FAILED;
+                    case CANCELLED -> Outcome.CANCELLED;
+                    case STALE -> Outcome.SKIPPED;
+                };
             }
             // IntegrationException has an explicit safe-message contract. Other exception
             // messages may include source code or credentials and must never reach persistence.
@@ -278,5 +293,5 @@ public class ReviewCoordinator {
 
     private static boolean textWithin(String value, int maximum) { return value != null && !value.isBlank() && value.length() <= maximum; }
 
-    public enum Outcome { SUCCEEDED, FAILED, BUSY, SKIPPED, CANCELLED }
+    public enum Outcome { SUCCEEDED, FAILED, BUSY, SKIPPED, CANCELLED, DEFERRED }
 }

@@ -129,7 +129,7 @@ class ReviewRequestRepositoryTest {
         requests.enqueueManual(10, "owner", NOW);
         var snapshot = requests.find(10).orElseThrow();
         var first = requests.claim(snapshot, NOW);
-        var replacement = requests.claim(snapshot, NOW.plusSeconds(1));
+        var replacement = requests.claim(snapshot, NOW.plusSeconds(30));
         assertThat(first.claimToken()).isNotEqualTo(replacement.claimToken());
         assertThatThrownBy(() -> tx.executeWithoutResult(status -> requests.guard(first)))
                 .isInstanceOf(ReviewRequestRepository.StaleClaimException.class);
@@ -178,8 +178,8 @@ class ReviewRequestRepositoryTest {
     @Test void repeatedRecoveryBacksOffToOneHourWithoutBusyPollsShorteningTheDelay() {
         requests.enqueueManual(10, "owner", NOW);
         long[] delays = {30, 60, 120, 240, 480, 960, 1920, 3600, 3600};
+        Instant started = NOW;
         for (int attempt = 0; attempt < delays.length; attempt++) {
-            Instant started = NOW.plusSeconds(attempt);
             requests.claim(requests.find(10).orElseThrow(), started);
             var request = requests.find(10).orElseThrow();
             assertThat(request.attemptCount()).isEqualTo(attempt + 1);
@@ -188,6 +188,7 @@ class ReviewRequestRepositoryTest {
             requests.deferBusy(request, started.plusSeconds(30));
             assertThat(requests.find(10).orElseThrow().availableAt()).isEqualTo(request.availableAt());
             assertThat(requests.candidates(request.availableAt(), 1)).hasSize(1);
+            started = request.availableAt();
         }
     }
 

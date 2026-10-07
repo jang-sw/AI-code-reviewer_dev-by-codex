@@ -1,5 +1,6 @@
 package com.aicreviewer.review;
 
+import com.aicreviewer.git.RateLimitedException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
@@ -20,12 +21,15 @@ import java.util.UUID;
 public class ReviewRequestRepository {
     public static final int MAX_CANDIDATES = 1016;
     public static final int RETRY_SECONDS = 30;
+    private static final int MAX_RATE_LIMIT_RESPONSES = 6;
+    private static final long MAX_RATE_LIMIT_WAIT_SECONDS = 24 * 60 * 60;
+    private static final String RATE_LIMIT_EXHAUSTED = "RATE_LIMIT_EXHAUSTED";
     private static final RowMapper<Request> REQUEST = (rs, row) -> new Request(rs.getLong("project_id"),
             rs.getString("request_id"), rs.getString("state"), rs.getString("source"),
             rs.getObject("requested_by", Long.class), rs.getTimestamp("requested_at").toInstant(),
             rs.getTimestamp("available_at").toInstant(), instant(rs.getTimestamp("last_attempt_at")),
             rs.getInt("attempt_count"), rs.getObject("run_id", Long.class), instant(rs.getTimestamp("finished_at")),
-            rs.getString("result_code"));
+            rs.getString("result_code"), rs.getInt("rate_limit_count"), instant(rs.getTimestamp("rate_limited_at")));
     private final JdbcTemplate jdbc;
     private final ReviewRepository reviews;
     private final TransactionTemplate transactions;
@@ -74,12 +78,14 @@ public class ReviewRequestRepository {
         Objects.requireNonNull(now, "Request time is required");
         Optional<Request> existing = lockedRequest(projectId);
         if (existing.isPresent() && existing.get().active()) return EnqueueResult.ALREADY_QUEUED;
+        if (existing.isPresent() && "SCHEDULED".equals(source)
+                && RATE_LIMIT_EXHAUSTED.equals(existing.get().resultCode())) return EnqueueResult.SKIPPED;
         String requestId = UUID.randomUUID().toString();
         if (existing.isEmpty()) {
             jdbc.update("insert into review_request(project_id, request_id, state, source, requested_by, requested_at, available_at) values (?, ?, 'QUEUED', ?, ?, ?, ?)",
                     projectId, requestId, source, actorId, Timestamp.from(now), Timestamp.from(now));
         } else {
-            jdbc.update("update review_request set request_id = ?, claim_token = null, state = 'QUEUED', source = ?, requested_by = ?, requested_at = ?, available_at = ?, last_attempt_at = null, attempt_count = 0, run_id = null, finished_at = null, result_code = null where project_id = ?",
+            jdbc.update("update review_request set request_id = ?, claim_token = null, state = 'QUEUED', source = ?, requested_by = ?, requested_at = ?, available_at = ?, last_attempt_at = null, attempt_count = 0, run_id = null, finished_at = null, result_code = null, rate_limit_count = 0, rate_limited_at = null where project_id = ?",
                     requestId, source, actorId, Timestamp.from(now), Timestamp.from(now), projectId);
         }
         audit(actorId, "REVIEW_REQUESTED", projectId, "source=" + source + "; request=" + requestId, now);
@@ -152,6 +158,12 @@ public class ReviewRequestRepository {
                 cancelLocked(request, ineligible, now);
                 return null;
             }
+            if (request.rateLimitedAt() != null && !now.isBefore(request.rateLimitedAt().plusSeconds(MAX_RATE_LIMIT_WAIT_SECONDS))) {
+                exhaustLocked(request, request.rateLimitCount(), request.rateLimitedAt(), now);
+                return null;
+            }
+            // A candidate can be stale after another worker observes a provider cooldown.
+            if (request.availableAt().isAfter(now)) return null;
             String token = UUID.randomUUID().toString();
             long runId = reviews.startRun(project.id(), request.requestedBy(), now);
             jdbc.update("update review_request set state = 'RUNNING', claim_token = ?, run_id = ?, last_attempt_at = ?, available_at = ?, attempt_count = attempt_count + 1, finished_at = null, result_code = null where project_id = ?",
@@ -189,6 +201,50 @@ public class ReviewRequestRepository {
                 ineligible == null ? "FAILED" : "CANCELLED", Timestamp.from(now),
                 ineligible == null ? "REVIEW_FAILED" : ineligible, claim.projectId());
         return true;
+    }
+
+    /** Persist provider waiting and close this attempt atomically under the current fencing token. */
+    public RateLimitOutcome deferRateLimited(Claim claim, RateLimitedException limited, Instant now) {
+        requireTransaction();
+        Objects.requireNonNull(limited);
+        Objects.requireNonNull(now);
+        ReviewProject project = reviews.project(claim.projectId(), true);
+        final Request request;
+        try { request = requireCurrent(claim); }
+        catch (StaleClaimException obsolete) { return RateLimitOutcome.STALE; }
+        String ineligible = ineligible(project, request.requestedBy());
+        if (ineligible != null) {
+            cancelLocked(request, ineligible, now);
+            return RateLimitOutcome.CANCELLED;
+        }
+        int count = Math.min(MAX_RATE_LIMIT_RESPONSES, request.rateLimitCount() + (limited.actualResponse() ? 1 : 0));
+        Instant firstLimitedAt = request.rateLimitedAt() == null ? now : request.rateLimitedAt();
+        Instant deadline = firstLimitedAt.plusSeconds(MAX_RATE_LIMIT_WAIT_SECONDS);
+        Instant availableAt = now.plusSeconds(recoveryDelay(count));
+        if (limited.retryAt() != null && limited.retryAt().isAfter(availableAt)) availableAt = limited.retryAt();
+        if (count >= MAX_RATE_LIMIT_RESPONSES || limited.retryAt() == null || !now.isBefore(deadline)
+                || availableAt.isAfter(deadline)) {
+            exhaustLocked(request, count, firstLimitedAt, now);
+            return RateLimitOutcome.EXHAUSTED;
+        }
+        String resultCode = limited.service() == RateLimitedException.Service.GIT ? "GIT_RATE_LIMITED" : "AI_RATE_LIMITED";
+        reviews.finishRun(claim.runId(), false, now,
+                "외부 서비스의 요청 제한으로 이번 시도를 중단했습니다. 저장된 커밋은 유지하며 대기 후 자동으로 다시 시도합니다.");
+        jdbc.update("update review_request set state = 'QUEUED', claim_token = null, run_id = null, finished_at = null, available_at = ?, result_code = ?, rate_limit_count = ?, rate_limited_at = ? where project_id = ?",
+                Timestamp.from(availableAt), resultCode, count, Timestamp.from(firstLimitedAt), claim.projectId());
+        audit(request.requestedBy(), "REVIEW_RATE_LIMITED", request.projectId(),
+                "service=" + limited.service().name() + "; response=" + limited.actualResponse() + "; count=" + count, now);
+        return RateLimitOutcome.DEFERRED;
+    }
+
+    private void exhaustLocked(Request request, int count, Instant firstLimitedAt, Instant now) {
+        if (request.runId() != null && "RUNNING".equals(request.state())) {
+            reviews.finishRun(request.runId(), false, now,
+                    "외부 서비스 요청 제한의 자동 재시도 한도에 도달했습니다. 저장된 커밋은 유지되며 서비스 상태를 확인한 뒤 직접 다시 요청할 수 있습니다.");
+        }
+        jdbc.update("update review_request set state = 'FAILED', finished_at = ?, result_code = ?, rate_limit_count = ?, rate_limited_at = ? where project_id = ?",
+                Timestamp.from(now), RATE_LIMIT_EXHAUSTED, count, Timestamp.from(firstLimitedAt), request.projectId());
+        audit(request.requestedBy(), "REVIEW_RATE_LIMIT_EXHAUSTED", request.projectId(), "count=" + count, now);
     }
 
     private Request requireCurrent(Claim claim) {
@@ -246,9 +302,16 @@ public class ReviewRequestRepository {
     }
 
     public enum EnqueueResult { QUEUED, ALREADY_QUEUED, SKIPPED }
+    public enum RateLimitOutcome { DEFERRED, EXHAUSTED, CANCELLED, STALE }
     public record Request(long projectId, String requestId, String state, String source, Long requestedBy,
                           Instant requestedAt, Instant availableAt, Instant lastAttemptAt, int attemptCount,
-                          Long runId, Instant finishedAt, String resultCode) {
+                          Long runId, Instant finishedAt, String resultCode, int rateLimitCount, Instant rateLimitedAt) {
+        public Request(long projectId, String requestId, String state, String source, Long requestedBy,
+                       Instant requestedAt, Instant availableAt, Instant lastAttemptAt, int attemptCount,
+                       Long runId, Instant finishedAt, String resultCode) {
+            this(projectId, requestId, state, source, requestedBy, requestedAt, availableAt, lastAttemptAt,
+                    attemptCount, runId, finishedAt, resultCode, 0, null);
+        }
         public boolean active() { return "QUEUED".equals(state) || "RUNNING".equals(state); }
     }
     public record Claim(long projectId, String requestId, String claimToken, long runId, Long requestedBy) { }

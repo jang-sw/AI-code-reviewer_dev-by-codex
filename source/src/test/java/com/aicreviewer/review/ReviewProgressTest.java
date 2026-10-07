@@ -133,10 +133,10 @@ class ReviewProgressTest {
         persist(oldClaim, FIRST, NOW.plusSeconds(1));
         var oldRequest = request();
         var oldProgress = progress();
-        var replacement = requests.claim(oldRequest, NOW.plusSeconds(2));
+        var replacement = requests.claim(oldRequest, oldRequest.availableAt());
         assertThat(replacement.runId()).isNotEqualTo(oldClaim.runId());
         assertThat(requests.progress(oldRequest)).isEmpty();
-        assertThat(progress()).isEqualTo(new ReviewProgress("PREPARING", NOW.plusSeconds(2), 0, null));
+        assertThat(progress()).isEqualTo(new ReviewProgress("PREPARING", oldRequest.availableAt(), 0, null));
         assertThatThrownBy(() -> tx.executeWithoutResult(status -> {
             requests.guard(oldClaim);
             reviews.recordProgressStage(oldClaim.runId(), 10, "FINALIZING", NOW.plusSeconds(3));
@@ -149,11 +149,12 @@ class ReviewProgressTest {
 
     @Test void lateGitResultCannotOverwriteReplacementPreparationOrCallAi() {
         when(git.batch(any(), any(), any(), anySet(), anyInt())).thenAnswer(invocation -> {
-            requests.claim(request(), NOW.plusSeconds(10));
+            var current = request();
+            requests.claim(current, current.availableAt());
             return new GitReviewBatch(List.of(FIRST), FIRST.sha());
         });
         assertThat(coordinator.processRequest(request())).isEqualTo(ReviewCoordinator.Outcome.SKIPPED);
-        assertThat(progress()).isEqualTo(new ReviewProgress("PREPARING", NOW.plusSeconds(10), 0, null));
+        assertThat(progress()).isEqualTo(new ReviewProgress("PREPARING", request().lastAttemptAt(), 0, null));
         assertThat(db.jdbc.queryForList("select progress_stage from review_run order by id", String.class))
                 .containsExactly("GIT_LOADING", "PREPARING");
         verifyNoInteractions(ai);
@@ -181,6 +182,8 @@ class ReviewProgressTest {
         assertThat(before.lastSavedAt()).isNotNull();
         db.jdbc.execute("alter table review_request drop constraint reject_progress_completion");
         when(git.batch(any(), any(), any(), anySet(), anyInt())).thenReturn(new GitReviewBatch(List.of(), FIRST.sha()));
+        // Advance the fixture's polling eligibility; production waits for available_at.
+        db.jdbc.update("update review_request set available_at = ? where project_id = 10", Timestamp.from(Instant.now().minusSeconds(1)));
         assertThat(coordinator.processRequest(request())).isEqualTo(ReviewCoordinator.Outcome.SUCCEEDED);
         assertThat(progress().savedCommits()).isZero();
         assertThat(progress().lastSavedAt()).isNull();
@@ -218,7 +221,10 @@ class ReviewProgressTest {
     }
 
     private ReviewRequestRepository.Request request() { return requests.find(10).orElseThrow(); }
-    private ReviewRequestRepository.Claim claim() { return requests.claim(request(), NOW); }
+    private ReviewRequestRepository.Claim claim() {
+        var current = request();
+        return requests.claim(current, current.availableAt());
+    }
     private ReviewProgress progress() { return requests.progress(request()).orElseThrow(); }
     private boolean persist(ReviewRequestRepository.Claim claim, GitCommit commit, Instant at) {
         return Boolean.TRUE.equals(tx.execute(status -> {

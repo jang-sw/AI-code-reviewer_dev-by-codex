@@ -5,7 +5,7 @@
   <h2 id="operations-observation-heading">조회 기준</h2>
   <p>서버 조회 시각 (UTC): <time><c:out value="${operations.observedAt}"/></time></p>
   <p>마지막 실행 시작 이후 <strong><c:out value="${operations.staleAfterMinutes}"/>분 이상</strong> 지난 승인 프로젝트, 접수 후 같은 시간 이상 미완료인 요청, 최근 실행이 실패한 프로젝트를 확인합니다.</p>
-  <details><summary>경과 시간과 실행 상태 읽는 법</summary><p>접수 후 경과와 실행 시작 후 경과는 서로 다른 기준입니다. 접수 후 경과에는 재시작 복구 시간이 포함될 수 있으며 완료 예정 시각이나 실행 보장 기한을 뜻하지 않습니다.</p><p class="hint">처리 중으로 기록된 요청은 장기 실행 또는 종료 상태 미기록일 수 있으므로 실제 실행 여부를 별도로 확인해 주세요. 실행 기록이 없어도 저장된 대기 요청은 있을 수 있습니다. 최근 실행 실패·오래된 시작은 이전 실행의 기록이며 새 요청의 실패를 뜻하지 않습니다.</p></details>
+  <details><summary>경과 시간과 실행 상태 읽는 법</summary><p>접수 후 경과와 실행 시작 후 경과는 서로 다른 기준입니다. 접수 후 경과에는 재시작 복구와 외부 서비스 호출 제한으로 기다린 시간이 포함될 수 있으며 완료 예정 시각이나 실행 보장 기한을 뜻하지 않습니다.</p><p class="hint">처리 중으로 기록된 요청은 장기 실행 또는 종료 상태 미기록일 수 있으므로 실제 실행 여부를 별도로 확인해 주세요. 실행 기록이 없어도 저장된 대기 요청은 있을 수 있습니다. 최근 실행 실패·오래된 시작은 이전 실행의 기록이며 새 요청의 실패를 뜻하지 않습니다.</p><p class="hint">호출 제한 대기의 재시도 가능 시각은 다시 처리할 수 있는 가장 이른 시각입니다. 시각이 지나도 작업자가 시작하기 전까지 대기로 표시되며, 해당 시각의 실행이나 완료를 보장하지 않습니다. 이미 저장한 리뷰와 이슈는 재사용합니다.</p></details>
   <c:if test="${not scheduledReviewEnabled}"><p class="notice">현재 새 예약 요청 생성이 꺼져 있습니다. 이미 접수된 요청은 유지되며 리뷰 처리가 켜져 있으면 계속 처리됩니다.</p></c:if>
   <c:if test="${not reviewWorkerEnabled}"><p class="hint">현재 서버의 처리 중지 동안에는 대기 시간이 늘어날 수 있습니다. 관리자 설정에서 이 서버의 처리를 재개할 수 있으며 다른 서버에서는 이미 처리가 계속될 수 있습니다.</p></c:if>
 </section>
@@ -19,10 +19,11 @@
       <option value="STALE" ${operations.filter == 'STALE' ? 'selected' : ''}>최근 시작 오래됨</option>
       <option value="NEVER_RUN" ${operations.filter == 'NEVER_RUN' ? 'selected' : ''}>승인 후 실행 기록 없음</option>
       <option value="QUEUED" ${operations.filter == 'QUEUED' ? 'selected' : ''}>실행 대기 요청</option>
+      <option value="RATE_LIMITED" ${operations.filter == 'RATE_LIMITED' ? 'selected' : ''}>외부 서비스 호출 제한 대기</option>
       <option value="REQUEST_DELAYED" ${operations.filter == 'REQUEST_DELAYED' ? 'selected' : ''}>오래된 미완료 요청</option>
     </select><button type="submit">조회</button>
   </form>
-  <p class="hint">페이지당 50건. 대기·미완료 요청 필터는 접수 시각이 오래된 순이며 나머지 필터는 미실행 먼저, 실행 시작이 오래된 순입니다. 최근 실행 실패는 프로젝트 상태와 무관하게 표시하며 이후 실행이 시작되면 이전 실패는 제외합니다. 일시중지된 프로젝트의 대기 요청은 작업자가 재확인할 때 취소됩니다.</p>
+  <p class="hint">페이지당 50건. 대기·호출 제한·미완료 요청 필터는 접수 시각이 오래된 순이며 나머지 필터는 미실행 먼저, 실행 시작이 오래된 순입니다. 최근 실행 실패는 프로젝트 상태와 무관하게 표시하며 이후 실행이 시작되면 이전 실패는 제외합니다. 일시중지된 프로젝트의 대기 요청은 작업자가 재확인할 때 취소됩니다.</p>
 </section>
 <section class="card" aria-labelledby="operations-projects-heading"><h2 id="operations-projects-heading">확인할 프로젝트</h2>
   <c:choose><c:when test="${empty operations.projects}"><p class="empty-state">이 페이지에서 조회 조건에 해당하는 프로젝트가 없습니다. 필터와 페이지를 확인하세요.</p></c:when><c:otherwise>
@@ -31,7 +32,7 @@
       <c:forEach var="observation" items="${operations.projects}"><tr>
         <td><strong><c:out value="${observation.projectName}"/></strong><br><ui:status value="${observation.projectStatus}"/></td>
         <td><c:if test="${observation.failed}"><span class="badge badge-danger">최근 실행 실패</span> </c:if><c:if test="${observation.stale}"><span class="badge badge-warning">최근 시작 오래됨</span> </c:if><c:if test="${observation.neverRun}"><span class="badge badge-warning">실행 기록 없음</span> </c:if><c:if test="${observation.requestDelayed}"><span class="badge badge-warning"><c:choose><c:when test="${observation.requestState == 'QUEUED'}">접수 후 오래 대기</c:when><c:otherwise>접수 후 장기 처리</c:otherwise></c:choose></span></c:if></td>
-        <td><c:choose><c:when test="${empty observation.requestState}">접수 기록 없음</c:when><c:when test="${observation.requestState == 'QUEUED'}">실행 대기</c:when><c:when test="${observation.requestState == 'RUNNING'}">처리 중으로 기록됨</c:when><c:when test="${observation.requestState == 'CANCELLED'}">요청 취소</c:when><c:when test="${observation.requestState == 'FAILED'}">요청 처리 실패</c:when><c:otherwise>이번 요청 처리 완료</c:otherwise></c:choose></td>
+        <td><c:choose><c:when test="${empty observation.requestState}">접수 기록 없음</c:when><c:when test="${observation.rateLimited}"><span class="badge badge-warning"><c:out value="${observation.rateLimitLabel}"/></span><br>재시도 대기<c:if test="${not empty observation.retryAt}"><br>재시도 가능 (UTC)<br><time datetime="<c:out value='${observation.retryAt}'/>"><c:out value="${observation.retryAtLabel}"/></time></c:if></c:when><c:when test="${observation.requestState == 'QUEUED'}">실행 대기</c:when><c:when test="${observation.requestState == 'RUNNING'}">처리 중으로 기록됨</c:when><c:when test="${observation.requestState == 'CANCELLED'}">요청 취소</c:when><c:when test="${observation.rateLimitExhausted}"><span class="badge badge-danger">자동 재시도 중단</span><br>서비스 상태를 확인한 후 직접 다시 요청해 주세요.</c:when><c:when test="${observation.requestState == 'FAILED'}">요청 처리 실패</c:when><c:otherwise>이번 요청 처리 완료</c:otherwise></c:choose></td>
         <td class="operations-timestamp"><c:out value="${observation.requestedAt}" default="—"/><c:if test="${observation.requestState == 'QUEUED' or observation.requestState == 'RUNNING'}"><br>접수 후 <c:out value="${observation.requestElapsedMinutes}"/>분</c:if></td>
         <td><c:choose><c:when test="${empty observation.runId}">미실행</c:when><c:otherwise><ui:status value="${observation.runStatus}"/></c:otherwise></c:choose></td>
         <td class="operations-timestamp"><c:out value="${observation.startedAt}" default="—"/></td>

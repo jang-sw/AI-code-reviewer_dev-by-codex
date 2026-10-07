@@ -76,6 +76,7 @@ class ReviewRequestCoordinatorTest {
         assertThat(db.jdbc.queryForObject("select status from review_run", String.class)).isEqualTo("RUNNING");
         assertThat(db.cursor()).isNull();
         doReturn(new ReviewResult("Review summary", List.of())).when(ai).review(COMMIT);
+        makeRetryDue();
         assertThat(coordinator.processRequest(requests.find(10).orElseThrow())).isEqualTo(ReviewCoordinator.Outcome.SUCCEEDED);
         assertThat(db.jdbc.queryForList("select status from review_run order by id", String.class)).containsExactly("FAILED", "SUCCEEDED");
         assertThat(requests.find(10).orElseThrow().attemptCount()).isEqualTo(2);
@@ -108,6 +109,7 @@ class ReviewRequestCoordinatorTest {
         assertThat(db.cursor()).isNull();
         db.jdbc.execute("alter table review_request drop constraint reject_request_success");
         when(git.batch(any(), any(), any(), anySet(), anyInt())).thenReturn(new GitReviewBatch(List.of(), COMMIT.sha()));
+        makeRetryDue();
         assertThat(coordinator.processRequest(requests.find(10).orElseThrow())).isEqualTo(ReviewCoordinator.Outcome.SUCCEEDED);
         assertThat(db.cursor()).isEqualTo(COMMIT.sha());
         assertThat(db.count("reviewed_commit")).isEqualTo(1);
@@ -157,7 +159,8 @@ class ReviewRequestCoordinatorTest {
 
     @Test void lateAiResultCannotPersistAfterReplacementHasClaimedTheRequest() {
         when(ai.review(COMMIT)).thenAnswer(invocation -> {
-            requests.claim(requests.find(10).orElseThrow(), Instant.now());
+            var current = requests.find(10).orElseThrow();
+            requests.claim(current, current.availableAt());
             return new ReviewResult("Obsolete result", List.of());
         });
         assertThat(coordinator.processRequest(requests.find(10).orElseThrow())).isEqualTo(ReviewCoordinator.Outcome.SKIPPED);
@@ -177,5 +180,11 @@ class ReviewRequestCoordinatorTest {
         assertThat(requests.find(10).orElseThrow().state()).isEqualTo("CANCELLED");
         assertThat(db.count("reviewed_commit")).isZero();
         assertThat(db.cursor()).isNull();
+    }
+
+    private void makeRetryDue() {
+        // Model the elapsed recovery delay without sleeping in a coordinator regression.
+        db.jdbc.update("update review_request set available_at = ? where project_id = 10",
+                java.sql.Timestamp.from(Instant.now().minusSeconds(1)));
     }
 }

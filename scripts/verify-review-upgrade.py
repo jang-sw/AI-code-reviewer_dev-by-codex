@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Linux-only V12 -> V14 review recovery and fresh-database V12 backup rollback.
+"""Linux-only V12 -> V15 review recovery and fresh-database V12 backup rollback.
 
 Run through the native Linux PostgreSQL parent. Both WAR hashes are explicit.
 All writes are confined to two positively owned UUID databases. The existing
@@ -39,11 +39,13 @@ HELPERS = module('upgrade_restart_helpers', 'verify-review-restart.py')
 BACKUP = module('upgrade_backup_helpers', 'verify-postgres-backup.py')
 LINUX = BACKUP.LINUX
 VerificationError, require = HELPERS.VerificationError, HELPERS.require
-# V12 has no shared authentication limit tables. Keep its backup/rollback and
+# V12 has no shared authentication or integration cooldown tables. Keep its backup/rollback and
 # historical row comparison independent of the latest source database allowlist.
 LEGACY_TABLES_V12 = ('app_user', 'project', 'review_request', 'review_run', 'reviewed_commit', 'review_issue',
                      'manual_review_file', 'audit_event', 'git_author_mapping', 'flyway_schema_history')
 OLD_RUN_COLUMNS = 'id,project_id,status,started_at,finished_at,reviewed_commits,error_message'
+OLD_REQUEST_COLUMNS = ('project_id,request_id,claim_token,state,source,requested_by,requested_at,available_at,'
+                       'last_attempt_at,attempt_count,run_id,finished_at,result_code')
 MANUAL_NOTE = 'Synthetic human review <script>escaped evidence retained</script>'
 MANUAL_TITLE = 'Synthetic historical manual review'
 AI_TITLE = 'Synthetic historical resolved AI finding'
@@ -59,7 +61,7 @@ def identifiers(schema, project=None):
 def verify_war(path, expected_sha256, maximum_version):
     path = LINUX.absolute_path(path)
     LINUX.checked_path(path)
-    require(path.suffix.lower() == '.war' and maximum_version in (12, 14)
+    require(path.suffix.lower() == '.war' and maximum_version in (12, 15)
             and re.fullmatch(r'[a-f0-9]{64}', expected_sha256) is not None,
             'Expected an explicit WAR hash and supported migration boundary')
     with path.open('rb') as stream:
@@ -74,7 +76,7 @@ def verify_war(path, expected_sha256, maximum_version):
             parsed = [re.fullmatch(r'V([1-9][0-9]*)__[^/]+\.sql', name) for name in files]
             require(files and all(parsed), 'WAR contains an unexpected migration resource')
             versions = sorted(int(match[1]) for match in parsed)
-            require(versions == list(range(1, maximum_version + 1)), 'WAR migration boundary does not match V12 or V14')
+            require(versions == list(range(1, maximum_version + 1)), 'WAR migration boundary does not match V12 or V15')
             require('org/springframework/boot/loader/launch/WarLauncher.class' in names
                     and 'WEB-INF/jsp/login.jsp' in names, 'WAR lacks its executable launcher or packaged login JSP')
     except (OSError, zipfile.BadZipFile, RuntimeError):
@@ -115,7 +117,7 @@ def parsed_sql(database, text):
 
 def migration_snapshot(database, schema, maximum):
     identifiers(schema)
-    require(maximum in (12, 14), 'Unexpected migration verification version')
+    require(maximum in (12, 15), 'Unexpected migration verification version')
     rows = parsed_sql(database, f"SELECT json_agg(json_build_object('version',version,'checksum',checksum,"
         f"'success',success) ORDER BY installed_rank) FROM {schema}.flyway_schema_history;")
     require(isinstance(rows, list) and len(rows) == maximum
@@ -128,7 +130,7 @@ def legacy_fingerprints(database, schema):
     identifiers(schema)
     result = {}
     for table in LEGACY_TABLES_V12:
-        projection = OLD_RUN_COLUMNS if table == 'review_run' else '*'
+        projection = OLD_RUN_COLUMNS if table == 'review_run' else OLD_REQUEST_COLUMNS if table == 'review_request' else '*'
         value = database.sql("SELECT count(*)::text || ':' || md5(coalesce(string_agg(row_to_json(t)::text, "
             "E'\\n' ORDER BY row_to_json(t)::text),'')) FROM (SELECT " + projection + ' FROM ' + schema + '.' + table + ') t;')
         require(re.fullmatch(r'[0-9]+:[a-f0-9]{32}', value) is not None, 'Invalid legacy table fingerprint')
@@ -150,6 +152,21 @@ def verify_v14_auth_state_before_login(database, schema):
                 {'scope': 'LOGIN', 'fingerprint': None}, {'scope': 'SIGNUP', 'fingerprint': None}]
             and type(state.get('bucketCount')) is int and state['bucketCount'] == 0,
             'V14 did not initialize exactly two unused authentication policies and empty attempt buckets')
+
+
+def verify_v15_rate_limit_state_before_workers(database, schema):
+    identifiers(schema)
+    state = parsed_sql(database, f"SELECT json_build_object('guards',"
+        f"(SELECT json_agg(service ORDER BY service) FROM {schema}.integration_cooldown_guard),'cooldownCount',"
+        f"(SELECT count(*) FROM {schema}.integration_cooldown),'requestCount',"
+        f"(SELECT count(*) FROM {schema}.review_request),'defaultedRequestCount',"
+        f"(SELECT count(*) FROM {schema}.review_request WHERE rate_limit_count=0 AND rate_limited_at IS NULL));")
+    require(isinstance(state, dict) and state.get('guards') == ['AI', 'GIT']
+            and type(state.get('cooldownCount')) is int and state['cooldownCount'] == 0
+            and type(state.get('requestCount')) is int and state['requestCount'] > 0
+            and type(state.get('defaultedRequestCount')) is int
+            and state['defaultedRequestCount'] == state['requestCount'],
+            'V15 did not initialize exactly two service guards, empty cooldowns and neutral legacy request defaults')
 
 
 def snapshot_v12(database, schema, project):
@@ -322,7 +339,7 @@ def run_scenario(args, report):
     try:
         report['stage'] = 'verify_war_boundaries'
         report['previousWarSha256'] = verify_war(args.previous_war, args.expected_previous_war_sha256, 12)
-        report['warSha256'] = verify_war(args.war, args.expected_war_sha256, 14)
+        report['warSha256'] = verify_war(args.war, args.expected_war_sha256, 15)
         work = Path(tempfile.mkdtemp(prefix='owned-work-', dir=logs))
         for label in ('upgrade', 'rollback'):
             options = types.SimpleNamespace(**vars(args))
@@ -389,53 +406,55 @@ def run_scenario(args, report):
         report['stage'] = 'migrate_without_workers'
         war.args.war = args.war
         war.start(False)
-        current_migrations = migration_snapshot(database, schema, 14)
+        current_migrations = migration_snapshot(database, schema, 15)
         require(current_migrations[:12] == old_migrations
                 and application_fingerprints(legacy_fingerprints(database, schema)) == application_fingerprints(before),
                 'Migration changed historical rows or existing migration checksums')
         require(database.sql(f'SELECT count(*) FROM {schema}.review_run WHERE progress_stage IS NOT NULL OR '
                 'progress_updated_at IS NOT NULL OR last_saved_at IS NOT NULL;') == '0',
-                'V14 migration invented progress for historical runs')
+                'V15 migration invented progress for historical runs')
         require(snapshot_v12(database, schema, project) == frozen, 'Worker-disabled migration changed the interrupted request')
         verify_v14_auth_state_before_login(database, schema)
         report['checks']['v14SharedAuthenticationPoliciesInitializedBeforeLogin'] = True
+        verify_v15_rate_limit_state_before_workers(database, schema)
+        report['checks']['v15RateLimitGuardsAndLegacyRequestDefaultsInitialized'] = True
         # Login now changes shared quota state; only V12 business rows participate
         # in the later historical preservation comparisons.
         check_pages(war, seeded)
-        report['checks'].update({'populatedLegacyRowsPreservedAcrossV14': True,
+        report['checks'].update({'populatedLegacyRowsPreservedAcrossV15': True,
             'priorMigrationChecksumsPreserved': True, 'legacyProgressRemainsNull': True,
             'migratedHistoricalIssuePagesRendered': True})
         war.stop()
-        report['stage'] = 'recover_request_on_v14'
+        report['stage'] = 'recover_request_on_v15'
         war.start(True)
-        HELPERS.bounded_wait(fixture.second_b_entered.is_set, deadline, 'V14 did not recover unfinished commit B', war.process)
+        HELPERS.bounded_wait(fixture.second_b_entered.is_set, deadline, 'V15 did not recover unfinished commit B', war.process)
         recovering = snapshot_v12(database, schema, project)
         require(recovering['request']['requestId'] == frozen['request']['requestId']
                 and recovering['request']['actor'] == frozen['request']['actor']
                 and recovering['request']['token'] != frozen['request']['token']
                 and recovering['request']['runId'] != frozen['request']['runId']
                 and recovering['request']['attempts'] == frozen['request']['attempts'] + 1,
-                'V14 recovery did not replace only the interrupted claim and run')
+                'V15 recovery did not replace only the interrupted claim and run')
         progress = database.snapshot(schema, project)['progress']
         require(progress['stage'] == 'REVIEWING' and progress['saved'] == 0 and progress['lastSavedAt'] is None,
-                'V14 recovery borrowed historical saved progress')
+                'V15 recovery borrowed historical saved progress')
         browser = HELPERS.Browser(war.base)
         browser.login(war.username, war.password)
         _, page = browser.request('/projects/' + str(project))
         HELPERS.verify_progress_page(page, 'REVIEWING', 0)
         fixture.release_second_b.set()
         HELPERS.bounded_wait(lambda: snapshot_v12(database, schema, project)['request']['state'] == 'SUCCEEDED',
-            deadline, 'V14 recovered request did not finish', war.process)
+            deadline, 'V15 recovered request did not finish', war.process)
         completed = snapshot_v12(database, schema, project)
         assert_recovered(completed, frozen)
         counts = fixture.observed()
         require(counts.get('ai_A.java') == 1 and counts.get('ai_B.java') == 2
                 and counts.get('diff_A.java') == 1 and counts.get('diff_B.java') == 2,
-                'V14 repeated saved commit work or skipped unfinished work')
-        require(preserved_history(database, schema, seeded) == history, 'V14 recovery changed historical human decisions or evidence')
+                'V15 repeated saved commit work or skipped unfinished work')
+        require(preserved_history(database, schema, seeded) == history, 'V15 recovery changed historical human decisions or evidence')
         check_pages(war, seeded)
-        report['checks'].update({'v14SameRequestActorNewClaimAndAttempt': True, 'v14OnlyUnfinishedCommitRetried': True,
-            'v14ExactIssuesAndCheckpoint': True, 'v14NewAttemptProgressIsolated': True, 'v14HistoricalDecisionsPreserved': True})
+        report['checks'].update({'v15SameRequestActorNewClaimAndAttempt': True, 'v15OnlyUnfinishedCommitRetried': True,
+            'v15ExactIssuesAndCheckpoint': True, 'v15NewAttemptProgressIsolated': True, 'v15HistoricalDecisionsPreserved': True})
         war.stop()
         upgraded = legacy_fingerprints(database, schema)
         report['stage'] = 'restore_v12_into_another_new_database'
@@ -524,7 +543,7 @@ def main(argv=None):
     installed = False
     args = None
     report = {'result': 'FAIL', 'stage': 'arguments', 'checks': {}, 'externalServicesUsed': False, 'paidAiUsed': False,
-        'scope': 'Isolated Linux V12/V14 WARs, owned databases, loopback Git/AI and explicit SQL historical fixtures'}
+        'scope': 'Isolated Linux V12/V15 WARs, owned databases, loopback Git/AI and explicit SQL historical fixtures'}
     exit_code = 1
     def cancel(_signum, _frame):
         raise KeyboardInterrupt()

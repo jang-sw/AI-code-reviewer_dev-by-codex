@@ -303,7 +303,8 @@ class OpenAiReviewClientTest {
     }
 
     @Test void springUsesDedicatedOpenAiConfigurationWithoutChangingTheProductionEndpoint() {
-        new ApplicationContextRunner().withBean(AiReviewClient.class)
+        new ApplicationContextRunner().withBean(com.aicreviewer.git.RateLimitGate.class, () -> com.aicreviewer.git.RateLimitGate.NOOP)
+                .withBean(AiReviewClient.class)
                 .withPropertyValues("app.ai.provider=openai", "app.ai.base-url=" + server.url(), "app.ai.model=generic-model",
                         "app.ai.api-key=generic-fixture-key", "app.ai.openai-model=explicit-openai-model", "OPENAI_API_KEY=" + FIXTURE_KEY)
                 .run(context -> {

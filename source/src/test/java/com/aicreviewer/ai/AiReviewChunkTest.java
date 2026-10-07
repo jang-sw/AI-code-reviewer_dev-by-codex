@@ -6,6 +6,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.aicreviewer.git.GitCommit;
 import com.aicreviewer.git.HttpFixture;
 import com.aicreviewer.git.IntegrationException;
+import com.aicreviewer.git.RateLimitGate;
+import com.aicreviewer.git.RateLimitedException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -201,6 +203,20 @@ class AiReviewChunkTest {
         assertThat(server.requests).hasSize(2);
     }
 
+    @ParameterizedTest @ValueSource(strings = {"ollama", "litellm", "openai"})
+    void rateLimitedSecondGroupDiscardsEarlierResultsAndNeverCallsTheThirdGroup(String provider) {
+        server.handler = request -> server.requests.size() == 1 ? response(provider, "첫 묶음 성공", List.of())
+                : new HttpFixture.Reply(429, "PRIVATE RESPONSE fixture-key", Map.of("Retry-After", "120"));
+        assertThatThrownBy(() -> client(provider, 8, 5).review(commit(file("a.txt", 3000) + file("b.txt", 3000) + file("c.txt", 3000))))
+                .isInstanceOfSatisfying(RateLimitedException.class, error -> {
+                    assertThat(error.service()).isEqualTo(RateLimitedException.Service.AI);
+                    assertThat(error.actualResponse()).isTrue();
+                    assertThat(error.retryAt()).isNotNull();
+                }).hasMessage("AI returned HTTP 429").hasCause(null);
+        assertThat(server.requests).hasSize(2);
+        assertThat(sentDiffs(provider)).containsExactly(file("a.txt", 3000), file("b.txt", 3000));
+    }
+
     @Test void finalSchemaFailureRemainsAnErrorAndDoesNotBecomeAnInputLimit() {
         server.handler = request -> server.requests.size() == 1 ? response("ollama", "첫 묶음 성공", List.of())
                 : response("ollama", "마지막 묶음", List.of(finding("b.txt", 999999, "잘못된 행")));
@@ -271,7 +287,7 @@ class AiReviewChunkTest {
         for (int calls : List.of(1, 32)) assertThat(ReflectionTestUtils.getField(client("ollama", calls, 5), "maxReviewCalls")).isEqualTo(calls);
         AiReviewClient existing = new AiReviewClient("ollama", server.url(), "fixture", "", 5, 262144, 1048576, 8192, 512);
         assertThat(ReflectionTestUtils.getField(existing, "maxReviewCalls")).isEqualTo(8);
-        new ApplicationContextRunner().withBean(AiReviewClient.class)
+        new ApplicationContextRunner().withBean(RateLimitGate.class, () -> RateLimitGate.NOOP).withBean(AiReviewClient.class)
                 .withPropertyValues("app.ai.provider=ollama", "app.ai.base-url=" + server.url(), "app.ai.max-review-calls=3")
                 .run(context -> {
                     assertThat(context).hasNotFailed();

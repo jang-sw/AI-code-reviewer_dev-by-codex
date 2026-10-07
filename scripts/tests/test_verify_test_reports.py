@@ -75,6 +75,13 @@ class PostgreSQLReportGateTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     MODULE.verify_reports(self.directory)
 
+    def test_shared_integration_cooldown_suite_is_mandatory(self):
+        suite = "com.aicreviewer.git.SharedIntegrationCooldownPostgresTest"
+        self.assertIn(suite, MODULE.REQUIRED_SUITES)
+        (self.directory / f"TEST-{suite}.xml").unlink()
+        with self.assertRaisesRegex(ValueError, "Missing or invalid"):
+            MODULE.verify_reports(self.directory)
+
     def test_malformed_report_fails(self):
         (self.directory / f"TEST-{MODULE.REQUIRED_SUITES[0]}.xml").write_text("<broken", encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "Missing or invalid"):

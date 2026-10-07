@@ -42,7 +42,7 @@ try {
     Invoke-Checked (Join-Path $PgBin 'createdb.exe') ($connection + @($restoreDatabase))
     $createdHere = $true
     Invoke-Checked (Join-Path $PgBin 'pg_restore.exe') ($connection + @('--exit-on-error','--no-owner','--dbname',$restoreDatabase,$dump))
-    $tables = @('app_user','project','review_request','review_run','reviewed_commit','review_issue','manual_review_file','audit_event','git_author_mapping','flyway_schema_history','auth_attempt_policy','auth_attempt_bucket')
+    $tables = @('app_user','project','review_request','review_run','reviewed_commit','review_issue','manual_review_file','audit_event','git_author_mapping','flyway_schema_history','auth_attempt_policy','auth_attempt_bucket','integration_cooldown_guard','integration_cooldown')
     $verified = @()
     foreach ($table in $tables) {
         $before = Fingerprint 'reviewer_integration' $table

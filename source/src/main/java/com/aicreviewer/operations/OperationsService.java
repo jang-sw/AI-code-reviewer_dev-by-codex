@@ -5,8 +5,11 @@ import java.sql.Timestamp;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -20,7 +23,9 @@ import org.springframework.web.server.ResponseStatusException;
 public class OperationsService {
     public static final int PAGE_SIZE = 50;
     public static final int MAX_PAGE = 10000;
-    private static final Set<String> FILTERS = Set.of("ATTENTION", "FAILED", "STALE", "NEVER_RUN", "QUEUED", "REQUEST_DELAYED");
+    private static final Set<String> FILTERS = Set.of("ATTENTION", "FAILED", "STALE", "NEVER_RUN", "QUEUED", "REQUEST_DELAYED", "RATE_LIMITED");
+    private static final DateTimeFormatter UTC_SECONDS = DateTimeFormatter
+            .ofPattern("yyyy-MM-dd HH:mm:ss", Locale.ROOT).withZone(ZoneOffset.UTC);
     private final JdbcTemplate jdbc;
     private final UserAccountService users;
     private final int staleAfterMinutes;
@@ -54,6 +59,7 @@ public class OperationsService {
             case "FAILED" -> "r.status = 'FAILED'";
             case "NEVER_RUN" -> "p.status = 'APPROVED' AND r.id IS NULL";
             case "QUEUED" -> "q.state = 'QUEUED'";
+            case "RATE_LIMITED" -> "q.state = 'QUEUED' AND q.result_code IN ('GIT_RATE_LIMITED', 'AI_RATE_LIMITED')";
             case "REQUEST_DELAYED" -> {
                 args.add(Timestamp.from(cutoff));
                 yield "q.state IN ('QUEUED', 'RUNNING') AND q.requested_at <= ?";
@@ -75,13 +81,13 @@ public class OperationsService {
         List<ProjectObservation> rows = jdbc.query("""
                 SELECT p.id, p.name, p.status AS project_status,
                        r.id AS run_id, r.status AS run_status, r.started_at,
-                       q.state AS request_state, q.requested_at
+                       q.state AS request_state, q.requested_at, q.available_at, q.result_code
                 FROM project p LEFT JOIN review_run r ON r.id = (
                     SELECT latest.id FROM review_run latest
                     WHERE latest.project_id = p.id ORDER BY latest.id DESC LIMIT 1
                 )
                 LEFT JOIN review_request q ON q.project_id = p.id
-                """ + "WHERE " + condition + (filter.equals("QUEUED") || filter.equals("REQUEST_DELAYED")
+                """ + "WHERE " + condition + (filter.equals("QUEUED") || filter.equals("REQUEST_DELAYED") || filter.equals("RATE_LIMITED")
                         ? " ORDER BY q.requested_at ASC, p.id ASC" : " ORDER BY r.started_at ASC NULLS FIRST, p.id ASC") + " LIMIT ? OFFSET ?",
                 (rs, row) -> {
                     Long runId = rs.getObject("run_id", Long.class);
@@ -92,12 +98,22 @@ public class OperationsService {
                     String requestState = rs.getString("request_state");
                     Timestamp requested = rs.getTimestamp("requested_at");
                     Instant requestedAt = requested == null ? null : requested.toInstant();
+                    String resultCode = rs.getString("result_code");
+                    String rateLimitLabel = "QUEUED".equals(requestState) ? switch (resultCode == null ? "" : resultCode) {
+                        case "GIT_RATE_LIMITED" -> "Git 서버 호출 제한";
+                        case "AI_RATE_LIMITED" -> "AI 서비스 호출 제한";
+                        default -> "";
+                    } : "";
+                    boolean rateLimited = !rateLimitLabel.isEmpty();
+                    Timestamp available = rs.getTimestamp("available_at");
                     boolean approved = "APPROVED".equals(projectStatus);
                     return new ProjectObservation(rs.getLong("id"), rs.getString("name"), projectStatus, runId,
                             runStatus, startedAt, startedAt == null ? null : Math.max(0L, Duration.between(startedAt, observedAt).toMinutes()),
                             "FAILED".equals(runStatus), approved && startedAt != null && !startedAt.isAfter(cutoff), approved && runId == null,
                             requestState, requestedAt, requestedAt == null ? null : Math.max(0L, Duration.between(requestedAt, observedAt).toMinutes()),
-                            ("QUEUED".equals(requestState) || "RUNNING".equals(requestState)) && requestedAt != null && !requestedAt.isAfter(cutoff));
+                            ("QUEUED".equals(requestState) || "RUNNING".equals(requestState)) && requestedAt != null && !requestedAt.isAfter(cutoff),
+                            rateLimited, rateLimitLabel, rateLimited && available != null ? available.toInstant() : null,
+                            "FAILED".equals(requestState) && "RATE_LIMIT_EXHAUSTED".equals(resultCode));
                 }, args.toArray());
         return new OperationsPage(List.copyOf(rows.subList(0, Math.min(PAGE_SIZE, rows.size()))), page,
                 rows.size() > PAGE_SIZE && page < MAX_PAGE, filter, observedAt, staleAfterMinutes);
@@ -109,5 +125,8 @@ public class OperationsService {
     public record ProjectObservation(long projectId, String projectName, String projectStatus, Long runId,
                                      String runStatus, Instant startedAt, Long elapsedMinutes,
                                      boolean failed, boolean stale, boolean neverRun, String requestState,
-                                     Instant requestedAt, Long requestElapsedMinutes, boolean requestDelayed) { }
+                                     Instant requestedAt, Long requestElapsedMinutes, boolean requestDelayed,
+                                     boolean rateLimited, String rateLimitLabel, Instant retryAt, boolean rateLimitExhausted) {
+        public String retryAtLabel() { return retryAt == null ? "" : UTC_SECONDS.format(retryAt); }
+    }
 }

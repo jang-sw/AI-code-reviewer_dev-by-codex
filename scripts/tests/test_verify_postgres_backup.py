@@ -278,14 +278,16 @@ class BackupDrillSafetyTest(unittest.TestCase):
         self.assertTrue(drill.created_here)
         self.assertFalse(drill.report.exists())
 
-    def test_fingerprint_reads_exact_twelve_public_tables_and_refuses_unbounded_output(self):
+    def test_fingerprint_reads_exact_fourteen_public_tables_and_refuses_unbounded_output(self):
         drill = self.drill()
         with patch.object(drill, 'sql', return_value='3:' + 'a' * 32) as sql:
             result = drill.fingerprints(MODULE.SOURCE)
         self.assertEqual(set(MODULE.TABLES), set(result))
-        self.assertEqual(12, sql.call_count)
+        self.assertEqual(14, sql.call_count)
         self.assertIn('auth_attempt_policy', result)
         self.assertIn('auth_attempt_bucket', result)
+        self.assertIn('integration_cooldown_guard', result)
+        self.assertIn('integration_cooldown', result)
         for table, call in zip(MODULE.TABLES, sql.call_args_list):
             self.assertEqual(MODULE.SOURCE, call.args[0])
             self.assertIn('FROM public.' + table + ' t;', call.args[1])
@@ -324,9 +326,11 @@ class BackupDrillSafetyTest(unittest.TestCase):
         self.assertTrue(report['restoreDatabaseRemoved'])
         self.assertTrue(report['sourceReadOnly'])
         self.assertFalse(report['externalServicesUsed'])
-        self.assertEqual(12, len(report['verifiedTables']))
+        self.assertEqual(14, len(report['verifiedTables']))
         self.assertIn('auth_attempt_policy', report['verifiedTables'])
         self.assertIn('auth_attempt_bucket', report['verifiedTables'])
+        self.assertIn('integration_cooldown_guard', report['verifiedTables'])
+        self.assertIn('integration_cooldown', report['verifiedTables'])
         self.assertNotIn('fingerprints', report)
         self.assertEqual('pg_dump', command.call_args_list[0].args[0])
         self.assertTrue(command.call_args_list[0].kwargs['readonly'])

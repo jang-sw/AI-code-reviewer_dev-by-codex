@@ -283,6 +283,87 @@ class OperationsServiceTest {
         assertThat(ids("ATTENTION")).doesNotContain(151L);
     }
 
+    @Test
+    void rateLimitFilterKeepsPastDueRequestsButExcludesNormalQueueAndRunningRecovery() {
+        for (long id = 20; id <= 24; id++) {
+            project(id, "APPROVED");
+            queued(id, NOW.minusSeconds(120));
+        }
+        rateLimit(20, "GIT_RATE_LIMITED", NOW.plusSeconds(300));
+        rateLimit(21, "AI_RATE_LIMITED", NOW.minusSeconds(30));
+        rateLimit(22, "private-provider-error", NOW.plusSeconds(300));
+        rateLimit(23, "AI_RATE_LIMITED", NOW.plusSeconds(300));
+        run(23, "RUNNING", NOW.minusSeconds(10));
+        Long runningId = db.jdbc.queryForObject("SELECT id FROM review_run WHERE project_id=23", Long.class);
+        db.jdbc.update("UPDATE review_request SET state='RUNNING',claim_token='private-token',run_id=? WHERE project_id=23", runningId);
+        rateLimit(24, "RATE_LIMIT_EXHAUSTED", NOW.plusSeconds(300));
+        db.jdbc.update("UPDATE review_request SET state='FAILED',finished_at=? WHERE project_id=24", Timestamp.from(NOW));
+        var limited = operations.list("admin", "RATE_LIMITED", 0);
+        assertThat(limited.projects()).extracting(OperationsService.ProjectObservation::projectId).containsExactly(20L, 21L);
+        assertThat(limited.projects()).allSatisfy(row -> {
+            assertThat(row.rateLimited()).isTrue();
+            assertThat(row.requestState()).isEqualTo("QUEUED");
+            assertThat(row.rateLimitExhausted()).isFalse();
+        });
+        assertThat(limited.projects().getFirst().rateLimitLabel()).isEqualTo("Git 서버 호출 제한");
+        assertThat(limited.projects().getFirst().retryAtLabel()).isEqualTo("2026-09-26 02:05:00");
+        assertThat(limited.projects().getLast().rateLimitLabel()).isEqualTo("AI 서비스 호출 제한");
+        assertThat(limited.projects().getLast().retryAt()).isEqualTo(NOW.minusSeconds(30));
+        var normal = operations.list("admin", "QUEUED", 0).projects().getLast();
+        assertThat(normal.projectId()).isEqualTo(22L);
+        assertThat(normal.rateLimited()).isFalse();
+        assertThat(normal.retryAt()).isNull();
+        assertThat(normal.retryAtLabel()).isEmpty();
+        assertThat(normal.toString()).doesNotContain("private-provider-error");
+        var exhausted = operations.list("admin", "NEVER_RUN", 0).projects().stream().filter(row -> row.projectId() == 24).findFirst().orElseThrow();
+        assertThat(exhausted.rateLimitExhausted()).isTrue();
+        assertThat(exhausted.rateLimited()).isFalse();
+        assertThat(exhausted.retryAt()).isNull();
+        // Starting the next claim clears the rate-limit marker; available_at is still a recovery hint.
+        db.jdbc.update("UPDATE review_request SET result_code=NULL WHERE project_id=20");
+        assertThat(ids("RATE_LIMITED")).containsExactly(21L);
+    }
+
+    @Test
+    void rateLimitedPagesKeepFiftyRowsAndOriginalDelayAndAttentionSemantics() {
+        for (long id = 100; id < 152; id++) {
+            project(id, "APPROVED");
+            queued(id, NOW.minusSeconds(7200));
+            rateLimit(id, id % 2 == 0 ? "GIT_RATE_LIMITED" : "AI_RATE_LIMITED", NOW.plusSeconds(600));
+            run(id, "FAILED", NOW.minusSeconds(30));
+        }
+        var first = operations.list("admin", "RATE_LIMITED", 0);
+        var second = operations.list("admin", "RATE_LIMITED", 1);
+        assertThat(first.projects()).hasSize(50).allSatisfy(row -> {
+            assertThat(row.rateLimited()).isTrue();
+            assertThat(row.failed()).isTrue();
+            assertThat(row.requestDelayed()).isTrue();
+        });
+        assertThat(first.hasNext()).isTrue();
+        assertThat(second.projects()).extracting(OperationsService.ProjectObservation::projectId).containsExactly(150L, 151L);
+        assertThat(second.hasNext()).isFalse();
+        assertThat(second.filter()).isEqualTo("RATE_LIMITED");
+        assertThat(operations.list("admin", "RATE_LIMITED", 10000).projects()).isEmpty();
+        for (String filter : new String[] {"QUEUED", "REQUEST_DELAYED", "FAILED", "ATTENTION"}) {
+            assertThat(ids(filter)).hasSize(50);
+        }
+        assertBadRequest(() -> operations.list("admin", "RATE_LIMITED", -1));
+        assertBadRequest(() -> operations.list("admin", "RATE_LIMITED", 10001));
+    }
+
+    @ParameterizedTest @ValueSource(strings = {"owner", "author", "other"})
+    void ordinaryUsersCannotQueryRateLimitStatusAtTheServiceBoundary(String username) {
+        JdbcTemplate forbidden = mock(JdbcTemplate.class);
+        var secured = new OperationsService(forbidden, users, 120, CLOCK);
+        assertThatThrownBy(() -> secured.list(username, "RATE_LIMITED", 0))
+                .isInstanceOfSatisfying(ResponseStatusException.class, e -> assertThat(e.getStatusCode().value()).isEqualTo(403));
+        verifyNoInteractions(forbidden);
+    }
+
+    private void rateLimit(long projectId, String code, Instant retryAt) {
+        db.jdbc.update("UPDATE review_request SET result_code=?,available_at=? WHERE project_id=?", code, Timestamp.from(retryAt), projectId);
+    }
+
     private void queued(long projectId, Instant requested) {
         db.jdbc.update("INSERT INTO review_request(project_id,request_id,state,source,requested_at,available_at) VALUES(?,?,'QUEUED','SCHEDULED',?,?)",
                 projectId, java.util.UUID.randomUUID().toString(), Timestamp.from(requested), Timestamp.from(requested));

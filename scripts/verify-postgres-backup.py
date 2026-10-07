@@ -26,7 +26,7 @@ WORKSPACE = Path(__file__).absolute().parent.parent
 SOURCE = 'reviewer_integration'
 TABLES = ('app_user', 'project', 'review_request', 'review_run', 'reviewed_commit', 'review_issue',
           'manual_review_file', 'audit_event', 'git_author_mapping', 'flyway_schema_history',
-          'auth_attempt_policy', 'auth_attempt_bucket')
+          'auth_attempt_policy', 'auth_attempt_bucket', 'integration_cooldown_guard', 'integration_cooldown')
 DB_PATTERN = re.compile(r'jdbc:postgresql://127\.0\.0\.1:([0-9]{4,5})/reviewer_integration')
 RESTORE_PATTERN = re.compile(r'reviewer_restore_[a-f0-9]{32}')
 
