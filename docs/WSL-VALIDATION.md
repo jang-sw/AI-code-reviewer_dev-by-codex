@@ -204,6 +204,14 @@ WSL은 systemd 서비스만으로 배포판 실행을 유지하지 않아 이번
 
 최종 WAR SHA256은 `1de2c1ec5092cf4ce6ec83dde5c429cf813651648d2adaa968ae37977d66e604`,42,029,853바이트다. Python237건은 Windows232통과/5skip, Linux227통과/10skip였다. 재현 명령·보고서·SQL 시간 가속/예약OFF 합성종료 안내의 한계는 [호출 제한 검증](EXTERNAL-RATE-LIMITS.md)을 따른다. systemd/TLS 서비스에 이 WAR를 설치하거나 실제 공급자·유료 모델을 호출하지 않았다.
 
+### 두 WAR의 실제65초 대기와 UTC 화면
+
+2026-10-07 후속 `--review-rate-limit-wallclock`는 SQL 시각 변경 없이 두 WAR의 origin 공유 대기·단일 작업자의 별도 origin 처리·원 요청 재개를 검증했다. UTC 화면 수정 후 전체 Java1037건 중1027통과/선택10skip·필수PG6suite, 실시간 검증94.118초를 통과했다. X의 첫 후속 HTTP는67.664초였고65초 전에 보낸 후속 요청은 없었다. 원본14테이블 보존과 소유 WAR/schema/work·부모PG 정리를 확인했다.
+
+WAR SHA256은 `5b91855b81a098fea0fbf48383a6a662b006f1fcb9ff4f36c8e01801c90a3a96`,42,031,039바이트다. Python257건은 Windows252통과/5skip, Linux247통과/10skip였다. [재현 명령과65초/3프로젝트의 검증 한계](EXTERNAL-RATE-LIMITS.md)를 따른다. 실제 브라우저의 Windows→WSL localhost 연결은 거부되어 임시 loopback HTTP bridge를 사용했다. 방화벽·서비스 listen 주소를 변경하거나 실제 외부 모델을 호출하지 않았다.
+
+최종 WAR의 실제 SIGTERM 취소도41.206초·종료130/FAIL 유지·소유 자원 정리·원본14테이블 보존을 통과했다. 브라우저에서는 합성 KST 자료의 UTC 시작/완료/리뷰 시각과 마이크로초 datetime·없는 완료 시각을 검증했다.390px/1280px 본문 넘침 없음, 모바일 표 키보드 이동/포커스를 확인하고 임시 bridge와 WAR/schema/PG를 종료했다. 첫 최종 화면 시험은 점유 포트 사전 검사에서 시작 전 중단했으며, 가용 확인 후 새 실행으로 통과했다. 점유 원인은 미확정이다. Linux `.local/session12-utc-ui-final-harness.json`, Windows `.local/session12-utc-ui-observation.json`과 화면 이미지에 증거를 보존한다.
+
 ### 남은 검증
 
 운영 Linux 서버의 실제 부팅·지속 실행·공개 네트워크/TLS와 인증서 갱신, 운영 데이터 규모의 업그레이드·rollback, 백업 암호화·보존·RPO/RTO, 실제 GitLab/LiteLLM 인증과 모델 품질, 장시간 부하·다중 인스턴스 정책 검증은 남아 있다. 이번 WSL 합성 환경의 통과는 이 항목이나 릴리스 승인을 대신하지 않는다.

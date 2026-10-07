@@ -2,15 +2,21 @@ package com.aicreviewer.review;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.parallel.ResourceLock;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.servlet.view.InternalResourceView;
 import org.springframework.web.servlet.view.InternalResourceViewResolver;
 
+import java.sql.Timestamp;
+import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.TimeZone;
 import java.time.Instant;
 import com.aicreviewer.web.ReviewRequestView;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -26,6 +32,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.model;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+@ResourceLock("java.util.TimeZone.default")
 class ReviewControllerTest {
     private final ReviewRepository repository = mock(ReviewRepository.class);
     private final ReviewDispatcher dispatcher = mock(ReviewDispatcher.class);
@@ -68,6 +75,95 @@ class ReviewControllerTest {
                 .andExpect(model().attribute("commits", List.of(Map.of("commit_sha", sha, "commit_url", "https://github.com/org/repo/commit/" + sha))));
         verify(repository).runs(10, 3);
         verify(repository).reviewedCommits(10, 2);
+    }
+
+    @ParameterizedTest @ValueSource(strings = {"UTC", "Asia/Seoul", "Pacific/Honolulu"})
+    void postgresHistoryTimestampsShowTheSameUtcSecondsRegardlessOfServerTimeZone(String zone) throws Exception {
+        var previous = TimeZone.getDefault();
+        try {
+            TimeZone.setDefault(TimeZone.getTimeZone(zone));
+            assertHistoryTimes(Timestamp.from(Instant.parse("2026-10-07T11:29:56.123456Z")),
+                    Timestamp.from(Instant.parse("2026-10-07T11:31:02.987654Z")),
+                    Timestamp.from(Instant.parse("2026-10-07T11:30:00.654321Z")));
+        } finally {
+            TimeZone.setDefault(previous);
+        }
+    }
+
+    @ParameterizedTest @ValueSource(strings = {"Z", "+09:00", "-07:00"})
+    void offsetHistoryTimestampsKeepTheirInstantsInsteadOfDisplayingTheirOriginalOffsets(String offset) throws Exception {
+        var zone = java.time.ZoneOffset.of(offset);
+        assertHistoryTimes(Instant.parse("2026-10-07T11:29:56.123456Z").atOffset(zone),
+                Instant.parse("2026-10-07T11:31:02.987654Z").atOffset(zone),
+                Instant.parse("2026-10-07T11:30:00.654321Z").atOffset(zone));
+    }
+
+    @Test
+    void h2HistoryRowsUseOffsetDateTimeAndPreserveAnUnfinishedRunsMissingEndTime() throws Exception {
+        try (var database = new ReviewTestDatabase()) {
+            database.jdbc.update("insert into review_run(project_id, status, started_at) values (10, 'RUNNING', ?)",
+                    OffsetDateTime.parse("2026-10-07T20:29:56.123456+09:00"));
+            var page = new ReviewRepository(database.jdbc).runs(10, 0);
+            var original = page.rows().getFirst();
+            var before = new LinkedHashMap<>(original);
+            assertThat(original.get("started_at")).isInstanceOf(OffsetDateTime.class);
+            assertThat(original.get("finished_at")).isNull();
+            when(repository.runs(10, 0)).thenReturn(page);
+
+            var run = historyRow(renderHistory(), "runs");
+
+            assertHistoryTime(run, "started_at", "2026-10-07T11:29:56.123456Z", "2026-10-07 11:29:56 UTC");
+            assertThat(run.get("finished_at")).isNull();
+            assertThat(run.containsKey("finished_at_instant")).isFalse();
+            assertThat(run.containsKey("finished_at_label")).isFalse();
+            assertThat(original).isEqualTo(before);
+            assertThat(run).isNotSameAs(original);
+        }
+    }
+
+    @Test
+    void anUnknownTimestampTypeDoesNotGuessTheServersTimeZone() {
+        when(repository.runs(10, 0)).thenReturn(new ReviewRepository.HistoryPage(
+                List.of(Map.of("started_at", LocalDateTime.of(2026, 10, 7, 20, 29))), 0, false));
+
+        assertThatThrownBy(this::renderHistory).hasRootCauseInstanceOf(IllegalStateException.class)
+                .hasRootCauseMessage("Unsupported review history timestamp type");
+    }
+
+    private void assertHistoryTimes(Object started, Object finished, Object reviewed) throws Exception {
+        Map<String, Object> originalRun = Map.of("id", 123L, "started_at", started, "finished_at", finished);
+        Map<String, Object> originalCommit = Map.of("commit_sha", "a".repeat(40), "reviewed_at", reviewed);
+        when(repository.runs(10, 0)).thenReturn(new ReviewRepository.HistoryPage(List.of(originalRun), 0, false));
+        when(repository.reviewedCommits(10, 0)).thenReturn(new ReviewRepository.HistoryPage(List.of(originalCommit), 0, false));
+
+        var model = renderHistory();
+        var run = historyRow(model, "runs");
+        var commit = historyRow(model, "commits");
+
+        assertHistoryTime(run, "started_at", "2026-10-07T11:29:56.123456Z", "2026-10-07 11:29:56 UTC");
+        assertHistoryTime(run, "finished_at", "2026-10-07T11:31:02.987654Z", "2026-10-07 11:31:02 UTC");
+        assertHistoryTime(commit, "reviewed_at", "2026-10-07T11:30:00.654321Z", "2026-10-07 11:30:00 UTC");
+        assertThat(run).isNotSameAs(originalRun);
+        assertThat(commit).isNotSameAs(originalCommit);
+        assertThat(run.get("started_at")).isSameAs(started);
+        assertThat(run.get("finished_at")).isSameAs(finished);
+        assertThat(commit.get("reviewed_at")).isSameAs(reviewed);
+        assertThat(originalRun).hasSize(3).containsEntry("started_at", started).containsEntry("finished_at", finished);
+        assertThat(originalCommit).hasSize(2).containsEntry("reviewed_at", reviewed);
+    }
+
+    private Map<String, Object> renderHistory() throws Exception {
+        return mvc.perform(get("/reviews").param("projectId", "10").principal(() -> "owner"))
+                .andExpect(status().isOk()).andReturn().getModelAndView().getModel();
+    }
+
+    private static Map<?, ?> historyRow(Map<String, Object> model, String name) {
+        return (Map<?, ?>) ((List<?>) model.get(name)).getFirst();
+    }
+
+    private static void assertHistoryTime(Map<?, ?> row, String field, String instant, String label) {
+        assertThat(row.get(field + "_instant")).isEqualTo(Instant.parse(instant));
+        assertThat(row.get(field + "_label")).isEqualTo(label);
     }
 
     @Test

@@ -11,11 +11,19 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.servlet.mvc.support.RedirectAttributes;
 
 import java.security.Principal;
+import java.sql.Timestamp;
 import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.LinkedHashMap;
+import java.util.Locale;
+import java.util.Map;
 
 @Controller
 public class ReviewController {
+    private static final DateTimeFormatter UTC_SECONDS = DateTimeFormatter
+            .ofPattern("yyyy-MM-dd HH:mm:ss 'UTC'", Locale.ROOT).withZone(ZoneOffset.UTC);
     private final ReviewRepository repository;
     private final ReviewDispatcher dispatcher;
     private final ReviewRequestRepository requests;
@@ -41,9 +49,16 @@ public class ReviewController {
         var project = repository.authorizedProject(projectId, repository.actor(principal.getName()));
         var runs = repository.runs(projectId, runPage);
         var commits = repository.reviewedCommits(projectId, commitPage);
+        var runRows = runs.rows().stream().map(run -> {
+            var row = new LinkedHashMap<>(run);
+            addHistoryTime(row, "started_at");
+            addHistoryTime(row, "finished_at");
+            return row;
+        }).toList();
         var commitRows = commits.rows().stream().map(commit -> {
             var row = new LinkedHashMap<>(commit);
             row.put("commit_url", GitCommitLink.from(project.repositoryUrl(), (String) commit.get("commit_sha")));
+            addHistoryTime(row, "reviewed_at");
             return row;
         }).toList();
         model.addAttribute("pageTitle", "리뷰 기록");
@@ -55,7 +70,7 @@ public class ReviewController {
             model.addAttribute("reviewRequest", ReviewRequestView.from(request, Instant.now()));
             requests.progress(request).ifPresent(progress -> model.addAttribute("reviewProgress", progress));
         });
-        model.addAttribute("runs", runs.rows());
+        model.addAttribute("runs", runRows);
         model.addAttribute("runPage", runs.page());
         model.addAttribute("hasNextRunPage", runs.hasNext());
         model.addAttribute("commits", commitRows);
@@ -63,6 +78,20 @@ public class ReviewController {
         model.addAttribute("hasNextCommitPage", commits.hasNext());
         model.addAttribute("maxHistoryPage", ReviewRepository.MAX_HISTORY_PAGE);
         return "reviews";
+    }
+
+    private static void addHistoryTime(Map<String, Object> row, String field) {
+        var value = row.get(field);
+        if (value == null) return;
+        // PostgreSQL and H2 return different JDBC types for timestamps with time zone.
+        var instant = switch (value) {
+            case Timestamp timestamp -> timestamp.toInstant();
+            case OffsetDateTime timestamp -> timestamp.toInstant();
+            case Instant timestamp -> timestamp;
+            default -> throw new IllegalStateException("Unsupported review history timestamp type");
+        };
+        row.put(field + "_instant", instant);
+        row.put(field + "_label", UTC_SECONDS.format(instant));
     }
 
     @PostMapping("/projects/{id}/review")
