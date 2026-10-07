@@ -89,6 +89,7 @@ class PostgreSQLReportGateTest(unittest.TestCase):
 
     def test_correction_suites_are_mandatory_and_must_run_successfully(self):
         for suite in ("com.aicreviewer.identity.UserGitUsernamePostgresTest",
+                      "com.aicreviewer.identity.AccountMutationPostgresTest",
                       "com.aicreviewer.project.BranchCorrectionPostgresTest"):
             with self.subTest(suite=suite):
                 self.assertIn(suite, MODULE.REQUIRED_SUITES)

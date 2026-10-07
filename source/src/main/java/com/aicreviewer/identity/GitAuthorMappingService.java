@@ -6,6 +6,7 @@ import jakarta.validation.constraints.Email;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 import org.springframework.beans.factory.annotation.Value;
@@ -62,17 +63,34 @@ public class GitAuthorMappingService {
                 """, (rs, row) -> new UserOption(rs.getLong("id"), rs.getString("username")), pattern);
     }
 
+    /** Restores one authorized, currently eligible selection without widening the search result limit. */
+    public Optional<UserOption> activeUserOption(String actorName, long userId) {
+        users.requireAdmin(actorName);
+        return jdbc.query("""
+                SELECT id, username FROM app_user
+                WHERE id = ? AND enabled = TRUE AND approval_status = 'APPROVED'
+                """, (rs, row) -> new UserOption(rs.getLong("id"), rs.getString("username")), userId).stream().findFirst();
+    }
+
     @Transactional
     public long create(String actorName, long userId, String repositoryOrigin, String authorEmail) {
         UserAccount actor = users.requireAdmin(actorName);
         if (repositoryOrigin == null || repositoryOrigin.length() > 512) {
-            throw new IllegalArgumentException("저장소 서버 주소는 512자 이하로 입력해 주세요.");
+            throw new GitAuthorMappingValidationException(HttpStatus.BAD_REQUEST, "repositoryOrigin", "저장소 서버 주소는 512자 이하로 입력해 주세요.");
         }
-        String origin = RepositoryOrigin.normalize(repositoryOrigin, allowedHosts);
+        final String origin;
+        try {
+            origin = RepositoryOrigin.normalize(repositoryOrigin, allowedHosts);
+        } catch (IllegalArgumentException invalidOrigin) {
+            throw new GitAuthorMappingValidationException(HttpStatus.BAD_REQUEST, "repositoryOrigin",
+                    "허용된 서버의 HTTP(S) 주소와 포트만 입력해 주세요. 저장소 경로·자격증명·쿼리·조각 식별자는 제외합니다.");
+        }
         String email = normalizedEmail(authorEmail);
+        users.lockAdministrators();
+        actor = users.requireAdmin(actorName);
         if (userId < 1 || !Boolean.TRUE.equals(jdbc.queryForObject(
                 "SELECT EXISTS(SELECT 1 FROM app_user WHERE id = ? AND enabled = TRUE)", Boolean.class, userId))) {
-            throw new IllegalArgumentException("매핑할 활성 사용자 계정을 선택해 주세요.");
+            throw new GitAuthorMappingValidationException(HttpStatus.BAD_REQUEST, "userId", "매핑할 승인된 활성 사용자 계정을 선택해 주세요.");
         }
         GeneratedKeyHolder keys = new GeneratedKeyHolder();
         try {
@@ -87,20 +105,25 @@ public class GitAuthorMappingService {
                 return statement;
             }, keys);
         } catch (DuplicateKeyException exception) {
-            throw new IllegalArgumentException("해당 저장소 서버와 이메일의 매핑이 이미 있습니다. 기존 매핑을 삭제한 뒤 다시 등록해 주세요.");
+            throw new GitAuthorMappingValidationException(HttpStatus.CONFLICT, "authorEmail",
+                    "해당 저장소 서버와 이메일의 매핑이 이미 있습니다. 기존 매핑을 확인해 주세요.");
         }
         Number key = keys.getKey();
         if (key == null) throw new IllegalStateException("Git 작성자 매핑 생성 결과를 확인할 수 없습니다.");
         long id = key.longValue();
+        // The foreign-key check can wait behind an account row lock; revocation must roll back this insert.
+        actor = users.requireAdmin(actorName);
         audit.write(actor.id(), "GIT_AUTHOR_MAPPING_CREATED", "GIT_AUTHOR_MAPPING", id, "user_id=" + userId);
         return id;
     }
 
     @Transactional
     public void delete(String actorName, long id) {
-        UserAccount actor = users.requireAdmin(actorName);
+        users.requireAdmin(actorName);
+        users.lockAdministrators();
         List<Long> mappedUsers = jdbc.queryForList("SELECT user_id FROM git_author_mapping WHERE id = ? FOR UPDATE", Long.class, id);
         if (mappedUsers.isEmpty()) throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+        UserAccount actor = users.requireAdmin(actorName);
         jdbc.update("DELETE FROM git_author_mapping WHERE id = ?", id);
         audit.write(actor.id(), "GIT_AUTHOR_MAPPING_DELETED", "GIT_AUTHOR_MAPPING", id, "user_id=" + mappedUsers.getFirst());
     }
@@ -111,7 +134,8 @@ public class GitAuthorMappingService {
                 || result.codePoints().anyMatch(character -> Character.isISOControl(character)
                     || Character.isWhitespace(character) || Character.isSpaceChar(character))
                 || !validator.validate(new EmailValue(result)).isEmpty()) {
-            throw new IllegalArgumentException("Git 커밋에 기록된 전체 이메일 주소를 공백이나 제어문자 없이 320자 이하로 입력해 주세요.");
+            throw new GitAuthorMappingValidationException(HttpStatus.BAD_REQUEST, "authorEmail",
+                    "Git 커밋에 기록된 전체 이메일 주소를 공백이나 제어문자 없이 320자 이하로 입력해 주세요.");
         }
         return result;
     }

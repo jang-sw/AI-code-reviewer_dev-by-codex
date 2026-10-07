@@ -13,6 +13,8 @@ import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.server.ResponseStatusException;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
@@ -67,8 +69,9 @@ class IdentityPostgresTest {
                 assertThat(waiters).as("both transactions passed authorization and are waiting for the same administrator locks").isEqualTo(2);
                 blocker.commit();
                 List<String> outcomes = List.of(firstDisable.get(5, TimeUnit.SECONDS), secondDisable.get(5, TimeUnit.SECONDS));
-                assertThat(outcomes).containsExactlyInAnyOrder("disabled", "last-administrator-protected");
+                assertThat(outcomes).containsExactlyInAnyOrder("disabled", "actor-revoked");
                 assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM app_user WHERE role = 'ADMIN' AND enabled = TRUE", Integer.class)).isEqualTo(1);
+                assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audit_event WHERE action='USER_DISABLED'", Integer.class)).isEqualTo(1);
             } finally {
                 blocker.rollback();
                 executor.shutdownNow();
@@ -81,9 +84,9 @@ class IdentityPostgresTest {
             try {
                 users.setEnabled(actor, targetId, false);
                 return "disabled";
-            } catch (IllegalArgumentException expected) {
-                assertThat(expected.getMessage()).contains("마지막 활성 관리자");
-                return "last-administrator-protected";
+            } catch (ResponseStatusException expected) {
+                assertThat(expected.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+                return "actor-revoked";
             }
         };
     }

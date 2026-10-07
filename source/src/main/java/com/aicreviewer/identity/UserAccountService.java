@@ -89,10 +89,12 @@ public class UserAccountService {
 
     @Transactional
     public void decideApproval(String actorName, long targetId, String action, String reason) {
-        UserAccount actor = requireAdmin(actorName);
+        requireAdmin(actorName);
+        lockAdministrators();
         List<UserAccount> accounts = jdbc.query("SELECT * FROM app_user WHERE id = ? FOR UPDATE", ADMIN_ACCOUNT, targetId);
         if (accounts.isEmpty()) throw new ResponseStatusException(HttpStatus.NOT_FOUND);
         UserAccount target = accounts.getFirst();
+        UserAccount actor = requireAdmin(actorName);
         String next = switch (action) {
             case "approve" -> "APPROVED";
             case "reject" -> "REJECTED";
@@ -126,6 +128,8 @@ public class UserAccountService {
 
     @Transactional
     public long create(String actorName, String username, String password, String gitUsername, String role) {
+        requireAdmin(actorName);
+        lockAdministrators();
         UserAccount actor = requireAdmin(actorName);
         return insert(actor.id(), username, password, gitUsername, role, "USER_CREATED");
     }
@@ -171,10 +175,12 @@ public class UserAccountService {
 
     @Transactional
     public void setEnabled(String actorName, long targetId, boolean enabled) {
-        UserAccount actor = requireAdmin(actorName);
+        requireAdmin(actorName);
         // Lock in a stable order so concurrent administrators cannot disable the last two administrators.
-        List<UserAccount> admins = jdbc.query("SELECT * FROM app_user WHERE role = 'ADMIN' ORDER BY id FOR UPDATE", ACCOUNT);
-        UserAccount target = find(targetId);
+        List<UserAccount> admins = lockAdministrators();
+        UserAccount target = findLocked(targetId);
+        // Authorization may have been revoked while either row lock was waiting.
+        UserAccount actor = requireAdmin(actorName);
         requireApproved(target);
         if (!enabled && target.isAdmin() && target.enabled()
                 && admins.stream().filter(UserAccount::enabled).count() <= 1) {
@@ -186,9 +192,12 @@ public class UserAccountService {
 
     @Transactional
     public void resetPassword(String actorName, long targetId, String newPassword) {
-        UserAccount actor = requireAdmin(actorName);
-        requireApproved(find(targetId));
+        requireAdmin(actorName);
         String encoded = passwords.encode(AccountInput.password(newPassword));
+        lockAdministrators();
+        UserAccount target = findLocked(targetId);
+        UserAccount actor = requireAdmin(actorName);
+        requireApproved(target);
         jdbc.update("UPDATE app_user SET password_hash = ?, security_version = security_version + 1 WHERE id = ?", encoded, targetId);
         audit.write(actor.id(), "USER_PASSWORD_RESET", "USER", targetId, "기존 로그인 세션 만료");
     }
@@ -211,9 +220,12 @@ public class UserAccountService {
         if (recognizableGitCredential(replacement)) {
             throw new GitUsernameChangeException(HttpStatus.BAD_REQUEST, "토큰이나 비밀번호 대신 공개 Git 사용자명을 입력해 주세요.");
         }
+        lockAdministrators();
         var targets = jdbc.query("SELECT * FROM app_user WHERE id = ? FOR UPDATE", ACCOUNT, targetId);
         if (targets.isEmpty()) throw new ResponseStatusException(HttpStatus.NOT_FOUND);
         UserAccount target = targets.getFirst();
+        // Check after all locks, before disclosing a stale value or duplicate outcome.
+        UserAccount actor = requireAdmin(actorName);
         // Compare the exact value the administrator saw; do not silently normalize a stale form.
         if (!target.gitUsername().equals(expectedGitUsername)) {
             throw new GitUsernameChangeException(HttpStatus.CONFLICT, "다른 관리자가 Git 계정을 변경했습니다. 아래 현재 값을 확인하고 다시 저장해 주세요.");
@@ -221,8 +233,6 @@ public class UserAccountService {
         if (target.gitUsername().equals(replacement)) {
             throw new GitUsernameChangeException(HttpStatus.BAD_REQUEST, "현재와 다른 Git 사용자명을 입력해 주세요.");
         }
-        // The row lock may have waited while another administrator revoked the actor.
-        UserAccount actor = requireAdmin(actorName);
         try {
             jdbc.update("UPDATE app_user SET git_username = ? WHERE id = ?", replacement, targetId);
         } catch (DuplicateKeyException duplicate) {
@@ -259,6 +269,7 @@ public class UserAccountService {
         UserAccount actor = requireAccount(actorName);
         String existing = jdbc.queryForObject("SELECT password_hash FROM app_user WHERE id = ? FOR UPDATE",
                 String.class, actor.id());
+        actor = requireAccount(actorName);
         if (currentPassword == null || !passwords.matches(currentPassword, existing)) {
             throw new IllegalArgumentException("현재 비밀번호가 일치하지 않습니다.");
         }
@@ -271,6 +282,18 @@ public class UserAccountService {
     private UserAccount find(long id) {
         return jdbc.query("SELECT * FROM app_user WHERE id = ?", ACCOUNT, id).stream().findFirst()
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+    }
+
+    private UserAccount findLocked(long id) {
+        return jdbc.query("SELECT * FROM app_user WHERE id = ? FOR UPDATE", ACCOUNT, id).stream().findFirst()
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+    }
+
+    /** Internal callers must already be in their mutation transaction. Always lock
+     * administrators before target rows/unique keys/FKs so audit actor checks cannot
+     * reverse that order. Public signup/bootstrap have no audit actor and do not use it. */
+    List<UserAccount> lockAdministrators() {
+        return jdbc.query("SELECT * FROM app_user WHERE role = 'ADMIN' ORDER BY id FOR UPDATE", ACCOUNT);
     }
 
     private static UserAccount account(ResultSet rs, boolean adminDetails) throws SQLException {

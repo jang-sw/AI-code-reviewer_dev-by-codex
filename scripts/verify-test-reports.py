@@ -9,6 +9,7 @@ REQUIRED_SUITES = (
     "com.aicreviewer.ApplicationPostgresTest",
     "com.aicreviewer.identity.IdentityPostgresTest",
     "com.aicreviewer.identity.UserGitUsernamePostgresTest",
+    "com.aicreviewer.identity.AccountMutationPostgresTest",
     "com.aicreviewer.project.BranchCorrectionPostgresTest",
     "com.aicreviewer.identity.SharedAttemptStorePostgresTest",
     "com.aicreviewer.git.SharedIntegrationCooldownPostgresTest",

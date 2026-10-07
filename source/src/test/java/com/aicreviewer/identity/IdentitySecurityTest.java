@@ -133,6 +133,33 @@ class IdentitySecurityTest {
     }
 
     @Test
+    void passwordResetKeepsADisabledApprovedAccountDisabledAndPreservesOtherFields() {
+        users.setEnabled("administrator", aliceId, false);
+        var before = new java.util.LinkedHashMap<>(jdbc.queryForMap("SELECT * FROM app_user WHERE id=?", aliceId));
+        users.resetPassword("administrator", aliceId, "Replacement-password-5901!");
+        var after = jdbc.queryForMap("SELECT * FROM app_user WHERE id=?", aliceId);
+        assertThat(passwords.matches("Replacement-password-5901!", (String) after.get("password_hash"))).isTrue();
+        before.put("password_hash", after.get("password_hash"));
+        before.put("security_version", ((Number) before.get("security_version")).longValue() + 1);
+        assertThat(after).isEqualTo(before).containsEntry("enabled", false).containsEntry("approval_status", "APPROVED");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audit_event WHERE action='USER_PASSWORD_RESET' AND target_id=?",
+                Long.class, aliceId)).isEqualTo(1);
+    }
+
+    @Test
+    void invalidPasswordResetAndChangeDoNotModifyTheLockedAccountOrCreateAudit() {
+        var before = jdbc.queryForMap("SELECT * FROM app_user WHERE id=?", aliceId);
+        assertThatThrownBy(() -> users.resetPassword("administrator", aliceId, "short"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> users.changePassword("alice", PASSWORD, "short"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> users.changePassword("alice", PASSWORD, PASSWORD))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(jdbc.queryForMap("SELECT * FROM app_user WHERE id=?", aliceId)).isEqualTo(before);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audit_event", Long.class)).isZero();
+    }
+
+    @Test
     void selfPasswordChangeRequiresCurrentPasswordAndMatchingConfirmation() throws Exception {
         MockHttpSession session = login("alice");
         mvc.perform(post("/account/password").session(session).with(csrf())

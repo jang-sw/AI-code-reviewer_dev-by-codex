@@ -166,7 +166,7 @@ public class ReviewRepository {
         // have an unrelated account with the same username; it must use an origin mapping.
         if ("GITHUB".equals(project.provider()) && "github.com".equals(project.repositoryHost()) &&
                 authorLogin != null && !authorLogin.isBlank()) {
-            List<Long> accounts = jdbc.queryForList("select id from app_user where enabled = true and lower(git_username) = ?", Long.class,
+            List<Long> accounts = jdbc.queryForList("select id from app_user where enabled = true and git_username = ?", Long.class,
                     authorLogin.strip().toLowerCase(Locale.ROOT));
             if (accounts.size() == 1) return new Assignment(accounts.getFirst(), "GITHUB_ACCOUNT", null);
         }

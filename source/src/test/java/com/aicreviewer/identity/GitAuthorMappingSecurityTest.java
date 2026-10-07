@@ -10,10 +10,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
@@ -174,6 +177,148 @@ class GitAuthorMappingSecurityTest {
         assertThatThrownBy(() -> mappings.list("administrator", -1)).isInstanceOf(ResponseStatusException.class);
         assertThatThrownBy(() -> mappings.delete("administrator", Long.MAX_VALUE)).isInstanceOfSatisfying(ResponseStatusException.class,
                 error -> assertThat(error.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND));
+        long selectedOutsideSearch = add("zz-restored", "USER", true);
+        var restored = mvc.perform(post("/admin/git-authors").with(user(details.loadUserByUsername("administrator"))).with(csrf())
+                        .param("userId", Long.toString(selectedOutsideSearch)).param("repositoryOrigin", "https://gitlab.example.com")
+                        .param("authorEmail", "incorrect-email"))
+                .andExpect(status().isBadRequest()).andReturn().getModelAndView().getModel();
+        assertThat((List<?>) restored.get("userOptions")).hasSize(50);
+        assertThat(restored).containsEntry("hasMoreUsers", true)
+                .containsEntry("mappingSelectedUser", new GitAuthorMappingService.UserOption(selectedOutsideSearch, "zz-restored"));
+    }
+
+    @Test
+    void invalidEmailReturnsEditableFormWithContextAndActiveSelectionOutsideSearch() throws Exception {
+        var result = mvc.perform(post("/admin/git-authors").with(user(details.loadUserByUsername("administrator"))).with(csrf())
+                        .param("userId", Long.toString(aliceId)).param("repositoryOrigin", "https://gitlab.example.com")
+                        .param("authorEmail", "incorrect-email").param("page", "2").param("userSearch", "no-matching-user"))
+                .andExpect(status().isBadRequest()).andReturn();
+        assertThat(result.getModelAndView().getViewName()).isEqualTo("admin/git-authors");
+        var model = result.getModelAndView().getModel();
+        assertThat(model).containsEntry("page", 2).containsEntry("userSearch", "no-matching-user");
+        assertThat((List<?>) model.get("userOptions")).isEmpty();
+        assertThat(model.get("mappingSelectedUser")).isEqualTo(new GitAuthorMappingService.UserOption(aliceId, "alice"));
+        assertThat(model.get("mappingForm")).isEqualTo(Map.of("userId", Long.toString(aliceId),
+                "repositoryOrigin", "https://gitlab.example.com", "authorEmail", "incorrect-email"));
+        assertThat(((Map<?, ?>) model.get("mappingErrors")).containsKey("authorEmail")).isTrue();
+        assertThat(result.getFlashMap().isEmpty()).isTrue();
+        assertThat(result.getRequest().getSession(false).getAttribute("mappingForm")).isNull();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM git_author_mapping", Long.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audit_event WHERE target_type='GIT_AUTHOR_MAPPING'", Long.class)).isZero();
+    }
+
+    @Test
+    void duplicateReturnsConflictWithSafeInputAndDoesNotAddMappingOrAudit() throws Exception {
+        long id = mappings.create("administrator", aliceId, "https://gitlab.example.com", "engineer@example.com");
+        var result = mvc.perform(post("/admin/git-authors").with(user(details.loadUserByUsername("administrator"))).with(csrf())
+                        .param("userId", Long.toString(aliceId)).param("repositoryOrigin", "https://GITLAB.example.com:443/")
+                        .param("authorEmail", "ENGINEER@example.com").param("page", "1").param("userSearch", "ali"))
+                .andExpect(status().isConflict()).andReturn();
+        assertThat(result.getModelAndView().getModel().get("mappingForm")).isEqualTo(Map.of("userId", Long.toString(aliceId),
+                "repositoryOrigin", "https://GITLAB.example.com:443/", "authorEmail", "ENGINEER@example.com"));
+        assertThat(((Map<?, ?>) result.getModelAndView().getModel().get("mappingErrors")).containsKey("authorEmail")).isTrue();
+        assertThat(result.getFlashMap().isEmpty()).isTrue();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM git_author_mapping WHERE id=?", Long.class, id)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audit_event WHERE target_type='GIT_AUTHOR_MAPPING'", Long.class)).isEqualTo(1);
+    }
+
+    @ParameterizedTest
+    @MethodSource("unsafeRestoredOrigins")
+    void unsafeOriginInputIsNotCopiedIntoTheErrorModelOrFlash(String origin) throws Exception {
+        var result = mvc.perform(post("/admin/git-authors").with(user(details.loadUserByUsername("administrator"))).with(csrf())
+                        .param("userId", Long.toString(aliceId)).param("repositoryOrigin", origin)
+                        .param("authorEmail", "engineer@example.com"))
+                .andExpect(status().isBadRequest()).andReturn();
+        var model = result.getModelAndView().getModel();
+        assertThat(((Map<?, ?>) model.get("mappingForm")).get("repositoryOrigin")).isEqualTo("");
+        assertThat(((Map<?, ?>) model.get("mappingForm")).get("authorEmail")).isEqualTo("engineer@example.com");
+        assertThat(model).containsEntry("mappingFormCleared", true);
+        assertThat(model.toString()).doesNotContain(origin);
+        assertThat(result.getFlashMap().isEmpty()).isTrue();
+    }
+
+    static Stream<String> unsafeRestoredOrigins() {
+        return Stream.of("https://fixture-user:synthetic-password@gitlab.example.com", "https://gitlab.example.com?token=fixture",
+                "https://gitlab.example.com#fixture", "https://gitlab.example.com/" + "x".repeat(512),
+                "https://gitlab.example.com\n", "https://gitlab.example.com\0");
+    }
+
+    @ParameterizedTest
+    @MethodSource("unsafeRestoredEmails")
+    void unsafeEmailInputIsNotCopiedIntoTheErrorModelOrFlash(String email) throws Exception {
+        var result = mvc.perform(post("/admin/git-authors").with(user(details.loadUserByUsername("administrator"))).with(csrf())
+                        .param("userId", Long.toString(aliceId)).param("repositoryOrigin", "https://gitlab.example.com")
+                        .param("authorEmail", email))
+                .andExpect(status().isBadRequest()).andReturn();
+        var model = result.getModelAndView().getModel();
+        assertThat(((Map<?, ?>) model.get("mappingForm")).get("authorEmail")).isEqualTo("");
+        assertThat(model).containsEntry("mappingFormCleared", true);
+        assertThat(model.toString()).doesNotContain(email);
+        assertThat(result.getFlashMap().isEmpty()).isTrue();
+    }
+
+    static Stream<String> unsafeRestoredEmails() {
+        return Stream.of("Bearer synthetic-credential", "password=synthetic-fixture", "https://fixture:synthetic-password@host.invalid",
+                "x".repeat(321), "engineer\n@example.com", "engineer\0@example.com");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"APPROVED", "PENDING", "REJECTED"})
+    void inactiveSelectedAccountIsNotRestoredIntoTheForm(String approvalStatus) throws Exception {
+        jdbc.update("UPDATE app_user SET enabled=FALSE, approval_status=? WHERE id=?", approvalStatus, aliceId);
+        var result = mvc.perform(post("/admin/git-authors").with(user(details.loadUserByUsername("administrator"))).with(csrf())
+                        .param("userId", Long.toString(aliceId)).param("repositoryOrigin", "https://gitlab.example.com")
+                        .param("authorEmail", "engineer@example.com"))
+                .andExpect(status().isBadRequest()).andReturn();
+        var model = result.getModelAndView().getModel();
+        assertThat(model).doesNotContainKey("mappingSelectedUser");
+        assertThat(((Map<?, ?>) model.get("mappingForm")).get("userId")).isEqualTo("");
+        assertThat(((Map<?, ?>) model.get("mappingErrors")).containsKey("userId")).isTrue();
+        assertThat(mappings.activeUserOption("administrator", aliceId)).isEmpty();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"", "not-an-id", "-1", "9223372036854775808", "999999999999999999999999"})
+    void malformedSelectedAccountHasEditableFieldErrorWithoutEchoingTheValue(String userId) throws Exception {
+        var result = mvc.perform(post("/admin/git-authors").with(user(details.loadUserByUsername("administrator"))).with(csrf())
+                        .param("userId", userId).param("repositoryOrigin", "https://gitlab.example.com")
+                        .param("authorEmail", "engineer@example.com"))
+                .andExpect(status().isBadRequest()).andReturn();
+        assertThat(((Map<?, ?>) result.getModelAndView().getModel().get("mappingForm")).get("userId")).isEqualTo("");
+        assertThat(((Map<?, ?>) result.getModelAndView().getModel().get("mappingErrors")).containsKey("userId")).isTrue();
+    }
+
+    @Test
+    void successfulCreateAndDeleteKeepTheMappingPageAndUserSearch() throws Exception {
+        mvc.perform(post("/admin/git-authors").with(user(details.loadUserByUsername("administrator"))).with(csrf())
+                        .param("userId", Long.toString(aliceId)).param("repositoryOrigin", "https://gitlab.example.com")
+                        .param("authorEmail", "engineer@example.com").param("page", "2").param("userSearch", "alice"))
+                .andExpect(redirectedUrl("/admin/git-authors?page=2&userSearch=alice"));
+        long id = mappings.list("administrator", 0).getFirst().id();
+        mvc.perform(post("/admin/git-authors/" + id + "/delete")
+                        .with(user(details.loadUserByUsername("administrator"))).with(csrf())
+                        .param("page", "2").param("userSearch", "alice"))
+                .andExpect(redirectedUrl("/admin/git-authors?page=2&userSearch=alice"));
+        assertThat(mappings.list("administrator", 0)).isEmpty();
+    }
+
+    @Test
+    void invalidReturnContextCannotPerformAMutation() throws Exception {
+        for (var context : List.of(Map.of("page", "10001", "userSearch", ""), Map.of("page", "0", "userSearch", "x".repeat(81)),
+                Map.of("page", "0", "userSearch", "ali\nce"))) {
+            mvc.perform(post("/admin/git-authors").with(user(details.loadUserByUsername("administrator"))).with(csrf())
+                            .param("userId", Long.toString(aliceId)).param("repositoryOrigin", "https://gitlab.example.com")
+                            .param("authorEmail", "engineer@example.com").param("page", context.get("page")).param("userSearch", context.get("userSearch")))
+                    .andExpect(status().isBadRequest());
+        }
+        assertThat(mappings.list("administrator", 0)).isEmpty();
+    }
+
+    @Test
+    void activeSelectionLookupStillRequiresCurrentAdministratorAndDoesNotReturnUnknownUsers() {
+        assertThat(mappings.activeUserOption("administrator", aliceId)).contains(new GitAuthorMappingService.UserOption(aliceId, "alice"));
+        assertThat(mappings.activeUserOption("administrator", Long.MAX_VALUE)).isEmpty();
+        assertThatThrownBy(() -> mappings.activeUserOption("alice", aliceId)).isInstanceOf(ResponseStatusException.class);
     }
 
     private long add(String username, String role, boolean enabled) {

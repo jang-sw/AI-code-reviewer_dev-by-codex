@@ -10,6 +10,8 @@ import com.aicreviewer.issue.IssueService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.net.URI;
 import java.util.List;
@@ -104,10 +106,21 @@ class ReviewAuthorAssignmentTest {
     void githubAccountAssociationTakesPrecedenceOverConflictingEmailMapping() {
         mapping("https://github.com", EMAIL, 4);
 
-        review(commit("AUTHOR-GIT", EMAIL));
+        review(commit(" AUTHOR-GIT ", EMAIL));
 
         assertAssignment(2, "GITHUB_ACCOUNT");
         assertThat(db.jdbc.queryForObject("select detail from audit_event where action = 'ISSUES_ASSIGNED'", String.class)).doesNotContain("mapping=");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"APPROVED", "PENDING", "REJECTED"})
+    void disabledGithubAccountCannotReceiveAnIssueRegardlessOfApprovalState(String approvalStatus) {
+        db.jdbc.update("update app_user set enabled = false, approval_status = ? where id = 2", approvalStatus);
+
+        review(commit(" AUTHOR-GIT ", null));
+
+        assertAssignment(1, "PROJECT_OWNER_FALLBACK");
+        assertThat(db.jdbc.queryForObject("select count(*) from audit_event where action = 'ISSUE_ASSIGNEE_FALLBACK'", Long.class)).isEqualTo(1L);
     }
 
     @Test

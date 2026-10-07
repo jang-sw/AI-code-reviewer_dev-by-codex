@@ -54,6 +54,10 @@ class UserGitUsernameConcurrencyTest {
         };
         UserAccountService first = service(jdbc, heldAudit);
         JdbcTemplate secondJdbc = new JdbcTemplate(source) {
+            @Override public <T> List<T> query(String sql, RowMapper<T> mapper) {
+                if (sql.contains("FOR UPDATE")) secondLock.countDown();
+                return super.query(sql, mapper);
+            }
             @Override public <T> List<T> query(String sql, RowMapper<T> mapper, Object... arguments) {
                 if (sql.contains("FOR UPDATE")) secondLock.countDown();
                 return super.query(sql, mapper, arguments);
@@ -87,7 +91,9 @@ class UserGitUsernameConcurrencyTest {
         JdbcTemplate heldLookup = new JdbcTemplate(source) {
             @Override public <T> List<T> queryForList(String sql, Class<T> elementType, Object... arguments) {
                 List<T> result = super.queryForList(sql, elementType, arguments);
-                if (sql.contains("lower(git_username)")) { matched.countDown(); await(release); }
+                if (elementType == Long.class && arguments.length == 1 && "author-git".equals(arguments[0])) {
+                    matched.countDown(); await(release);
+                }
                 return result;
             }
         };

@@ -87,10 +87,10 @@ class UserGitUsernamePostgresTest {
                 int waiters = 0;
                 while (System.nanoTime() < deadline && waiters < 2) {
                     waiters = admin.queryForObject("SELECT COUNT(*) FROM pg_stat_activity WHERE application_name=? " +
-                            "AND wait_event_type='Lock' AND query LIKE 'SELECT * FROM app_user WHERE id = %FOR UPDATE'", Integer.class, schema);
+                            "AND wait_event_type='Lock' AND state='active'", Integer.class, schema);
                     if (waiters < 2) Thread.sleep(20);
                 }
-                assertThat(waiters).as("Both independent correction transactions reached the target row locks").isEqualTo(2);
+                assertThat(waiters).as("Both independent corrections wait on the ordered administrator/target locks").isEqualTo(2);
                 blocker.commit();
                 assertThat(List.of(first.get(5, TimeUnit.SECONDS), second.get(5, TimeUnit.SECONDS)))
                         .containsExactlyInAnyOrder(200, 409);
@@ -115,11 +115,12 @@ class UserGitUsernamePostgresTest {
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audit_event", Long.class)).isZero();
     }
 
-    @Test void administratorDisabledWhileWaitingForTheTargetLockCannotWriteOrAudit() throws Exception {
+    @Test void administratorDisabledWhileWaitingForTheFirstAdministratorLockCannotWriteOrAudit() throws Exception {
+        jdbc.update("INSERT INTO app_user(id,username,password_hash,git_username,role) VALUES(0,'firstadmin','fixture','firstadmin-git','ADMIN')");
         try (var blocker = source.getConnection(); var executor = Executors.newSingleThreadExecutor()) {
             blocker.setAutoCommit(false);
             try {
-                try (var lock = blocker.createStatement(); var rows = lock.executeQuery("SELECT id FROM app_user WHERE id=2 FOR UPDATE")) {
+                try (var lock = blocker.createStatement(); var rows = lock.executeQuery("SELECT id FROM app_user WHERE id=0 FOR UPDATE")) {
                     assertThat(rows.next()).isTrue();
                 }
                 var pending = executor.submit(() -> {
@@ -130,10 +131,10 @@ class UserGitUsernamePostgresTest {
                 int waiters = 0;
                 while (System.nanoTime() < deadline && waiters == 0) {
                     waiters = admin.queryForObject("SELECT COUNT(*) FROM pg_stat_activity WHERE application_name=? " +
-                            "AND wait_event_type='Lock' AND query LIKE 'SELECT * FROM app_user WHERE id = %FOR UPDATE'", Integer.class, schema);
+                            "AND wait_event_type='Lock' AND state='active'", Integer.class, schema);
                     if (waiters == 0) Thread.sleep(20);
                 }
-                assertThat(waiters).as("The correction passed its initial role check and is waiting for the target").isEqualTo(1);
+                assertThat(waiters).as("The correction passed initial authorization and waits before locking its acting administrator").isEqualTo(1);
                 jdbc.update("UPDATE app_user SET enabled=FALSE,security_version=security_version+1 WHERE id=3");
                 blocker.commit();
                 assertThat(pending.get(5, TimeUnit.SECONDS)).isEqualTo(401);
@@ -148,7 +149,7 @@ class UserGitUsernamePostgresTest {
         JdbcTemplate held = new JdbcTemplate(source) {
             @Override public <T> List<T> queryForList(String sql, Class<T> type, Object... arguments) {
                 List<T> result = super.queryForList(sql, type, arguments);
-                if (sql.contains("lower(git_username)")) {
+                if (type == Long.class && arguments.length == 1 && "author-git".equals(arguments[0])) {
                     matched.countDown();
                     try {
                         if (!release.await(5, TimeUnit.SECONDS)) throw new AssertionError("Synthetic assignment release timed out");
