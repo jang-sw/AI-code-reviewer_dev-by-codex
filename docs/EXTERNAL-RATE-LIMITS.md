@@ -40,3 +40,24 @@ V15는 기존 `review_request`에 실제429 횟수와 첫 대기 시각을 추�
 단위·통합 검증은 헤더 경계, 본문 취소, 공급자5종, 같은 요청 보존, 저장 SHA 재사용, 횟수/시간 상한, 권한 변경, fencing, SQL 롤백과 UTC 안내를 다룬다. 실제 PostgreSQL 검증은 독립 연결의 동시 기록·잠금 시간 초과·DB 시계·용량·V14 데이터 보존을 다룬다. 최신 실제 실행 결과는 `WORK.md`에 기록한다.
 
 Linux 부모 도구의 `--review-rate-limit`는 로컬 합성 Git/AI와 실제 WAR를 사용한다. 일부 대기 시각을 소유한 시험 schema에서만 SQL로 만료시켜 경계를 검증하므로 실제 공급자 quota 회복이나24시간 연속 운영을 검증한 것으로 해석하지 않는다. 운영 LiteLLM 주소·모델 및 실제 호출 제한·비용 검증은 별도다.
+
+Linux native checkout에서 아래처럼 실행한다. 부모는 별도 `.local/pg-validation`을 시작하여 전체 Java·필수PG 검증 후 하위 도구를 호출하고 종료한다. 기존 서비스나 다른 클러스터를 시험용으로 전환하지 않는다.
+
+```bash
+python3 scripts/test-postgres-linux.py \
+  --pg-bin /usr/lib/postgresql/17/bin \
+  --java /usr/lib/jvm/temurin-25-jdk-amd64/bin/java \
+  --review-rate-limit
+```
+
+시험 WAR 포트 기본값은18096이며 `--review-rate-limit-port`로 변경할 수 있다. 하위 도구는 실제 AI429→동일 origin 다른 프로젝트 AI 무호출→재시작 뒤6초 무호출→소유 시각 만료→Git429→다시 만료 후 미완료 커밋만 저장을 검증한다. A 커밋은 AI1회·B는 최초429와 성공을 합쳐2회이며 결과는2커밋/2이슈다. 실제 JSP의 대기·UTC 표시와 직접 재요청 안내를 확인한다. 한도 중단 화면은 마지막 요청의 SQL 합성 상태·예약 OFF 조건이며 실제24시간/6번째429 시험은 Java 회귀와 구분한다.
+
+보고서는 이번 호출의 `.local/linux-postgres-<실행 토큰>/review-rate-limit-<실행 토큰>.json`에 생성한다. PASS는 소유 WAR·schema·임시 작업 경로 정리와 원본14개 테이블 보존까지 필요하다. 대기 헤더·HTTP 본문·계정 비밀번호·원본 DB 행과 지문 값은 보고하지 않는다. 실패·취소 시 사유 분류와 확인된 정리 결과를 남긴다.
+
+## 실제 실행 기록
+
+2026-10-07 WSL에서 최종 Java1029건 중1019통과/선택10skip, 필수PG6suite를 통과했다. 같은 실행의 실제 WAR429 검증은39.774초·WAR3회 시작으로 위 시나리오와 소유 자원 정리·원본14테이블 보존을 통과했다. Linux `.local/linux-postgres-989bcb3a692b4d7e9996461366afcb36/review-rate-limit-989bcb3a692b4d7e9996461366afcb36.json`에 보고서를 보존한다.
+
+WAR SHA256은 `1de2c1ec5092cf4ce6ec83dde5c429cf813651648d2adaa968ae37977d66e604`,42,029,853바이트이며 제품 커밋은 `5f40695429e35f6eaf4c2e1cdc309230f5187a34`다. Python237건은 Windows232통과/5skip, Linux227통과/10skip였다. 이 중 새 도구 경계15건·부모45건을 포함한다. 실제 외부/유료 모델·운영 서비스는 사용하지 않았다.
+
+같은 WAR의 일회성 실제 SIGTERM 시험은 세 번째 Tomcat 기동과 원 요청의 AI 대기/다른 프로젝트 중지를 확인한 뒤 취소했다.23.190초·종료130·FAIL/KeyboardInterrupt를 유지하며 소유 WAR/schema/work와 부모 PG/lock 정리·원본14테이블 보존을 통과했다. `.local/linux-postgres-468ca8081fcb4417a24fa30663e9511e/cancel-harness.json`에 증거를 보존한다. 취소 시험은 Maven 재실행이 아니며, 검증 실패를 성공으로 바꾸지 않았다.

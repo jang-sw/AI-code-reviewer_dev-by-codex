@@ -77,6 +77,19 @@ class LinuxPostgresSafetyTest(unittest.TestCase):
         self.assertEqual(events, ['build/gate', 'build/gate',
                                  ('shared-auth', ['--port-a', '18094', '--port-b', '18095'])])
 
+    def test_rate_limit_drill_is_opt_in_and_checks_port_collision(self):
+        args = MODULE.arguments(['--pg-bin', str(self.pg_bin), '--java', str(self.args.java), '--review-rate-limit'])
+        self.runner.args = args
+        self.assertEqual(self.runner.selected_ports(), [55439, 18096])
+        events = []
+        with patch.object(self.runner, 'command', side_effect=lambda *a, **k: events.append('build/gate')), \
+                patch.object(self.runner, 'drill', side_effect=lambda *a: events.append(a)):
+            self.runner.verify()
+        self.assertEqual(events, ['build/gate', 'build/gate', ('review-rate-limit', ['--port', '18096'])])
+        args.review_rate_limit_port = 55439
+        with self.assertRaises(MODULE.SafetyError):
+            self.runner.selected_ports()
+
     def test_shared_auth_child_requires_confirmed_cleanup_as_well_as_pass(self):
         (self.workspace / 'scripts' / 'verify-shared-auth.py').write_text('# synthetic fixture', encoding='utf-8')
         self.runner.logs.mkdir()
@@ -97,6 +110,24 @@ class LinuxPostgresSafetyTest(unittest.TestCase):
                         self.runner.drill('shared-auth', ['--port-a', '18094', '--port-b', '18095'])
                 else:
                     self.runner.drill('shared-auth', ['--port-a', '18094', '--port-b', '18095'])
+            report.unlink()
+
+    def test_rate_limit_child_cannot_report_pass_without_confirmed_cleanup(self):
+        (self.workspace / 'scripts' / 'verify-review-rate-limit.py').write_text('# synthetic fixture', encoding='utf-8')
+        self.runner.logs.mkdir()
+        report = self.runner.logs / ('review-rate-limit-' + self.runner.token + '.json')
+        for confirmed in (False, True):
+            def child(command, **kwargs):
+                self.assertTrue(kwargs['cooperative_cancel'])
+                self.assertEqual(command[-2:], ['--port', '18096'])
+                report.write_text(json.dumps({'result': 'PASS', 'externalServicesUsed': False, 'paidAiUsed': False,
+                    'cleanupFailed': False, 'checks': {'ownedWarsStopped': confirmed, 'ownedSchemaRemoved': True}}), encoding='utf-8')
+            with self.subTest(confirmed=confirmed), patch.object(self.runner, 'command', side_effect=child):
+                if confirmed:
+                    self.runner.drill('review-rate-limit', ['--port', '18096'])
+                else:
+                    with self.assertRaises(MODULE.SafetyError):
+                        self.runner.drill('review-rate-limit', ['--port', '18096'])
             report.unlink()
 
     def test_upgrade_requires_explicit_previous_war_and_recorded_hash_together(self):

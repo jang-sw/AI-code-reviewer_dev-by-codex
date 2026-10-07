@@ -33,6 +33,7 @@ ALLOWLIST = (
     "docs/AUTH-LIMITING.md",
     "docs/CANDIDATE-PACKAGE.md",
     "docs/DEPENDENCY-AUDIT.md",
+    "docs/EXTERNAL-RATE-LIMITS.md",
     "docs/LINUX-DEPLOYMENT.md",
     "docs/LOAD-VALIDATION.md",
     "docs/MONITORING.md",

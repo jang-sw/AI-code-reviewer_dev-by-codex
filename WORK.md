@@ -1,10 +1,10 @@
 # 현재 작업 상태
 
 - 작업: 실사용 AI 소스코드 리뷰 시스템. **개발 중, 릴리스 완료 아님.**
-- 이번 회차: 2026-10-07 19:44 KST 시작, 최대21:44 KST까지 구현·검증 후 인계한다.
-- 기록 기준: `main` / `2ceba95`, 회차 시작 작업 트리 깨끗함. 현재 로컬 origin/main 추적 기록과 같은 기준임을 확인했다(원격 fetch/CI 확인은 별도).
+- 이번 회차: 2026-10-07 19:44 KST 시작,20:21 KST 검증·시험 자원 정리 기준으로 인계한다(최대2시간 이내).
+- 기록 기준: `main` / 제품 커밋 `5f40695`. 회차 시작 `2ceba95`와 로컬 origin/main 추적 기록은 같았고 이번 커밋은 미푸시(원격 fetch/CI 확인은 별도).
 - 이번 완료 조건: 명시 HTTP429의 제한된 Retry-After 처리, DB에 같은 요청/원문 없는 서비스 origin별 대기 보존, 저장SHA 재사용·작업자 해제·재시도 횟수/시간 상한과 사용자 안내를 구현하고 실제PG/WSL에서 검증한다. 일반403/통신실패는 기존 실패 처리한다.
-- 이번 단계: V15 공유 대기·동일 요청 재개·상한·UI를 구현했다. 전체PG 검증과14테이블 백업/복원·V12→V15 업그레이드 통과 후 독립 리뷰에서 찾은 헤더 길이 경계/예약 안내 모순을 보완하고 집중73건을 통과했다. 제품과 호환 도구를 먼저 로컬 커밋하며 실제 WAR429·재시작 도구는 후속 검증 중이다. 운영 배포·실제/유료 모델 호출 없음. LiteLLM 주소·모델은 미정이며 제품은 계속 개발 중이다.
+- 이번 단계: V15 공유 대기·동일 요청 재개·상한·UI와 검증 도구를 구현했다. 최종Java/PG·실제WAR429·재시작/취소·Python·후보 재현성·시험 자원 정리를 통과했다. 제품과 후속 검증/문서를 로컬 커밋하며 푸시·운영 배포·실제/유료 모델 호출은 하지 않는다. LiteLLM 주소·모델은 미정이며 제품은 계속 개발 중이다.
 - 확정 요구사항: `docs/REQUIREMENTS.md`. 내부 이슈함 우선, 최초 전체 이력, Java25/Spring/Maven/JSP/PostgreSQL 유지.
 - 재개 시 이 문서와 실제 Git 상태를 대조하고 아래 다음 작업부터 진행한다. 모든 릴리스 항목 검증 전 완료라고 보고하지 않는다.
 
@@ -55,7 +55,12 @@
 - 제품 구현: 같은 origin+Git/AI 구분의 대기 공유, 원 요청·행위자·저장SHA 보존, 최대5회/24시간 후 직접 재접수, UTC 대기 안내/운영50건 필터. raw URL/토큰/응답/헤더는 대기 테이블에 저장하지 않는다. 이미 전송된 요청과 아직 저장하지 않은 AI 분할은 재호출될 수 있다. 정책은 `docs/EXTERNAL-RATE-LIMITS.md`.
 - 첫 집중314건에서2개 fixture 실패(헤더 flush 누락·UTC 미지정)를 확인하여 수정했고 해당18건 재검증 통과. 이후 전체 WSL Java1027건 중1017통과/선택10skip, 실패/오류0·필수PG6suite gate 통과. PG 공유 대기9건은 독립 연결/동시max시각·3초잠금·만료정리rollback·10000용량·DB시계·V14보존을 확인했다.
 - 같은 부모 실행에서14테이블 백업·새 DB 복원/원본 보존 통과. V12→V15·별도V12백업복원/구WAR재개는66.970초/WAR6회로 통과했다. 새guard2행·빈cooldown·기존요청0회/NULL과 기존업무/checksum보존 확인. Linux `.local/linux-postgres-d9ef270d36d84bf181dc6547dcff6fcf`, Windows `.local/session11-first-validation.json`. 이 실행 WAR SHA256 `bc9630683ddb365fb622210079f36880afebfcc4451de1653e94994e6fcd6e79`. 시험DB/WAR/부모PG 정리 확인.
-- 이 실행 뒤 독립 리뷰에서128자 초과헤더 자동재시도 중단 및 상한종료 화면의 자동예약 안내 모순을 보완하고 집중73건 통과. 위WAR에는 이 보완이 아직 포함되지 않았다. 앱/DB 시간 동기화 전제를 명시했다. Windows Python220건 중215통과/5skip, 부모옵션 추가 후44건 통과. 실제WAR429·최종후보 검증은 아직 미실행.
+- 이 실행 뒤 독립 리뷰에서128자 초과헤더 자동재시도 중단 및 상한종료 화면의 자동예약 안내 모순을 보완하고 집중73건 통과. 위WAR에는 이 보완이 포함되지 않았다. 앱/DB 시간 동기화 전제를 명시했다. Windows Python220건 중215통과/5skip, 부모옵션 추가 후44건 통과. 이 단계에서는 실제WAR429·최종후보 검증 전이었으며 후속 결과는 아래에 구분한다.
+- 후속 최종 Java1029건 중1019통과/선택10skip, 실패/오류0·필수PG6suite gate 통과. 같은 WAR의 실제429→공유대기·수동접수병합→재시작무호출→Git429→미완료B만완료/2커밋2이슈·UTC JSP/합성종료안내를39.774초/WAR3회로 통과. 일부 대기 시각은 소유schema에서SQL만료했고 종료안내는예약OFF합성상태다. `.local/linux-postgres-989bcb3a692b4d7e9996461366afcb36`. 최종 WAR SHA256 `1de2c1ec5092cf4ce6ec83dde5c429cf813651648d2adaa968ae37977d66e604`,42,029,853바이트.
+- 실제SIGTERM23.190초·FAIL/종료130 유지·소유WAR/schema/work·원본14테이블·부모PG/lock 정리 통과. `.local/linux-postgres-468ca8081fcb4417a24fa30663e9511e/cancel-harness.json`. 일회성harness첫호출은사전SafetyError로시험전중단/부모PIDlock없음확인,안전진단을추가한재호출은통과했다(첫원인세부미기록). 제품시험실패와구분한다.
+- 전체Python237건은 Windows232통과/5skip, Linux227통과/10skip. 신규도구15건·부모45건 포함. PowerShell백업구문/최종WAR구조·체크섬/비밀정보검사 통과. 독립제품리뷰보완2건해소,새도구읽기리뷰차단사항없음.
+- 후보26파일을 두 번 생성해바이트일치·전체체크섬/manifest·고정metadata·원본WAR를 확인했다. 아카이브SHA256 `b2df444f365dfc45e0409e26b9124d7346f1d718eb17ef7bba0bba3cc8cd2446`,38,028,069바이트. Linux `.local/session11-candidate-{first,second}`, Windows `.local/session11-candidate`에 보존한다. 소스 기록5f40695는운영자제공기록이며 releaseApproved=false,설치/배포없음.
+- Linux/Windows `.local/session11-validation-summary.json`에 최종증거를 보존했다.15개시험포트닫힘·검증WAR/PG PID·run lock없음·서비스3개inactive/disabled 확인,소유keeper PID/시작/UID/명령대조후종료했다. 사용자Windows Ollama/개발PG변경없음.
 
 ### 이전 회차: 로그인·가입 제한 공유
 
@@ -160,10 +165,10 @@
 
 ## 다음 작업
 
-0. V14 공유 인증 제한·두WAR/재시작·503/복구·취소 정리·12테이블 백업·V12→V14 업데이트까지 통과했다. 재개 시 배포판·서비스 상태·소스 동기화를 확인한다. 다음 로컬 기능 우선순위는 외부 Git/AI의 명시HTTP429에서 제한된 Retry-After를 해석하고 원래 요청/저장SHA를 보존하며 대기·재개와 사용자 안내를 제공하는 것이다. 현재는FAILED 종료하며 일반403/불명 통신 실패를 무조건 자동 재호출하지 않는다.
+0. V15 외부429 요청 보존·공유 대기·상한·사용자 안내, 독립PG·실제WAR재시작/취소와14테이블백업·V12→V15 업데이트까지 통과했다. 재개 시 배포판·서비스 상태·소스 동기화를 확인한다. 다음 로컬 우선순위는 실제 시계의 만료 재개·여러 서버/프로젝트의 대기 공정성·장시간 장애/부하와 새 대기/종료 화면의 모바일·키보드 확인이다. 일반403/불명 통신실패는 기존실패 처리한다.
 1. 공개 GitHub/GitLab 바이너리·빈 파일 실서비스5건은 통과했다. 실제 대형/설치형/비공개 응답으로 호환 범위를 확대하며 전체 변경 경로를 증명할 수 없는 응답이나 API 장애는 계속 실패 처리한다.
 2. LiteLLM 주소·모델이 정해지면 준비된 dry-run으로 예산을 확인하고, 승인된 호출 범위에서 합성 평가와 사람의 의미 검토를 진행한다. 실제 설치형 GitLab·비공개 GitHub 연결과 운영 모델 품질도 남아 있다.
-3. 실제 대형 저장소 부하/API할당량·다중 인스턴스 장시간 공정성/지연·장기 네트워크 단절·모니터링/보존 정책 구현·검증. 구체적인 다음 후보는 명시HTTP429의 제한된 Retry-After 해석·원래 요청/저장SHA 보존·공급자별 대기와 사용자 안내다(현재는FAILED 종료). 일반403/불명 통신 실패를 무조건 자동 재호출하지 않는다. 로컬 단일 WAR 중단과 DB fast stop 후 복구는 `docs/QUEUE-VALIDATION.md`·`docs/DB-RECOVERY-VALIDATION.md` 범위로 통과했다.
+3. 실제 대형 저장소 부하/API할당량·다중 인스턴스 장시간 공정성/지연·장기 네트워크 단절·모니터링/보존 정책 구현·검증.429의 합성 검증은 `docs/EXTERNAL-RATE-LIMITS.md` 범위이며 실제 공급자 quota·24시간 지속 운영은 미검증이다. 로컬 단일WAR 중단·DB fast stop 복구는 `docs/QUEUE-VALIDATION.md`·`docs/DB-RECOVERY-VALIDATION.md` 범위로 통과했다.
 4. 확정 배포 환경인 Linux 서버(도커 미사용)에 맞춰 패키지/설치·업데이트·백업·롤백 구성, 운영 보안·원격CI·사용자 인수 검사. `docs/RELEASE-CHECKLIST.md` 기준.
 
 ## 재개·운영 메모
@@ -171,5 +176,5 @@
 - 운영 대상은 사용자 답변으로 Linux 서버, 도커 미사용으로 확정했다(2026-09-26). 사용자 요청에 따른 전용 WSL2 Ubuntu 로컬 Linux 환경 구축과 설치/복구 검증은 2026-10-02 수행했다. 실제 서버 배포는 별도 승인 대상이다.
 - origin: jang-sw/code-reviewer_by-codex. main 직접 푸시 별도 승인 없음 → 로컬 커밋만, 푸시/배포 없음.
 - `.local/pg-test`: Windows 개발검증 전용127.0.0.1:55432. Windows `.local/pg-validation` 및 staged snapshot의pg-validation:55439. Linux PGDATA는 Linux 홈의 별도 checkout에만 만들고 Windows PGDATA를 공유하지 않는다.
-- `.local`은 Git 제외. 이번 Linux 부모 WAR/PG와 새 UUID DB/schema를 정리하고80/443/8080~8082/18089~18095/55439/55449 총14개 포트 연결 불가·검증 PID/lock 부재를 확인했다. 이전 앱·Nginx·서비스PG도계속inactive/disabled이며 서비스PG manual 설정을 유지한다. 원본 합성 DB·root 전용 설정/백업·후보·시험 기록은 전용 WSL에 보존한다. 이번 소유 keeper도PID/시작시각·명령·UID대조후종료확인했다(`.local/session10-keeper-cleanup.json`). 사용자 Windows Ollama/55432 PG를 변경하지 않았고 Windows 재부팅은 수행하지 않았다.
+- `.local`은 Git 제외. 이번 Linux 부모 WAR/PG와 새 UUID DB/schema를 정리하고80/443/8080~8082/18089~18096/55439/55449 총15개 포트 연결 불가·검증 PID/lock 부재를 확인했다. 이전 앱·Nginx·서비스PG도계속inactive/disabled이며 서비스PG manual 설정을 유지한다. 원본 합성 DB·root 전용 설정/백업·후보·시험 기록은 전용 WSL에 보존한다. 소유keeper도PID/시작시각·명령·UID대조후종료확인했다(`.local/session11-keeper-cleanup.json`). 사용자Windows Ollama/55432 PG를변경하지않았고 Windows재부팅은수행하지않았다.
 - 런타임 Git 수집은 매번 pinned 전체 이력을 재검증, 기본1000페이지/metadata32MiB/저장SHA131072개 안전 한도. 제한을 자동 확장/절삭하지 않는다.

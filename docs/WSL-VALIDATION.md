@@ -198,6 +198,12 @@ WSL은 systemd 서비스만으로 배포판 실행을 유지하지 않아 이번
 
 후속 SIGTERM 시험은 B 재시작 뒤 가입 중 취소,28.676초·FAIL/종료130 유지·기존12테이블 보존·시험 자원 정리를 통과했다. 전체 Python217건은 Linux207통과/Windows전용10skip, Windows212통과/POSIX5skip다. 보고서·재현 명령·SQL 주입과 순차 HTTP의 한계는 [공유 제한 검증](AUTH-LIMITING.md)에 기록했다. 이번에는 별도 systemd/TLS 서비스에 V14를 설치하지 않았다.
 
+### V15 외부 Git·AI 호출 제한 대기
+
+2026-10-07 최종 Java1029건 중1019통과/선택10skip·필수PG6suite를 통과했다. 앞선 V15 빌드의14테이블 백업/복원과 V12→V15·새 DB V12복귀는66.970초/WAR6회로 통과했다. 최종 WAR의 합성Git/AI429·같은origin AI무호출·재시작·저장SHA 재사용/UTC JSP는39.774초/WAR3회로 통과했다. 별도 실제SIGTERM23.190초/종료130은 원본14테이블 보존과 소유 자원·부모PG 정리를 확인했다.
+
+최종 WAR SHA256은 `1de2c1ec5092cf4ce6ec83dde5c429cf813651648d2adaa968ae37977d66e604`,42,029,853바이트다. Python237건은 Windows232통과/5skip, Linux227통과/10skip였다. 재현 명령·보고서·SQL 시간 가속/예약OFF 합성종료 안내의 한계는 [호출 제한 검증](EXTERNAL-RATE-LIMITS.md)을 따른다. systemd/TLS 서비스에 이 WAR를 설치하거나 실제 공급자·유료 모델을 호출하지 않았다.
+
 ### 남은 검증
 
 운영 Linux 서버의 실제 부팅·지속 실행·공개 네트워크/TLS와 인증서 갱신, 운영 데이터 규모의 업그레이드·rollback, 백업 암호화·보존·RPO/RTO, 실제 GitLab/LiteLLM 인증과 모델 품질, 장시간 부하·다중 인스턴스 정책 검증은 남아 있다. 이번 WSL 합성 환경의 통과는 이 항목이나 릴리스 승인을 대신하지 않는다.

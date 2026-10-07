@@ -9,6 +9,7 @@
 - [x] Git URL 등록, 관리자 승인/반려/일시정지, 소유권 확인
 - [x] 시간별 예약과 수동 백그라운드 실행, 프로젝트 중복 잠금
 - [x] 전체 이력의 안전한 배치, 실패 재시도·이슈 중복 방지·진행 지점
+- [x] 외부 HTTP429의 요청 보존·서비스 origin 공유 대기·최대5회/24시간 상한·UTC 사용자 안내, 독립PG 및 실제WAR 재시작/합성Git·AI 검증 ([범위](EXTERNAL-RATE-LIMITS.md)); 실제 공급자 quota·장시간 검증은 별도
 - [x] GitHub/GitLab API adapter, Ollama/LiteLLM adapter와 실패 fixture 테스트
 - [x] OpenAI Responses 직접 adapter·전용 키 격리·완료/거절/크기/리디렉션 fixture
 - [x] 커밋/index 비밀정보 검사와 CI 연결, 실제 값 비출력·링크 우회 방지 회귀
@@ -42,6 +43,7 @@
 
 - [x] 실제 PostgreSQL migration·배치 재시도·SQL 실패 롤백·advisory lock
 - [x] WSL의 저장 리뷰/수동 근거/처리 사유·중단 요청을 포함한 V12→V14 업데이트, 새 DB V12 백업 복원·구 WAR 재개, 원본12테이블 보존과 시험 자원 정리 ([범위](UPGRADE-VALIDATION.md)); 운영 규모·역방향 migration은 별도
+- [x] V12→V15 저장 업무·요청 보존, 호출 제한 초기 상태와14테이블 백업/복원·원본 보존; V12 새 DB 복귀 재검증 ([기록](UPGRADE-VALIDATION.md))
 - [x] V11→V12 데이터 보존, 독립 PG 연결의 동시 접수/이전 토큰/늦은 결과/DB 실패 원자성·조회 경계18건, 실제 WAR 강제 종료 후 요청·진척·이슈 재개 ([범위](QUEUE-VALIDATION.md))
 - [x] 로컬 격리 PostgreSQL 중지·재시작, 같은 WAR에서 동일 요청 복구·저장 결과 재사용·이슈 중복 방지·진행 카드·생존/준비 probe 회복 ([범위](DB-RECOVERY-VALIDATION.md)); 장기 단절·운영 복구 시간 보장은 별개
 - [x] V10 기존 리뷰/이슈 보존 migration, 수동 확인 저장·처리·다음 커밋 진행의 실제 PostgreSQL/HTTP 검증

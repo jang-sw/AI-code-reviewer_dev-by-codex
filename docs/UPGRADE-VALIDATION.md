@@ -79,6 +79,10 @@ dump와 WAR 로그는 Linux checkout의 `.local/review-upgrade-<UUID>` 아래에
 
 ## 실행 기록
 
+2026-10-07 V15 검증에서 전체 Java1027건 중1017통과/선택10skip, 필수PG6suite와14테이블 백업/복원을 통과했다. V12→V15·새 DB V12복원/구 WAR 재개는66.970초/WAR6회 시작으로 통과했다. 새guard2행·빈cooldown·기존요청0회/NULL, 기존업무/checksum, A AI1회/B AI3회와 원본14테이블 보존·소유DB2개 제거·부모PG 종료를 확인했다.
+
+해당 WAR SHA256은 `bc9630683ddb365fb622210079f36880afebfcc4451de1653e94994e6fcd6e79`이며 보고서는 Linux `.local/linux-postgres-d9ef270d36d84bf181dc6547dcff6fcf/review-upgrade-d9ef270d36d84bf181dc6547dcff6fcf.json`에 보존한다. 이후 헤더 길이 정책과 상한종료 안내를 보완한 최종 WAR는 아래 호출 제한 검증 자료에서 별도 구분한다. migration·업그레이드 도구는 이 실행 뒤 바뀌지 않았다.
+
 2026-10-03 V14 검증에서 전체 Java924건 중914통과/선택10skip, 필수PG5suite gate와12테이블 백업/새 DB 복원이 통과했다. V12→V14·새 DB V12복원/구 WAR 재개는74.763초/WAR6회 시작으로 통과했다. 첫 V14 로그인 전 정책2행·NULL 지문·빈 버킷, 기존 업무 행과 V1~V12 checksum 보존, A AI1회/B AI3회, 원본12테이블 보존·소유DB2개 제거·부모PG 종료를 확인했다.
 
 이 V14 실행의 WAR SHA256은 `1860d76f2a9d6f2ba8a84ef3a61428c5a30e3af56645bca772143a0be0b4e2f8`이고 구WAR는 아래 V13 기록과 같은 V12 시험용 파일이다. 보고서는 Linux `.local/linux-postgres-9be02529b7c5458c9670100d1fc6655d/review-upgrade-9be02529b7c5458c9670100d1fc6655d.json`에 보존한다. 아래 V13 시간·해시·취소 증거를 V14에서 실행한 것으로 바꾸어 해석하지 않는다.
