@@ -31,6 +31,8 @@
         <label for="reason-${user.id}">반려 사유 (선택)</label><input id="reason-${user.id}" name="reason" maxlength="500"><button type="submit" class="button-secondary">가입 반려</button>
       </form></details>
     </c:when><c:when test="${user.approvalStatus == 'REJECTED'}">
+      <p><strong>반려 사유</strong><br><c:choose><c:when test="${not empty user.approvalReason}"><c:out value="${user.approvalReason}"/></c:when><c:otherwise><span class="muted">입력된 사유가 없습니다.</span></c:otherwise></c:choose></p>
+      <p class="muted">승인 대기로 되돌려도 사유는 감사 기록에 남습니다.</p>
       <c:url var="reopenAction" value="/admin/users/${user.id}/reopen"/><form method="post" action="<c:out value='${reopenAction}'/>"><input type="hidden" name="<c:out value='${_csrf.parameterName}'/>" value="<c:out value='${_csrf.token}'/>"><input type="hidden" name="status" value="<c:out value='${approvalFilter}'/>"><input type="hidden" name="search" value="<c:out value='${search}'/>"><input type="hidden" name="page" value="<c:out value='${page}'/>"><button type="submit" class="button-secondary">승인 대기로 되돌리기</button></form>
     </c:when><c:otherwise>처리 완료</c:otherwise></c:choose></td>
     <td><c:if test="${user.approved}">

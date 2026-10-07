@@ -80,6 +80,32 @@ class ManualIssueSecurityTest {
         assertThat(row()).containsEntry("status", "OPEN");
     }
 
+    @Test
+    void authorizedInvalidReasonKeepsTheEditableDetailAndDoesNotChangeStateOrAudit() throws Exception {
+        String reason = "완료   ";
+        mvc.perform(request("DISMISSED", reason).with(user(accounts.loadUserByUsername("manual-assignee"))).with(csrf()))
+                .andExpect(status().isBadRequest()).andExpect(view().name("issue-detail"))
+                .andExpect(model().attribute("reasonError", ManualIssueReasonException.SAFE_MESSAGE))
+                .andExpect(model().attribute("reasonFormValue", reason))
+                .andExpect(model().attribute("requestedIssueStatus", "DISMISSED"))
+                .andExpect(model().attribute("filterStatus", "")).andExpect(model().attribute("page", 2));
+        assertThat(row()).containsEntry("status", "OPEN").containsEntry("resolution_note", "");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audit_event", Long.class)).isZero();
+    }
+
+    @Test
+    void invalidReasonCannotRevealAnUnrelatedOrMissingIssue() throws Exception {
+        for (long id : new long[] {140, 999999}) {
+            var result = mvc.perform(post("/issues/" + id + "/status").param("status", "RESOLVED").param("reason", "four")
+                            .with(user(accounts.loadUserByUsername("manual-other"))).with(csrf()))
+                    .andExpect(status().isNotFound()).andReturn();
+            assertThat(result.getModelAndView()).isNull();
+            assertThat(result.getFlashMap().isEmpty()).isTrue();
+        }
+        assertThat(row()).containsEntry("status", "OPEN").containsEntry("resolution_note", "");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audit_event", Long.class)).isZero();
+    }
+
     private MockHttpServletRequestBuilder request(String status, String reason) {
         return post("/issues/140/status").param("status", status).param("reason", reason).param("filterStatus", "").param("page", "2");
     }

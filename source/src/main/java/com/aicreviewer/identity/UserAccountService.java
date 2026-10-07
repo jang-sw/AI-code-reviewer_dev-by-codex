@@ -3,6 +3,8 @@ package com.aicreviewer.identity;
 import java.util.List;
 import java.util.ArrayList;
 import java.util.Locale;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -15,9 +17,8 @@ import org.springframework.web.server.ResponseStatusException;
 
 @Service
 public class UserAccountService {
-    private static final RowMapper<UserAccount> ACCOUNT = (rs, row) -> new UserAccount(
-            rs.getLong("id"), rs.getString("username"), rs.getString("git_username"),
-            rs.getString("role"), rs.getBoolean("enabled"), rs.getTimestamp("created_at").toInstant(), rs.getString("approval_status"));
+    private static final RowMapper<UserAccount> ACCOUNT = (rs, row) -> account(rs, false);
+    private static final RowMapper<UserAccount> ADMIN_ACCOUNT = (rs, row) -> account(rs, true);
     private final JdbcTemplate jdbc;
     private final PasswordEncoder passwords;
     private final AuditEventWriter audit;
@@ -58,7 +59,7 @@ public class UserAccountService {
         arguments.add(pattern);
         if (!status.isEmpty()) { sql += " AND approval_status = ?"; arguments.add(status); }
         arguments.add((long) page * 50);
-        return jdbc.query(sql + " ORDER BY id DESC LIMIT 51 OFFSET ?", ACCOUNT, arguments.toArray());
+        return jdbc.query(sql + " ORDER BY id DESC LIMIT 51 OFFSET ?", ADMIN_ACCOUNT, arguments.toArray());
     }
 
     /** Public signup never accepts a requested role or activation state. */
@@ -89,7 +90,7 @@ public class UserAccountService {
     @Transactional
     public void decideApproval(String actorName, long targetId, String action, String reason) {
         UserAccount actor = requireAdmin(actorName);
-        List<UserAccount> accounts = jdbc.query("SELECT * FROM app_user WHERE id = ? FOR UPDATE", ACCOUNT, targetId);
+        List<UserAccount> accounts = jdbc.query("SELECT * FROM app_user WHERE id = ? FOR UPDATE", ADMIN_ACCOUNT, targetId);
         if (accounts.isEmpty()) throw new ResponseStatusException(HttpStatus.NOT_FOUND);
         UserAccount target = accounts.getFirst();
         String next = switch (action) {
@@ -112,7 +113,15 @@ public class UserAccountService {
                     approval_reason = ? WHERE id = ?
                 """, next, "APPROVED".equals(next), next,
                 "REJECTED".equals(next) && !explanation.isEmpty() ? explanation : null, targetId);
-        audit.write(actor.id(), "USER_APPROVAL_" + next, "USER", targetId, expected + " → " + next);
+        String detail = expected + " → " + next;
+        if ("REJECTED".equals(next)) {
+            detail += "; 반려 사유: " + approvalReasonDetail(explanation);
+        } else if ("REJECTED".equals(expected)) {
+            // Capture the current reason before clearing it, including reasons saved
+            // by older versions that did not include them in the rejection audit.
+            detail += "; 이전 반려 사유: " + approvalReasonDetail(target.approvalReason());
+        }
+        audit.write(actor.id(), "USER_APPROVAL_" + next, "USER", targetId, detail);
     }
 
     @Transactional
@@ -201,6 +210,17 @@ public class UserAccountService {
     private UserAccount find(long id) {
         return jdbc.query("SELECT * FROM app_user WHERE id = ?", ACCOUNT, id).stream().findFirst()
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+    }
+
+    private static UserAccount account(ResultSet rs, boolean adminDetails) throws SQLException {
+        String approvalStatus = rs.getString("approval_status");
+        return new UserAccount(rs.getLong("id"), rs.getString("username"), rs.getString("git_username"),
+                rs.getString("role"), rs.getBoolean("enabled"), rs.getTimestamp("created_at").toInstant(), approvalStatus,
+                adminDetails && "REJECTED".equals(approvalStatus) ? rs.getString("approval_reason") : null);
+    }
+
+    private static String approvalReasonDetail(String reason) {
+        return reason == null || reason.isBlank() ? "(입력하지 않음)" : reason;
     }
 
     private static void requireApproved(UserAccount account) {

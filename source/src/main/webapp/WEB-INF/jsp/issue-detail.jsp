@@ -2,6 +2,7 @@
 <%@ include file="fragments/header.jspf" %>
 <c:url var="listUrl" value="/issues"><c:param name="status" value="${filterStatus}"/><c:param name="page" value="${page}"/></c:url>
 <p><a href="<c:out value='${listUrl}'/>">← 이슈 목록으로</a></p>
+<c:if test="${not empty reasonError}"><div class="notice error"><strong>처리 상태와 사유를 저장하지 않았습니다.</strong> <a href="#issue-reason-<c:out value='${issue.id}'/>">수동 확인 사유를 수정해 주세요.</a></div></c:if>
 <section class="page-heading"><p class="eyebrow"><c:out value="${issue.project_name}"/> · 이슈 #<c:out value="${issue.id}"/></p><h1><c:out value="${issue.title}"/></h1><p><c:choose><c:when test="${issue.issue_kind == 'MANUAL_REVIEW'}"><span class="badge badge-warning">수동 확인</span></c:when><c:otherwise><ui:status value="${issue.severity}"/></c:otherwise></c:choose> <c:choose><c:when test="${issue.issue_kind == 'MANUAL_REVIEW' and issue.status == 'RESOLVED'}"><span class="badge badge-success">확인 완료</span></c:when><c:otherwise><ui:status value="${issue.status}"/></c:otherwise></c:choose></p></section>
 <section class="panel"><h2>변경 위치와 담당자</h2><dl>
   <dt>담당자</dt><dd><c:out value="${issue.assignee_username}"/></dd>

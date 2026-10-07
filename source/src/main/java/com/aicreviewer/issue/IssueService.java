@@ -114,11 +114,11 @@ public class IssueService {
 
     private static String validateReason(String reason) {
         if (reason == null || reason.length() > 1000 || reason.codePoints().anyMatch(Character::isISOControl)) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "수동 확인 사유는 줄바꿈 없이 5~1000자로 입력해 주세요.");
+            throw new ManualIssueReasonException();
         }
         String note = reason.strip();
         if (note.codePointCount(0, note.length()) < 5) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "수동 확인 사유는 줄바꿈 없이 5~1000자로 입력해 주세요.");
+            throw new ManualIssueReasonException();
         }
         return note;
     }

@@ -56,6 +56,7 @@ class ManualIssueServiceTest {
     void everyManualStateRequiresAReasonIncludingReopenAndLegacyThreeArgumentCalls(String status) {
         for (String reason : new String[] {null, "", "four", "  four  ", "valid\nreason", "valid\u0000reason", "x".repeat(1001)}) {
             assertThatThrownBy(() -> change(100, status, "author", reason))
+                    .isInstanceOf(ManualIssueReasonException.class)
                     .isInstanceOfSatisfying(ResponseStatusException.class, e -> assertThat(e.getStatusCode().value()).isEqualTo(400));
         }
         assertThatThrownBy(() -> transactions.executeWithoutResult(tx -> service.changeStatus(100, status, reviews.actor("author"))))

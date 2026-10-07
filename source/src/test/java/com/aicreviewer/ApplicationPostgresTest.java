@@ -236,6 +236,41 @@ class ApplicationPostgresTest {
     }
 
     @Test
+    void administratorCanReadRejectionReasonAndItsAuditAfterReopeningAndApproval() throws Exception {
+        String applicant = "reason" + UUID.randomUUID().toString().replace("-", "").substring(0, 10);
+        users.signup(applicant, PASSWORD, applicant);
+        long id = jdbc.queryForObject("select id from app_user where username=?", Long.class, applicant);
+        var admin = login("pgadmin");
+        String path = "/admin/users/" + id;
+        String reason = "소속 확인 필요 <script>합성 반려 사유</script>";
+        String escaped = "소속 확인 필요 &lt;script&gt;합성 반려 사유&lt;/script&gt;";
+        var queue = get(admin, "/admin/users?search=" + applicant);
+        assertThat(post(admin, path + "/reject", Map.of("reason", reason, "search", applicant,
+                "status", "PENDING", "_csrf", csrf(queue.body()))).statusCode()).isEqualTo(302);
+        var rejected = get(admin, "/admin/users?status=REJECTED&search=" + applicant);
+        assertThat(rejected.statusCode()).isEqualTo(200);
+        assertThat(rejected.body()).contains(escaped, "반려 사유").doesNotContain(reason);
+        var ordinary = login(writer);
+        assertThat(get(ordinary, "/admin/users?status=REJECTED&search=" + applicant).statusCode()).isEqualTo(403);
+        assertThat(get(ordinary, "/admin/audit").statusCode()).isEqualTo(403);
+        assertThat(get(client(), "/login").body()).doesNotContain(reason, escaped);
+        var reopened = post(admin, path + "/reopen", Map.of("search", applicant, "status", "REJECTED", "page", "1",
+                "_csrf", csrf(rejected.body())));
+        assertThat(reopened.statusCode()).isEqualTo(302);
+        assertThat(reopened.headers().firstValue("Location").orElseThrow())
+                .endsWith("/admin/users?status=REJECTED&search=" + applicant + "&page=1");
+        assertThat(jdbc.queryForObject("select approval_reason from app_user where id=?", String.class, id)).isNull();
+        var pending = get(admin, "/admin/users?search=" + applicant);
+        assertThat(post(admin, path + "/approve", Map.of("_csrf", csrf(pending.body()))).statusCode()).isEqualTo(302);
+        assertThat(users.requireAccount(applicant).approvalReason()).isNull();
+        assertThat(jdbc.queryForObject("select count(*) from audit_event where target_type='USER' and target_id=? and detail like ?",
+                Long.class, id, "%" + reason + "%")).isEqualTo(2);
+        var audit = get(admin, "/admin/audit");
+        assertThat(audit.statusCode()).isEqualTo(200);
+        assertThat(audit.body()).contains(escaped, "USER_APPROVAL_REJECTED", "USER_APPROVAL_PENDING").doesNotContain(reason);
+    }
+
+    @Test
     void manualPostDispatchesBackgroundReviewToDurableCompletion() throws Exception {
         projects.transition("pgadmin", projectId, "approve");
         GitCommit commit = new GitCommit("d".repeat(40), writer, "background", "diff --git a/A.java b/A.java\n@@ -0,0 +1 @@\n+bad();");
@@ -513,10 +548,32 @@ class ApplicationPostgresTest {
         assertThat(get(unrelated, issuePath).statusCode()).isEqualTo(404);
         assertThat(post(unrelated, issuePath + "/status", Map.of("status", "RESOLVED", "reason", "확인했습니다", "_csrf", csrf(get(unrelated, "/issues").body()))).statusCode()).isEqualTo(404);
         String token = csrf(detail.body());
-        assertThat(post(owner, issuePath + "/status", Map.of("status", "RESOLVED", "_csrf", token)).statusCode()).isEqualTo(400);
+        long previousAudits = jdbc.queryForObject("select count(*) from audit_event where target_type='REVIEW_ISSUE' and target_id=?", Long.class, issueId);
+        var missingReason = post(owner, issuePath + "/status", Map.of("status", "RESOLVED", "_csrf", token));
+        assertThat(missingReason.statusCode()).isEqualTo(400);
+        assertThat(missingReason.body()).contains("asset.bin", "id=\"issue-reason-error-" + issueId + "\"", "aria-invalid=\"true\"");
+        String shortReason = "<>&\"   ";
+        var invalidReason = post(owner, issuePath + "/status", Map.of("status", "DISMISSED", "reason", shortReason,
+                "filterStatus", "OPEN", "page", "2", "_csrf", csrf(missingReason.body())));
+        assertThat(invalidReason.statusCode()).isEqualTo(400);
+        assertThat(invalidReason.body()).contains("asset.bin", "role=\"alert\"", "issue-reason-error-" + issueId,
+                        "name=\"filterStatus\" value=\"OPEN\"", "name=\"page\" value=\"2\"", "value=\"DISMISSED\" selected",
+                        "&lt;&gt;&amp;&#034;   ", "/issues?status=OPEN&amp;page=2")
+                .doesNotContain("value=\"" + shortReason + "\"");
+        assertThat(jdbc.queryForMap("select status, resolution_note from review_issue where id=?", issueId))
+                .containsEntry("status", "OPEN").containsEntry("resolution_note", "");
+        assertThat(jdbc.queryForObject("select count(*) from audit_event where target_type='REVIEW_ISSUE' and target_id=?", Long.class, issueId))
+                .isEqualTo(previousAudits);
+        var hiddenInvalid = post(unrelated, issuePath + "/status", Map.of("status", "RESOLVED", "reason", "짧음",
+                "_csrf", csrf(get(unrelated, "/issues").body())));
+        assertThat(hiddenInvalid.statusCode()).isEqualTo(404);
+        assertThat(hiddenInvalid.body()).doesNotContain("asset.bin", "issue-reason-error-" + issueId, "name=\"reason\"");
         assertThat(post(owner, issuePath + "/status", Map.of("status", "RESOLVED", "reason", "확인했습니다")).statusCode()).isEqualTo(403);
         String reason = "수동 검토 결과 <script>안전한 확인 기록</script>";
-        assertThat(post(owner, issuePath + "/status", Map.of("status", "RESOLVED", "reason", reason, "_csrf", token)).statusCode()).isEqualTo(302);
+        var corrected = post(owner, issuePath + "/status", Map.of("status", "RESOLVED", "reason", reason,
+                "filterStatus", "OPEN", "page", "2", "_csrf", csrf(invalidReason.body())));
+        assertThat(corrected.statusCode()).isEqualTo(302);
+        assertThat(corrected.headers().firstValue("Location").orElseThrow()).endsWith("/issues?status=OPEN&page=2");
         assertThat(jdbc.queryForMap("select status, resolution_note, severity, line_number from review_issue where id=?", issueId))
                 .containsEntry("status", "RESOLVED").containsEntry("resolution_note", reason).containsEntry("severity", null).containsEntry("line_number", null);
         assertThat(get(owner, issuePath).body()).contains("&lt;script&gt;안전한 확인 기록&lt;/script&gt;").doesNotContain("<script>안전한 확인 기록</script>");

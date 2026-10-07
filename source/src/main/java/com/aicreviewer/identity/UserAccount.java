@@ -4,7 +4,10 @@ import java.time.Instant;
 
 /** An account view that deliberately never exposes a password hash. */
 public record UserAccount(long id, String username, String gitUsername, String role,
-                          boolean enabled, Instant createdAt, String approvalStatus) {
+                          boolean enabled, Instant createdAt, String approvalStatus, String approvalReason) {
+    public UserAccount(long id, String username, String gitUsername, String role, boolean enabled, Instant createdAt, String approvalStatus) {
+        this(id, username, gitUsername, role, enabled, createdAt, approvalStatus, null);
+    }
     public UserAccount(long id, String username, String gitUsername, String role, boolean enabled, Instant createdAt) {
         this(id, username, gitUsername, role, enabled, createdAt, "APPROVED");
     }
