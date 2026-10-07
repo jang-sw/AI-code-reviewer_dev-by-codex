@@ -29,12 +29,14 @@ ALLOWLIST = (
     "deploy/linux/nginx.conf.example",
     "deploy/linux/reviewer.env.example",
     "deploy/linux/verify-artifact.sh",
+    "deploy/litellm/local-ollama.yaml.example",
     "docs/AI-EVALUATION.md",
     "docs/AUTH-LIMITING.md",
     "docs/CANDIDATE-PACKAGE.md",
     "docs/DEPENDENCY-AUDIT.md",
     "docs/EXTERNAL-RATE-LIMITS.md",
     "docs/LINUX-DEPLOYMENT.md",
+    "docs/LITELLM-LOCAL-VALIDATION.md",
     "docs/LOAD-VALIDATION.md",
     "docs/MONITORING.md",
     "docs/OPENAI-INTEGRATION.md",
@@ -49,6 +51,10 @@ ALLOWLIST = (
     "docs/WSL-VALIDATION.md",
     "docs/UPGRADE-VALIDATION.md",
 )
+# Entire UTF-8 template, including comments, after newline normalization. Changes
+# require explicit review and a policy hash update; never accept filled local copies.
+LITELLM_TEMPLATE_PATH = "deploy/litellm/local-ollama.yaml.example"
+LITELLM_TEMPLATE_SHA256 = "792d74ffa93b19695e0bc9ecd34cf65eace8b88c5121d8caab59981a9032ce07"
 # Exact unfilled template defaults. Configuration changes require an explicit policy update.
 ENVIRONMENT_DEFAULTS = {
     "DB_URL": "jdbc:postgresql://127.0.0.1:5432/ai_reviewer",
@@ -169,6 +175,11 @@ def validate_environment(data):
         raise PackageError("environment-template-must-be-unfilled-defaults")
 
 
+def validate_litellm_template(data):
+    if hashlib.sha256(data).hexdigest() != LITELLM_TEMPLATE_SHA256:
+        raise PackageError("litellm-template-must-match-unfilled-policy")
+
+
 def bounded_manifest(war, info, data):
     if info.file_size > MAX_MANIFEST_BYTES:
         raise PackageError("war-manifest-size-limit")
@@ -276,6 +287,8 @@ def payload(repository, war, expected, revision, epoch):
         data = normalized_text(read_regular(repository / name, MAX_TEXT_BYTES))
         if name == "deploy/linux/reviewer.env.example":
             validate_environment(data)
+        if name == LITELLM_TEMPLATE_PATH:
+            validate_litellm_template(data)
         files[name] = (data, 0o755 if name.endswith(".sh") else 0o644)
     metadata = {
         "schemaVersion": 1,
@@ -288,7 +301,7 @@ def payload(repository, war, expected, revision, epoch):
         "warSHA256": expected.lower(),
         "documentLinkScope": "Bundled docs and deployment paths are preserved; links to source, tests, CI configuration or other scripts require the source checkout.",
         "reproducibilityScope": "Identical input WAR bytes, normalized allowed text, source claim and epoch with the same Python/zlib runtime; not a reproducible source build or release approval.",
-        "secretCheckScope": "Unfilled environment defaults and limited text key patterns; not a guarantee that the WAR or arbitrary text contains no secrets.",
+        "secretCheckScope": "Unfilled environment defaults, exact normalized LiteLLM template and limited text key patterns; not a guarantee that the WAR or arbitrary text contains no secrets.",
         "files": [{"path": name, "size": len(data), "sha256": digest(data), "mode": format(mode, "04o")}
                   for name, (data, mode) in sorted(files.items())],
     }

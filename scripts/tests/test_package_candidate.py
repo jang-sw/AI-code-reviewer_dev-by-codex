@@ -39,6 +39,9 @@ class CandidatePackageTest(unittest.TestCase):
             content = "# Synthetic fixture\n"
             if name.endswith("reviewer.env.example"):
                 content += "".join(f"{key}={value}\n" for key, value in PACKAGE.ENVIRONMENT_DEFAULTS.items())
+            if name == PACKAGE.LITELLM_TEMPLATE_PATH:
+                # Read the actual unfilled example so template/policy drift fails tests.
+                content = (SCRIPT.parent.parent / name).read_text(encoding="utf-8")
             path.write_text(content, encoding="utf-8", newline="\n")
         self.war = self.directory / "already built.war"
         self.write_war()
@@ -80,6 +83,10 @@ class CandidatePackageTest(unittest.TestCase):
         contents = self.contents()
         expected_paths = set(PACKAGE.ALLOWLIST) | {"ai-code-reviewer.war", "CANDIDATE.json", "SHA256SUMS"}
         self.assertEqual(expected_paths, set(contents))
+        self.assertEqual(28, len(contents))
+        self.assertIn("docs/LITELLM-LOCAL-VALIDATION.md", contents)
+        self.assertEqual(PACKAGE.LITELLM_TEMPLATE_SHA256,
+                         hashlib.sha256(contents["deploy/litellm/local-ollama.yaml.example"]).hexdigest())
         self.assertEqual(self.war.read_bytes(), contents["ai-code-reviewer.war"])
         metadata = json.loads(contents["CANDIDATE.json"])
         self.assertEqual("candidate", metadata["packageKind"])
@@ -121,12 +128,14 @@ class CandidatePackageTest(unittest.TestCase):
             self.assertEqual((self.output / name).read_bytes(), (other / name).read_bytes())
 
     def test_unlisted_files_and_real_environment_files_are_never_read(self):
-        for name in (".env", "reviewer.env", "database.dump", "private-key.pem", "runtime.log"):
+        names = (".env", "reviewer.env", "database.dump", "private-key.pem", "runtime.log",
+                 "deploy/litellm/local-ollama.yaml", "deploy/litellm/runtime.env")
+        for name in names:
             (self.repo / name).write_text("DO NOT INCLUDE", encoding="utf-8")
         with patch.object(PACKAGE, "read_regular", wraps=PACKAGE.read_regular) as reader:
             self.package()
         opened = {Path(call.args[0]) for call in reader.call_args_list}
-        self.assertTrue(all(self.repo / name not in opened for name in (".env", "reviewer.env", "database.dump", "private-key.pem", "runtime.log")))
+        self.assertTrue(all(self.repo / name not in opened for name in names))
         self.assertNotIn(b"DO NOT INCLUDE", gzip.decompress((self.output / PACKAGE.ARCHIVE_NAME).read_bytes()))
 
     def test_tampered_war_fails_hash_before_output_creation(self):
@@ -273,6 +282,56 @@ class CandidatePackageTest(unittest.TestCase):
             with self.assertRaisesRegex(PACKAGE.PackageError, "environment-template-must-be-unfilled-defaults"):
                 self.package()
             self.assertFalse(self.output.exists())
+
+    def test_litellm_template_rejects_filled_values_and_all_unreviewed_changes_before_output(self):
+        path = self.repo / PACKAGE.LITELLM_TEMPLATE_PATH
+        original = path.read_text(encoding="utf-8")
+        changes = (
+            original.replace("master_key: os.environ/LITELLM_MASTER_KEY", "master_key: fixture-private-proxy-key"),
+            original.replace("api_base: os.environ/OLLAMA_API_BASE", "api_base: https://private-host.invalid/model"),
+            original.replace("master_key: os.environ/LITELLM_MASTER_KEY", "master_key: os.environ/OTHER_KEY"),
+            original.replace("callbacks: []", "callbacks: [unapproved_callback]"),
+            original.replace("allow_client_side_credentials: false", "allow_client_side_credentials: true"),
+            original + "# fixture-private-comment-value\n",
+            original + "general_settings:\n  master_key: duplicate-private-value\n",
+            original.replace("  disable_error_logs: true\n", ""),
+        )
+        for index, changed in enumerate(changes):
+            with self.subTest(case=index):
+                self.assertNotEqual(original, changed)
+                path.write_text(changed, encoding="utf-8", newline="\n")
+                with self.assertRaises(PACKAGE.PackageError) as raised:
+                    self.package()
+                self.assertEqual("litellm-template-must-match-unfilled-policy", str(raised.exception))
+                self.assertFalse(self.output.exists())
+
+    def test_litellm_template_failure_cli_never_prints_values_or_source_paths(self):
+        marker = "fixture-private-comment-value"
+        path = self.repo / PACKAGE.LITELLM_TEMPLATE_PATH
+        path.write_bytes(path.read_bytes() + ("# " + marker + "\n").encode("utf-8"))
+        error = io.StringIO()
+        with patch.object(PACKAGE, "__file__", str(self.repo / "scripts/package-candidate.py")), \
+                redirect_stderr(error), redirect_stdout(io.StringIO()):
+            code = PACKAGE.main(["--war", str(self.war), "--expected-war-sha256", hashlib.sha256(self.war.read_bytes()).hexdigest(),
+                                 "--source-revision", "a" * 40, "--output-dir", str(self.output)])
+        self.assertEqual(1, code)
+        self.assertEqual("Candidate packaging failed: litellm-template-must-match-unfilled-policy\n", error.getvalue())
+        self.assertNotIn(marker, error.getvalue())
+        self.assertNotIn(str(self.directory), error.getvalue())
+        self.assertFalse(self.output.exists())
+
+    def test_both_new_litellm_inputs_are_required_before_output_creation(self):
+        for name in (PACKAGE.LITELLM_TEMPLATE_PATH, "docs/LITELLM-LOCAL-VALIDATION.md"):
+            with self.subTest(name=name):
+                path = self.repo / name
+                original = path.read_bytes()
+                path.unlink()
+                try:
+                    with self.assertRaisesRegex(PACKAGE.PackageError, "required-input-or-parent-missing"):
+                        self.package()
+                    self.assertFalse(self.output.exists())
+                finally:
+                    path.write_bytes(original)
 
     def test_known_secret_text_patterns_are_rejected_without_value_in_exception(self):
         path = self.repo / "docs/OPERATIONS.md"
