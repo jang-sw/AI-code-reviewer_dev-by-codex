@@ -16,6 +16,28 @@
   <c:if test="${project.status == 'PENDING'}"><c:url var="rejectAction" value="/admin/projects/${project.id}/reject"/><form method="post" action="<c:out value='${rejectAction}'/>"><input type="hidden" name="<c:out value='${_csrf.parameterName}'/>" value="<c:out value='${_csrf.token}'/>"><button type="submit" class="button-secondary">등록 반려</button></form></c:if>
   <c:if test="${project.approved}"><c:url var="pauseAction" value="/admin/projects/${project.id}/pause"/><form method="post" action="<c:out value='${pauseAction}'/>"><input type="hidden" name="<c:out value='${_csrf.parameterName}'/>" value="<c:out value='${_csrf.token}'/>"><button type="submit" class="button-secondary">리뷰 일시 중지</button></form></c:if>
 </div></section></c:if>
+<c:if test="${isAdmin and not empty branchCorrectionError}"><section class="notice error" id="branch-correction-error" role="alert"><strong>브랜치를 정정하지 않았습니다.</strong> <c:out value="${branchCorrectionError}"/><c:if test="${branchCorrectionCleared}"> 너무 긴 값이나 제어문자·자격증명 형태가 포함된 입력은 다시 표시하지 않습니다. 비밀정보를 제외하고 다시 입력해 주세요.</c:if></section></c:if>
+<c:if test="${isAdmin and (project.status == 'PENDING' or project.status == 'REJECTED' or project.status == 'PAUSED')}">
+<section class="card"><details id="branch-correction" ${not empty branchCorrectionError ? 'open' : ''}><summary>리뷰 브랜치 정정</summary>
+  <p>브랜치를 잘못 입력했을 때 사용하세요. 저장소 주소·등록자·기존 리뷰와 이슈는 그대로 유지하고, 다음 리뷰의 진행 기준만 초기화합니다. 이전 브랜치에만 있는 리뷰와 이슈도 남습니다.</p>
+  <p>현재 브랜치: <strong><c:out value="${project.reviewBranch}" default="저장소 기본 브랜치"/></strong><br>현재 진행 기준: <code><c:out value="${project.lastReviewedSha}" default="없음"/></code></p>
+  <p class="hint">실행 중이거나 대기 중인 요청이 있으면 정정할 수 없습니다. 정정 후에도 현재 승인·일시 중지 상태는 유지됩니다. 관리자가 별도로 승인하거나 리뷰를 재개하면 새 브랜치 전체 이력 중 아직 저장하지 않은 커밋을 검토합니다. 호출 제한으로 자동 재시도가 중단된 요청은 직접 다시 접수해야 합니다.</p>
+  <c:url var="branchCorrectionAction" value="/admin/projects/${project.id}/branch"/>
+  <form method="post" action="<c:out value='${branchCorrectionAction}'/>" class="form-stack">
+    <input type="hidden" name="<c:out value='${_csrf.parameterName}'/>" value="<c:out value='${_csrf.token}'/>">
+    <input type="hidden" name="expectedBranch" value="<c:out value='${project.reviewBranch}'/>">
+    <input type="hidden" name="expectedCursor" value="<c:out value='${project.lastReviewedSha}'/>">
+    <label for="corrected-branch">정정할 브랜치 (선택)</label>
+    <input id="corrected-branch" name="reviewBranch" maxlength="255" autocomplete="off" value="<c:out value='${branchCorrectionForm.reviewBranch}'/>" aria-describedby="corrected-branch-help${not empty branchCorrectionError ? ' branch-correction-error' : ''}">
+    <p id="corrected-branch-help" class="hint">비워 두면 저장소의 기본 브랜치를 사용합니다. 브랜치가 실제 저장소에 존재하는지는 다음 리뷰에서 확인합니다.</p>
+    <label for="branch-correction-reason">정정 사유</label>
+    <input id="branch-correction-reason" name="reason" required minlength="5" maxlength="500" autocomplete="off" value="<c:out value='${branchCorrectionForm.reason}'/>" aria-describedby="branch-correction-reason-help${not empty branchCorrectionError ? ' branch-correction-error' : ''}">
+    <p id="branch-correction-reason-help" class="hint">앞뒤 공백을 제외하고 5자 이상, 전체 500자 이하. 사유와 이전·새 브랜치 및 진행 기준은 관리자 감사 기록에 남습니다. 비밀번호·토큰·소스코드 등 비밀정보를 입력하지 마세요.</p>
+    <label class="inline"><input type="checkbox" name="confirmed" value="true" required>현재 브랜치와 진행 기준을 확인했으며, 기존 기록을 보존하고 진행 기준을 초기화하는 데 동의합니다.</label>
+    <button type="submit" class="button-secondary">기록을 보존하고 브랜치 정정</button>
+  </form>
+</details></section>
+</c:if>
 <c:if test="${isAdmin and project.status == 'PAUSED' and not empty project.lastReviewedSha}">
 <section class="card"><details><summary>Git 이력 변경 후 리뷰 진행 기준 복구</summary>
   <p>강제 푸시 등으로 저장된 기준 커밋이 현재 브랜치 이력에 없을 때 사용하세요. 기존 커밋 리뷰와 이슈는 보존하고 진행 기준만 초기화합니다.</p>

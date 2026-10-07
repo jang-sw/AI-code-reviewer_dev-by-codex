@@ -14,6 +14,22 @@
     <div><button type="submit">조회</button></div>
   </form>
 </section>
+<c:if test="${not empty gitCorrectionTarget}">
+<section class="card" aria-labelledby="git-correction-title">
+  <h2 id="git-correction-title">Git 사용자명 정정</h2>
+  <p role="alert" class="form-error"><a href="#git-correction-value"><c:out value="${gitCorrectionError}"/></a></p>
+  <p>대상 아이디: <strong><c:out value="${gitCorrectionTarget.username}"/></strong> · 현재 Git 사용자명: <strong><c:out value="${gitCorrectionTarget.gitUsername}"/></strong></p>
+  <c:url var="gitCorrectionAction" value="/admin/users/${gitCorrectionTarget.id}/git-username"/>
+  <form method="post" action="<c:out value='${gitCorrectionAction}'/>" class="form-stack">
+    <input type="hidden" name="<c:out value='${_csrf.parameterName}'/>" value="<c:out value='${_csrf.token}'/>">
+    <input type="hidden" name="expectedGitUsername" value="<c:out value='${gitCorrectionTarget.gitUsername}'/>">
+    <input type="hidden" name="status" value="<c:out value='${approvalFilter}'/>"><input type="hidden" name="search" value="<c:out value='${search}'/>"><input type="hidden" name="page" value="<c:out value='${page}'/>">
+    <label for="git-correction-value">새 Git 사용자명</label><input id="git-correction-value" name="newGitUsername" required maxlength="100" autocomplete="off" aria-invalid="true" aria-describedby="git-correction-help" value="<c:out value='${gitCorrectionValue}'/>">
+    <p id="git-correction-help" class="muted">토큰·비밀번호를 입력하지 마세요. 안전한 사용자명 형태의 입력만 복원합니다. 기존 이슈의 담당자는 유지하며, 정정 후 새 작성자 매칭 조회부터 반영합니다. 이미 매칭 중인 리뷰는 이전 배정으로 저장될 수 있습니다.</p>
+    <button type="submit">Git 사용자명 저장</button>
+  </form>
+</section>
+</c:if>
 <section class="card"><h2>사용자 목록</h2><p class="muted">최신순 · 페이지당 50명. 승인 상태와 이용 상태는 별도로 관리합니다.</p>
   <c:choose><c:when test="${empty users}"><p class="empty-state">조회 조건에 맞는 사용자가 없습니다.</p></c:when><c:otherwise>
   <p class="muted table-scroll-hint" id="users-scroll-hint">화면이 좁으면 사용자 목록을 좌우로 스크롤해 모든 관리 기능을 확인하세요.</p>
@@ -39,7 +55,16 @@
       <c:url var="enabledAction" value="/admin/users/${user.id}/enabled"/><form method="post" action="<c:out value='${enabledAction}'/>"><input type="hidden" name="<c:out value='${_csrf.parameterName}'/>" value="<c:out value='${_csrf.token}'/>"><input type="hidden" name="status" value="<c:out value='${approvalFilter}'/>"><input type="hidden" name="search" value="<c:out value='${search}'/>"><input type="hidden" name="page" value="<c:out value='${page}'/>"><input type="hidden" name="enabled" value="${not user.enabled}"><button type="submit" class="button-secondary"><c:choose><c:when test="${user.enabled}">이용 중지</c:when><c:otherwise>이용 재개</c:otherwise></c:choose></button></form>
       <details><summary>비밀번호 초기화</summary><c:url var="passwordAction" value="/admin/users/${user.id}/password"/>
       <form method="post" action="<c:out value='${passwordAction}'/>" class="form-stack"><input type="hidden" name="<c:out value='${_csrf.parameterName}'/>" value="<c:out value='${_csrf.token}'/>"><input type="hidden" name="status" value="<c:out value='${approvalFilter}'/>"><input type="hidden" name="search" value="<c:out value='${search}'/>"><input type="hidden" name="page" value="<c:out value='${page}'/>"><label for="reset-${user.id}">새 비밀번호</label><input id="reset-${user.id}" name="newPassword" type="password" required minlength="12" autocomplete="new-password"><p class="muted">이 계정의 기존 로그인 세션을 만료합니다.</p><button type="submit" class="button-secondary">비밀번호 초기화</button></form></details>
-    </c:if></td>
+    </c:if>
+      <details><summary>Git 사용자명 정정</summary><c:url var="gitAction" value="/admin/users/${user.id}/git-username"/>
+      <form method="post" action="<c:out value='${gitAction}'/>" class="form-stack">
+        <input type="hidden" name="<c:out value='${_csrf.parameterName}'/>" value="<c:out value='${_csrf.token}'/>"><input type="hidden" name="expectedGitUsername" value="<c:out value='${user.gitUsername}'/>">
+        <input type="hidden" name="status" value="<c:out value='${approvalFilter}'/>"><input type="hidden" name="search" value="<c:out value='${search}'/>"><input type="hidden" name="page" value="<c:out value='${page}'/>">
+        <label for="git-${user.id}">새 Git 사용자명</label><input id="git-${user.id}" name="newGitUsername" required maxlength="100" autocomplete="off" aria-describedby="git-help-${user.id}">
+        <p id="git-help-${user.id}" class="muted">토큰·비밀번호가 아닌 사용자명을 입력하세요. 승인 상태와 기존 이슈 담당자는 유지됩니다. 정정 후 새 작성자 매칭 조회부터 반영하며 이미 매칭 중인 리뷰는 이전 배정으로 저장될 수 있습니다.</p>
+        <button type="submit" class="button-secondary">Git 사용자명 저장</button>
+      </form></details>
+    </td>
   </tr></c:forEach></tbody></table></div></c:otherwise></c:choose>
   <nav class="pagination" aria-label="사용자 페이지">
     <c:if test="${page > 0}"><c:url var="previousPage" value="/admin/users"><c:param name="page" value="${page - 1}"/><c:param name="status" value="${approvalFilter}"/><c:param name="search" value="${search}"/></c:url><a href="<c:out value='${previousPage}'/>">이전</a></c:if>

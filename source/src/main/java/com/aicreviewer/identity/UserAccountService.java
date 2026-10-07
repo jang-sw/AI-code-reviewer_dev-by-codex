@@ -193,6 +193,67 @@ public class UserAccountService {
         audit.write(actor.id(), "USER_PASSWORD_RESET", "USER", targetId, "기존 로그인 세션 만료");
     }
 
+    public UserAccount forAdmin(String actorName, long targetId) {
+        requireAdmin(actorName);
+        return find(targetId);
+    }
+
+    /** A correction changes future author matching, never existing issue ownership. */
+    @Transactional
+    public void changeGitUsername(String actorName, long targetId, String expectedGitUsername, String newGitUsername) {
+        requireAdmin(actorName);
+        String replacement;
+        try {
+            replacement = AccountInput.gitUsername(newGitUsername);
+        } catch (IllegalArgumentException invalid) {
+            throw new GitUsernameChangeException(HttpStatus.BAD_REQUEST, "Git 계정은 @ 없이 영문, 숫자, 점, 밑줄, 하이픈으로 1~100자 입력해 주세요.");
+        }
+        if (recognizableGitCredential(replacement)) {
+            throw new GitUsernameChangeException(HttpStatus.BAD_REQUEST, "토큰이나 비밀번호 대신 공개 Git 사용자명을 입력해 주세요.");
+        }
+        var targets = jdbc.query("SELECT * FROM app_user WHERE id = ? FOR UPDATE", ACCOUNT, targetId);
+        if (targets.isEmpty()) throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+        UserAccount target = targets.getFirst();
+        // Compare the exact value the administrator saw; do not silently normalize a stale form.
+        if (!target.gitUsername().equals(expectedGitUsername)) {
+            throw new GitUsernameChangeException(HttpStatus.CONFLICT, "다른 관리자가 Git 계정을 변경했습니다. 아래 현재 값을 확인하고 다시 저장해 주세요.");
+        }
+        if (target.gitUsername().equals(replacement)) {
+            throw new GitUsernameChangeException(HttpStatus.BAD_REQUEST, "현재와 다른 Git 사용자명을 입력해 주세요.");
+        }
+        // The row lock may have waited while another administrator revoked the actor.
+        UserAccount actor = requireAdmin(actorName);
+        try {
+            jdbc.update("UPDATE app_user SET git_username = ? WHERE id = ?", replacement, targetId);
+        } catch (DuplicateKeyException duplicate) {
+            throw new GitUsernameChangeException(HttpStatus.CONFLICT, "이미 다른 계정이 사용 중인 Git 사용자명입니다. 해당 계정을 확인해 주세요.");
+        }
+        audit.write(actor.id(), "USER_GIT_USERNAME_CHANGED", "USER", targetId,
+                "Git 계정 정정; 이전=" + safeGitUsernameValue(target.gitUsername()) + "; 변경=" + replacement);
+    }
+
+    /** Only bounded account-shaped values may be reflected after a failed correction. */
+    static String safeGitUsernameValue(String value) {
+        if (value == null || value.length() > 100 || !value.matches("[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}")
+                || recognizableGitCredential(value)) return "";
+        return value;
+    }
+
+    private static boolean recognizableGitCredential(String value) {
+        // A prefix alone can be a valid account name. Exclude only recognizable
+        // long credential shapes; arbitrary secrets cannot be identified here.
+        return value.matches("(?i)(?:sk-(?:proj-|svcacct-)[a-z0-9_-]{20,}|sk-[a-z0-9]{40,}|gh[pousr]_[a-z0-9]{20,}|github_pat_[a-z0-9_]{20,}|glpat-[a-z0-9_-]{20,})");
+    }
+
+    public static final class GitUsernameChangeException extends RuntimeException {
+        private final HttpStatus status;
+        private GitUsernameChangeException(HttpStatus status, String message) {
+            super(message);
+            this.status = status;
+        }
+        public HttpStatus status() { return status; }
+    }
+
     @Transactional
     public void changePassword(String actorName, String currentPassword, String newPassword) {
         UserAccount actor = requireAccount(actorName);

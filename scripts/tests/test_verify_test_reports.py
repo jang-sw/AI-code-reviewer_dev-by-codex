@@ -87,6 +87,21 @@ class PostgreSQLReportGateTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Missing or invalid"):
             MODULE.verify_reports(self.directory)
 
+    def test_correction_suites_are_mandatory_and_must_run_successfully(self):
+        for suite in ("com.aicreviewer.identity.UserGitUsernamePostgresTest",
+                      "com.aicreviewer.project.BranchCorrectionPostgresTest"):
+            with self.subTest(suite=suite):
+                self.assertIn(suite, MODULE.REQUIRED_SUITES)
+                (self.directory / f"TEST-{suite}.xml").unlink()
+                with self.assertRaisesRegex(ValueError, "Missing or invalid"):
+                    MODULE.verify_reports(self.directory)
+                for status in ("skipped", "failure", "error"):
+                    self.write_report(suite, status)
+                    with self.assertRaisesRegex(ValueError, "skipped, empty or unsuccessful"):
+                        MODULE.verify_reports(self.directory)
+                self.write_report(suite)
+                MODULE.verify_reports(self.directory)
+
     def test_skipped_case_cannot_hide_behind_zero_skip_counter(self):
         self.write_report(MODULE.REQUIRED_SUITES[0], "skipped")
         report = self.directory / f"TEST-{MODULE.REQUIRED_SUITES[0]}.xml"

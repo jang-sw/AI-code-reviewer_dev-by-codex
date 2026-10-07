@@ -181,7 +181,7 @@ public class ProjectService {
         return page;
     }
 
-    private static String validateBranch(String branch) {
+    static String validateBranch(String branch) {
         if (branch == null || branch.isBlank()) return null;
         String value = branch.strip();
         if (value.length() > 255 || value.equals("@") || value.startsWith("-") || value.startsWith("/")

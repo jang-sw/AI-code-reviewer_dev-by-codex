@@ -650,6 +650,117 @@ class ApplicationPostgresTest {
         verifyNoInteractions(git, ai);
     }
 
+    @Test
+    void gitUsernameCorrectionRendersRecoverableErrorsAndPreservesAccountAndNavigation() throws Exception {
+        long target = jdbc.queryForObject("select id from app_user where username=?", Long.class, writer);
+        var before = jdbc.queryForMap("select username,password_hash,role,enabled,approval_status,security_version from app_user where id=?", target);
+        String path = "/admin/users/" + target + "/git-username";
+        var admin = login("pgadmin");
+        String token = csrf(get(admin, "/admin/users?status=APPROVED&search=" + writer).body());
+        var fields = new java.util.HashMap<>(Map.of("expectedGitUsername", writer, "newGitUsername", outsider,
+                "status", "APPROVED", "search", writer, "page", "2", "_csrf", token));
+        assertThat(post(admin, path, Map.of("expectedGitUsername", writer, "newGitUsername", writer + "new")).statusCode()).isEqualTo(403);
+        var owner = login(writer);
+        assertThat(post(owner, path, Map.of("expectedGitUsername", writer, "newGitUsername", writer + "new",
+                "_csrf", csrf(get(owner, "/issues").body()))).statusCode()).isEqualTo(403);
+        var duplicate = post(admin, path, fields);
+        assertThat(duplicate.statusCode()).isEqualTo(409);
+        assertThat(duplicate.body()).contains("git-correction-value", "aria-invalid=\"true\"", "role=\"alert\"",
+                "value=\"" + outsider + "\"", "name=\"page\" value=\"2\"");
+        assertThat(jdbc.queryForObject("select git_username from app_user where id=?", String.class, target)).isEqualTo(writer);
+        fields.put("newGitUsername", writer + "new");
+        var saved = post(admin, path, fields);
+        assertThat(saved.statusCode()).isEqualTo(302);
+        assertThat(saved.headers().firstValue("Location").orElseThrow()).endsWith("/admin/users?status=APPROVED&search=" + writer + "&page=2");
+        assertThat(jdbc.queryForMap("select username,password_hash,role,enabled,approval_status,security_version from app_user where id=?", target)).isEqualTo(before);
+        var stale = post(admin, path, fields);
+        assertThat(stale.statusCode()).isEqualTo(409);
+        assertThat(stale.body()).contains("name=\"expectedGitUsername\" value=\"" + writer + "new\"");
+        assertThat(jdbc.queryForObject("select count(*) from audit_event where action='USER_GIT_USERNAME_CHANGED' and target_id=?", Long.class, target)).isEqualTo(1);
+        fields.put("expectedGitUsername", writer + "new");
+        fields.put("newGitUsername", "<script>private</script>");
+        var invalid = post(admin, path, fields);
+        assertThat(invalid.statusCode()).isEqualTo(400);
+        assertThat(invalid.body()).doesNotContain("<script>private</script>", "&lt;script&gt;private");
+        assertThat(get(owner, "/issues").statusCode()).isEqualTo(200);
+        var anonymous = client();
+        String signupToken = csrf(get(anonymous, "/signup").body());
+        String applicant = "replacement" + writer;
+        var signupFields = new java.util.HashMap<>(Map.of("username", applicant, "gitUsername", writer,
+                "password", PASSWORD, "confirmPassword", PASSWORD, "_csrf", signupToken));
+        var replacement = post(anonymous, "/signup", signupFields);
+        assertThat(replacement.statusCode()).isEqualTo(302);
+        assertThat(jdbc.queryForMap("select git_username,approval_status,enabled from app_user where username=?", applicant))
+                .containsEntry("git_username", writer).containsEntry("approval_status", "PENDING").containsEntry("enabled", false);
+        signupFields.put("username", "duplicate" + writer);
+        signupFields.put("gitUsername", writer + "new");
+        var duplicateNewGit = post(anonymous, "/signup", signupFields);
+        assertThat(duplicateNewGit.statusCode()).isEqualTo(302);
+        assertThat(duplicateNewGit.headers().firstValue("Location")).isEqualTo(replacement.headers().firstValue("Location"));
+        assertThat(jdbc.queryForObject("select count(*) from app_user where username=?", Long.class, "duplicate" + writer)).isZero();
+        signupFields.put("username", writer);
+        signupFields.put("gitUsername", writer + "unused");
+        assertThat(post(anonymous, "/signup", signupFields).headers().firstValue("Location")).isEqualTo(replacement.headers().firstValue("Location"));
+        assertThat(jdbc.queryForObject("select git_username from app_user where id=?", String.class, target)).isEqualTo(writer + "new");
+        assertThat(jdbc.queryForMap("select username,password_hash,role,enabled,approval_status,security_version from app_user where id=?", target)).isEqualTo(before);
+    }
+
+    @Test
+    void branchCorrectionPreservesHistoryAndRequiresExplicitResumption() throws Exception {
+        projects.transition("pgadmin", projectId, "approve");
+        GitCommit first = new GitCommit("c".repeat(40), writer, "first", "diff --git a/A.java b/A.java\n@@ -0,0 +1 @@\n+bad();");
+        stubBatch(List.of(first), first.sha());
+        when(ai.review(first)).thenReturn(finding("A.java"));
+        assertThat(reviews.reviewProject(projectId, writer)).isEqualTo(ReviewCoordinator.Outcome.SUCCEEDED);
+        projects.transition("pgadmin", projectId, "pause");
+        var before = jdbc.queryForMap("select repository_url,owner_id,approved_at from project where id=?", projectId);
+        var oldIssues = jdbc.queryForList("select * from review_issue where project_id=? order by id", projectId);
+        var oldRuns = jdbc.queryForList("select * from review_run where project_id=? order by id", projectId);
+        var admin = login("pgadmin");
+        String path = "/admin/projects/" + projectId + "/branch";
+        var page = get(admin, "/projects/" + projectId);
+        assertThat(page.body()).contains("name=\"expectedBranch\"", "name=\"expectedCursor\"", "name=\"confirmed\"");
+        var fields = new java.util.HashMap<>(Map.of("expectedBranch", "", "expectedCursor", first.sha(), "reviewBranch", "release/review",
+                "reason", "리뷰할 브랜치 정정", "confirmed", "true", "_csrf", csrf(page.body())));
+        try (var held = locks.tryAcquire(projectId).orElseThrow()) {
+            assertThat(post(admin, path, fields).statusCode()).isEqualTo(409);
+        }
+        fields.put("reviewBranch", "invalid..branch");
+        var invalid = post(admin, path, fields);
+        assertThat(invalid.statusCode()).isEqualTo(400);
+        assertThat(invalid.body()).contains("role=\"alert\"", "invalid..branch", "리뷰할 브랜치 정정");
+        assertThat(cursor()).isEqualTo(first.sha());
+        fields.put("reviewBranch", "release/review");
+        assertThat(post(admin, path, fields).statusCode()).isEqualTo(302);
+        assertThat(jdbc.queryForMap("select review_branch,last_reviewed_sha,next_review_at,status from project where id=?", projectId))
+                .containsEntry("review_branch", "release/review").containsEntry("last_reviewed_sha", null)
+                .containsEntry("next_review_at", null).containsEntry("status", "PAUSED");
+        assertThat(jdbc.queryForMap("select repository_url,owner_id,approved_at from project where id=?", projectId)).isEqualTo(before);
+        assertThat(jdbc.queryForList("select * from review_issue where project_id=? order by id", projectId)).isEqualTo(oldIssues);
+        assertThat(jdbc.queryForList("select * from review_run where project_id=? order by id", projectId)).isEqualTo(oldRuns);
+        var stale = post(admin, path, fields);
+        assertThat(stale.statusCode()).isEqualTo(409);
+        assertThat(stale.body()).contains("name=\"expectedBranch\" value=\"release/review\"");
+        assertThat(jdbc.queryForObject("select count(*) from audit_event where action='PROJECT_REVIEW_BRANCH_CORRECTED' and target_id=?", Long.class, projectId)).isEqualTo(1);
+        verify(ai, times(1)).review(first);
+    }
+
+    @Test
+    void pendingBranchCorrectionRequiresAdminCsrfAndDoesNotApproveProject() throws Exception {
+        String path = "/admin/projects/" + projectId + "/branch";
+        var owner = login(writer);
+        var ownerPage = get(owner, "/projects/" + projectId);
+        assertThat(ownerPage.body()).doesNotContain("name=\"expectedBranch\"");
+        assertThat(post(owner, path, Map.of("_csrf", csrf(ownerPage.body()), "reviewBranch", "main", "confirmed", "true", "reason", "처음 브랜치 정정")).statusCode()).isEqualTo(403);
+        var admin = login("pgadmin");
+        assertThat(post(admin, path, Map.of("reviewBranch", "main", "confirmed", "true", "reason", "처음 브랜치 정정")).statusCode()).isEqualTo(403);
+        var fields = Map.of("_csrf", csrf(get(admin, "/projects/" + projectId).body()), "reviewBranch", "main", "confirmed", "true", "reason", "처음 브랜치 정정");
+        assertThat(post(admin, path, fields).statusCode()).isEqualTo(302);
+        assertThat(jdbc.queryForMap("select status,review_branch,approved_at from project where id=?", projectId))
+                .containsEntry("status", "PENDING").containsEntry("review_branch", "main").containsEntry("approved_at", null);
+        verifyNoInteractions(git, ai);
+    }
+
     private void stubBatch(List<GitCommit> commits, String checkpoint) {
         when(git.batch(any(), any(), any(), anySet(), anyInt())).thenAnswer(invocation -> {
             Set<String> completed = invocation.getArgument(3);

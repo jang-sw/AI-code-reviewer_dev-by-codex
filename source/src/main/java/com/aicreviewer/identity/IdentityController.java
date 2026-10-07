@@ -115,6 +115,30 @@ public class IdentityController {
         return "redirect:" + returnPath;
     }
 
+    @PostMapping("/admin/users/{id}/git-username")
+    public String changeGitUsername(Principal principal, @PathVariable long id,
+                                    @RequestParam String expectedGitUsername, @RequestParam String newGitUsername,
+                                    @RequestParam(required = false) String status,
+                                    @RequestParam(defaultValue = "") String search,
+                                    @RequestParam(defaultValue = "0") int page, Model model,
+                                    HttpServletResponse response, RedirectAttributes redirect) {
+        String returnPath = usersReturnPath(status, search, page);
+        try {
+            users.changeGitUsername(principal.getName(), id, expectedGitUsername, newGitUsername);
+            redirect.addFlashAttribute("notice", "Git 사용자명을 정정했습니다. 기존 이슈의 담당자는 유지됩니다.");
+            return "redirect:" + returnPath;
+        } catch (UserAccountService.GitUsernameChangeException invalid) {
+            // Recheck current administrator access after the mutation transaction has rolled back.
+            UserAccount current = users.forAdmin(principal.getName(), id);
+            users(principal, page, status, search, model);
+            model.addAttribute("gitCorrectionTarget", current);
+            model.addAttribute("gitCorrectionValue", UserAccountService.safeGitUsernameValue(newGitUsername));
+            model.addAttribute("gitCorrectionError", invalid.getMessage());
+            response.setStatus(invalid.status().value());
+            return "admin/users";
+        }
+    }
+
     private static String signupValue(String value, int maximumLength) {
         if (value == null) return "";
         String clean = value.strip().replaceAll("\\p{Cntrl}", "");
