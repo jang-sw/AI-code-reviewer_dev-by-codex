@@ -1,10 +1,10 @@
 # 현재 작업 상태
 
 - 작업: 실사용 AI 소스코드 리뷰 시스템. **개발 중, 릴리스 완료 아님.**
-- 이번 회차: 2026-10-09 13:26 KST 시작, 최대15:26 KST까지 진행한다.
+- 이번 회차: 2026-10-09 13:26 KST 시작,14:00 KST 기준 구현·검증·후보 포장·소유자원 정리를 마쳤다. 최대2시간 제한 이내다.
 - 기록 기준: `main` / 시작 `dd6f1d1`. 시작 작업 트리는 깨끗했고 로컬 origin/main 기준15개 커밋이 미푸시였다. 기존 커밋은 전송하지 않고 이번 반영도 로컬로 유지한다.
 - 이번 완료 조건: AI 모델 선정은 계속 보류한다. 현재PC의 격리 자료로 미검증 UI 오류·빈 목록·세션 만료 조건과 누적 이슈/감사/운영 목록의 조회 비용을 확인한다. 발견한 결함만 최소 수정하고 관련 자동·실제 검증과 재개 기록을 남긴다.
-- 이번 단계: 조회 개선을 `7331444`로 로컬 커밋했다. 최종 전체 Java1231건 중1220통과/11선택skip·필수PG9묶음과 최종WAR 권한/오래된 양식 복구 화면을 통과했다. 최초UI에서 발견한 일반403 복귀 반복을 수정했고 두 UI schema의 원본14테이블 보존·소유WAR/PG/bridge 정리를 확인했다. 후보 포장·최종 종합 정리는 다음 단계다. JVM heap512MiB·순차 실행으로 현재PC 범위에서 검증했으며 실제 모델 호출/다운로드는 없다.
+- 이번 단계: 조회 개선 `7331444`와 오류/빈 페이지 복구 `e8a4129`를 로컬 커밋했다. 최종 Java1220통과/11선택skip·필수PG9묶음, 실제PG60개 조회 조합의 수정 전후·최종WAR 화면 검증 PASS. 동일28파일 후보2개·전체 체크섬·소유자원 정리까지 확인했다. JVM heap512MiB·순차 실행으로 현재PC 범위에서 검증했으며 모델 호출/다운로드·푸시·운영 배포는 없다.
 - 확정 요구사항: `docs/REQUIREMENTS.md`. 내부 이슈함 우선, 최초 전체 이력, Java25/Spring/Maven/JSP/PostgreSQL 유지.
 - 재개 시 이 문서와 실제 Git 상태를 대조하고 아래 다음 작업부터 진행한다. 모든 릴리스 항목 검증 전 완료라고 보고하지 않는다.
 
@@ -61,6 +61,8 @@
 - 최종 전체 Java1231건 중1220통과/11선택skip·실패/오류0·필수PG9묶음 PASS,298.177초. 새 오류 분류30/handler2/빈 페이지 실제Tomcat7·identity16·실제PG/Tomcat HTTP24건 포함. `.local/session16-build2-verification.json`, `.local/linux-postgres-6ffb74a694944657baf7be56afad8ed2`. WAR SHA256 `fa259c24abba00db236329bfd8fa5d5d96665b0dda67811e11ca5b8e77c410a1`,42,058,821바이트. Python 제품/도구 소스는 변경하지 않아 이전284건을 이번 실행으로 다시 세지 않는다.
 - 첫 전체1230건 중1219통과/11skip 뒤 브라우저에서 일반403의 복귀 링크가 접근 불가 목록을 반복하는 문제를 발견했다. 일반403만 대시보드로 수정하고 위 전체검증과 최종화면에서 USER→관리자403→Enter→대시보드 복귀를 확인했다. CSRF403은 새 양식 안내를 유지한다. `.local/session16-ui-observation-initial.json`은 발견 결함을 포함한 초기 관측으로 보존한다.
 - 실제WAR 초기UI는 매핑51→50/승인대기51→50 뒤 비어 있는2페이지·검색/상태 유지·키보드 첫 페이지50행, 감사 빈2페이지→기록3행,400조회/404항목/실제빈필터 안내를 확인했다. 두 실행 모두 다른 탭 로그아웃 후 옛 이슈 양식 제출403·재로그인 후OPEN/추가이슈감사0을 확인했다. 최종 일반403·CSRF403을390/1280px에서 확인했고 관측한본문가로넘침은없었다. 실제30분 유휴만료를 기다린 검증이나 전체 인수 승인은 아니다. `.local/session16-ui-observation.json`, `session16{,b}-ui-harness.json`, 화면6개에 근거가 있다. 원본14테이블·직접만든schema/work·WAR/PG/Windowsbridge정리 PASS.
+- `e8a4129f189ce97f55ebf7674669cd2bcde2b402` 자료와 검증한 최종WAR의28파일 후보2개가 동일 바이트·내부/외부 전체 체크섬·고정 메타데이터·원본WAR를 통과했다. 아카이브 SHA256 `78e8ab862d835e24a75a293ab671db2db8a17efe20a54196308bdad592b22b77`,38,076,086바이트. Windows `.local/session16-candidate`로 복사 후 해시도 확인했으며 설치하지 않았고 `releaseApproved=false`다. 운영자 제공 소스 식별자는 WAR 출처 증명과 구분한다. 이 결과 문단은 후보 생성 후 작성됐다.
+- 양OS `.local/session16-validation-summary.json`에 최종Java·PG전후계획·초기/최종UI·후보·정리를 모았다. Linux23포트와Windows18081닫힘·검증PG PID/lock부재·소유WAR/keeper종료·기존서비스3개inactive/disabled를 확인했다. keeper는PID/시작시각/UID/명령을 대조한 뒤 종료했다. 소스302파일은각OS해시를대조해동기화했다. 기존Windows Ollama/개발PG는 변경하지 않았다. 독립 staged코드 검토·공백/비밀정보 검사도 통과했다.
 
 ### 이전 회차: 현재PC 범위의 안정성·입력 복구
 
@@ -236,5 +238,5 @@
 - 운영 대상은 사용자 답변으로 Linux 서버, 도커 미사용으로 확정했다(2026-09-26). 사용자 요청에 따른 전용 WSL2 Ubuntu 로컬 Linux 환경 구축과 설치/복구 검증은 2026-10-02 수행했다. 실제 서버 배포는 별도 승인 대상이다.
 - origin: jang-sw/code-reviewer_by-codex. main 직접 푸시 별도 승인 없음 → 로컬 커밋만, 푸시/배포 없음.
 - `.local/pg-test`: Windows 개발검증 전용127.0.0.1:55432. Windows `.local/pg-validation` 및 staged snapshot의pg-validation:55439. Linux PGDATA는 Linux 홈의 별도 checkout에만 만들고 Windows PGDATA를 공유하지 않는다.
-- `.local`은 Git 제외. 이번 Linux 부모 WAR/PG와 새 UUID schema를 정리하고80/443/8080~8082/18080/18081/18089~18100/55439/55449/14000/14001 총23개 포트 연결 불가·검증 PID/lock 부재를 확인했다. Windows 임시bridge18081도 닫혔다. 이전 앱·Nginx·서비스PG는 계속inactive/disabled이며 서비스PG manual 설정을 유지한다. 원본 합성 DB·root 전용 설정/백업·후보·시험 기록은 전용 WSL에 보존한다. 소유keeper도PID/시작시각·명령·UID대조후종료확인했다(`.local/session15-validation-summary.json`). 사용자Windows Ollama/55432 PG를변경하지않았고 Windows재부팅은수행하지않았다.
+- `.local`은 Git 제외. 이번 Linux 부모 WAR/PG와 새 UUID schema를 정리하고80/443/8080~8082/18080/18081/18089~18100/55439/55449/14000/14001 총23개 포트 연결 불가·검증 PID/lock 부재를 확인했다. Windows 임시bridge18081도 닫혔다. 이전 앱·Nginx·서비스PG는 계속inactive/disabled이며 서비스PG manual 설정을 유지한다. 원본 합성 DB·root 전용 설정/백업·후보·시험 기록은 전용 WSL에 보존한다. 소유keeper도PID/시작시각·명령·UID대조후종료확인했다(`.local/session16-validation-summary.json`). 사용자Windows Ollama/55432 PG를변경하지않았고 Windows재부팅은수행하지않았다.
 - 런타임 Git 수집은 매번 pinned 전체 이력을 재검증, 기본1000페이지/metadata32MiB/저장SHA131072개 안전 한도. 제한을 자동 확장/절삭하지 않는다.
