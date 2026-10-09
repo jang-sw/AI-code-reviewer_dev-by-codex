@@ -133,6 +133,36 @@ class IdentitySecurityTest {
     }
 
     @Test
+    void revokedSessionWithValidCsrfCannotSubmitAndKeepsTheExistingLogoutFlow() throws Exception {
+        MockHttpSession session = login("alice");
+        users.setEnabled("administrator", aliceId, false);
+        var before = jdbc.queryForMap("SELECT * FROM app_user WHERE id=?", aliceId);
+        long auditCount = jdbc.queryForObject("SELECT COUNT(*) FROM audit_event", Long.class);
+        mvc.perform(post("/account/password").session(session).with(csrf())
+                        .param("currentPassword", PASSWORD).param("newPassword", "Replacement-password-5321!")
+                        .param("confirmPassword", "Replacement-password-5321!"))
+                .andExpect(redirectedUrl("/login?expired"));
+        assertThat(session.isInvalid()).isTrue();
+        assertThat(jdbc.queryForMap("SELECT * FROM app_user WHERE id=?", aliceId)).isEqualTo(before);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audit_event", Long.class)).isEqualTo(auditCount);
+    }
+
+    @Test
+    void invalidCsrfPreservesTheAccountAndDoesNotReachPasswordMutation() throws Exception {
+        MockHttpSession session = login("alice");
+        var before = jdbc.queryForMap("SELECT * FROM app_user WHERE id=?", aliceId);
+        mvc.perform(post("/account/password").session(session).with(csrf().useInvalidToken())
+                        .param("currentPassword", PASSWORD).param("newPassword", "Replacement-password-5321!")
+                        .param("confirmPassword", "Replacement-password-5321!"))
+                .andExpect(status().isForbidden()).andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(result -> assertThat(result.getRequest().getAttribute(
+                        com.aicreviewer.web.SafeAccessDeniedHandler.CSRF_FAILURE)).isEqualTo(Boolean.TRUE));
+        assertThat(jdbc.queryForMap("SELECT * FROM app_user WHERE id=?", aliceId)).isEqualTo(before);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audit_event", Long.class)).isZero();
+        assertThat(session.isInvalid()).isFalse();
+    }
+
+    @Test
     void passwordResetKeepsADisabledApprovedAccountDisabledAndPreservesOtherFields() {
         users.setEnabled("administrator", aliceId, false);
         var before = new java.util.LinkedHashMap<>(jdbc.queryForMap("SELECT * FROM app_user WHERE id=?", aliceId));

@@ -31,7 +31,10 @@
 </section>
 </c:if>
 <section class="card"><h2>사용자 목록</h2><p class="muted">최신순 · 페이지당 50명. 승인 상태와 이용 상태는 별도로 관리합니다.</p>
-  <c:choose><c:when test="${empty users}"><p class="empty-state">조회 조건에 맞는 사용자가 없습니다.</p></c:when><c:otherwise>
+  <c:choose><c:when test="${empty users}"><div class="empty-state"><c:choose><c:when test="${page > 0}">
+    <h3>이 페이지에 표시할 사용자가 없습니다</h3><p>목록이 변경되었거나 마지막 페이지를 넘었습니다. 현재 승인 상태와 검색 조건을 유지한 채 첫 페이지나 이전 페이지에서 확인해 주세요.</p>
+    <c:url var="firstUserPage" value="/admin/users"><c:param name="page" value="0"/><c:param name="status" value="${approvalFilter}"/><c:param name="search" value="${search}"/></c:url><a id="users-first-page" href="<c:out value='${firstUserPage}'/>">첫 페이지로</a>
+  </c:when><c:otherwise><p>조회 조건에 맞는 사용자가 없습니다.</p></c:otherwise></c:choose></div></c:when><c:otherwise>
   <p class="muted table-scroll-hint" id="users-scroll-hint">화면이 좁으면 사용자 목록을 좌우로 스크롤해 모든 관리 기능을 확인하세요.</p>
   <div class="table-wrap" tabindex="0" role="region" aria-label="사용자 승인 및 계정 관리 목록" aria-describedby="users-scroll-hint"><table class="admin-users-table"><thead><tr><th>아이디 / Git 계정</th><th>권한</th><th>승인 상태</th><th>이용 상태</th><th>승인 처리</th><th>계정 관리</th></tr></thead><tbody>
   <c:forEach items="${users}" var="user"><tr>

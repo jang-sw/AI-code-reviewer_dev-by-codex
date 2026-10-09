@@ -116,6 +116,79 @@ class ApplicationPostgresTest {
     }
 
     @Test
+    void lostSessionAndInvalidCsrfRenderRecoverable403WithoutApplyingOrReflectingTheForm() throws Exception {
+        var owner = login(writer);
+        long accountId = jdbc.queryForObject("SELECT id FROM app_user WHERE username=?", Long.class, writer);
+        var before = jdbc.queryForMap("SELECT * FROM app_user WHERE id=?", accountId);
+        long changesBefore = jdbc.queryForObject("SELECT COUNT(*) FROM audit_event WHERE target_id=? AND action='PASSWORD_CHANGED'", Long.class, accountId);
+        String oldToken = csrf(get(owner, "/account/password").body());
+        String privateInput = "private-form-password-fixture";
+        var fields = new java.util.HashMap<>(Map.of("_csrf", "invalid-csrf-private-fixture", "currentPassword", PASSWORD,
+                "newPassword", privateInput, "confirmPassword", privateInput));
+        var invalid = post(owner, "/account/password", fields);
+        assertThat(invalid.statusCode()).isEqualTo(403);
+        assertThat(invalid.headers().firstValue("Cache-Control").orElseThrow()).contains("no-store");
+        assertThat(invalid.body()).contains("양식을 다시 열어 주세요", "제출 내용을 처리하지 않았습니다", "비밀번호 변경 양식 다시 열기")
+                .doesNotContain(privateInput, PASSWORD, "invalid-csrf-private-fixture", "InvalidCsrfTokenException");
+        // Drop the browser session cookie without changing server time or waiting 30 minutes.
+        // The old form now arrives without its authenticated/CSRF session, as after session loss.
+        ((CookieManager) owner.cookieHandler().orElseThrow()).getCookieStore().removeAll();
+        fields.put("_csrf", oldToken);
+        var lost = post(owner, "/account/password?next=https://untrusted.example/private-recovery", fields);
+        assertThat(lost.statusCode()).isEqualTo(403);
+        assertThat(lost.body()).contains("양식을 다시 열어 주세요", "로그인 화면 열기", "비밀번호 변경 양식 다시 열기")
+                .doesNotContain(privateInput, PASSWORD, oldToken, "untrusted.example", "private-recovery", "MissingCsrfTokenException");
+        assertThat(jdbc.queryForMap("SELECT * FROM app_user WHERE id=?", accountId)).isEqualTo(before);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audit_event WHERE target_id=? AND action='PASSWORD_CHANGED'", Long.class, accountId))
+                .isEqualTo(changesBefore);
+        assertThat(get(owner, "/login").statusCode()).isEqualTo(200);
+        assertThat(get(owner, "/account/password").statusCode()).isEqualTo(302);
+        verifyNoInteractions(git, ai);
+    }
+
+    @Test
+    void revokedAccountPostWithValidCsrfStillExpiresTheSessionWithoutPasswordMutation() throws Exception {
+        var owner = login(writer);
+        String token = csrf(get(owner, "/account/password").body());
+        long accountId = jdbc.queryForObject("SELECT id FROM app_user WHERE username=?", Long.class, writer);
+        users.setEnabled("pgadmin", accountId, false);
+        var before = jdbc.queryForMap("SELECT * FROM app_user WHERE id=?", accountId);
+        long auditCount = jdbc.queryForObject("SELECT COUNT(*) FROM audit_event WHERE target_type='USER' AND target_id=?", Long.class, accountId);
+        var result = post(owner, "/account/password", Map.of("_csrf", token, "currentPassword", PASSWORD,
+                "newPassword", "Replacement-only-fixture-7841!", "confirmPassword", "Replacement-only-fixture-7841!"));
+        assertThat(result.statusCode()).isEqualTo(302);
+        assertThat(result.headers().firstValue("Location").orElseThrow()).endsWith("/login?expired");
+        assertThat(jdbc.queryForMap("SELECT * FROM app_user WHERE id=?", accountId)).isEqualTo(before);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audit_event WHERE target_type='USER' AND target_id=?", Long.class, accountId)).isEqualTo(auditCount);
+        assertThat(get(owner, "/issues").statusCode()).isEqualTo(302);
+        verifyNoInteractions(git, ai);
+    }
+
+    @Test
+    void filterErrorsAndPermissionErrorsKeepStatusesAndFixedRecoveryCategories() throws Exception {
+        var owner = login(writer);
+        var invalidPage = get(owner, "/issues?page=-1&next=https://untrusted.example/private-recovery");
+        assertThat(invalidPage.statusCode()).isEqualTo(400);
+        assertThat(invalidPage.headers().firstValue("Cache-Control").orElseThrow()).contains("no-store");
+        assertThat(invalidPage.body()).contains("입력값이나 조회 조건이 올바르지 않습니다", "이슈 목록 열기", "href=\"/issues\"")
+                .doesNotContain("로그인 상태와 접근 권한을 확인", "private-recovery", "untrusted.example");
+        var invalidStatus = get(owner, "/projects?status=private-filter-fixture");
+        assertThat(invalidStatus.statusCode()).isEqualTo(400);
+        assertThat(invalidStatus.body()).contains("프로젝트 목록 열기", "href=\"/projects\"")
+                .doesNotContain("private-filter-fixture");
+        var forbidden = get(owner, "/admin/audit");
+        assertThat(forbidden.statusCode()).isEqualTo(403);
+        assertThat(forbidden.body()).contains("이 요청을 처리할 권한이 없습니다", "<a class=\"button\" href=\"/\">대시보드로 돌아가기</a>")
+                .doesNotContain("양식이 오래되었거나", "private-filter-fixture", "href=\"/admin/audit\"");
+        assertThat(get(owner, "/").statusCode()).isEqualTo(200);
+        var missing = get(owner, "/projects/9223372036854775807");
+        assertThat(missing.statusCode()).isEqualTo(404);
+        assertThat(missing.body()).contains("항목이 없거나 접근할 수 없습니다", "프로젝트 목록 열기")
+                .doesNotContain("9223372036854775807");
+        verifyNoInteractions(git, ai);
+    }
+
+    @Test
     void durableBatchRetryAssignsIssuesAndDoesNotDuplicate() throws Exception {
         projects.transition("pgadmin", projectId, "approve");
         String firstSha = "a".repeat(40), secondSha = "b".repeat(40);

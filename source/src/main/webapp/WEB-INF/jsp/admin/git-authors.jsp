@@ -44,7 +44,10 @@
 </section>
 <section class="card">
   <h2>등록된 매핑</h2>
-  <c:choose><c:when test="${empty mappings}"><div class="empty-state"><h3>등록된 매핑이 없습니다</h3><p>커밋 이메일을 확인하고 활성 사용자에게 연결해 주세요.</p></div></c:when><c:otherwise>
+  <c:choose><c:when test="${empty mappings}"><div class="empty-state"><c:choose><c:when test="${page > 0}">
+    <h3>이 페이지에 표시할 매핑이 없습니다</h3><p>목록이 변경되었거나 마지막 페이지를 넘었습니다. 사용자 검색을 유지한 채 첫 페이지나 이전 페이지에서 확인해 주세요.</p>
+    <c:url var="firstMappingPage" value="/admin/git-authors"><c:param name="page" value="0"/><c:param name="userSearch" value="${userSearch}"/></c:url><a id="mappings-first-page" href="<c:out value='${firstMappingPage}'/>">첫 페이지로</a>
+  </c:when><c:otherwise><h3>등록된 매핑이 없습니다</h3><p>커밋 이메일을 확인하고 활성 사용자에게 연결해 주세요.</p></c:otherwise></c:choose></div></c:when><c:otherwise>
   <p class="muted table-scroll-hint" id="mappings-scroll-hint">화면이 좁으면 표에 초점을 둔 뒤 좌우 방향키로 전체 매핑과 삭제 버튼을 확인하세요.</p>
   <div class="table-wrap" tabindex="0" role="region" aria-label="등록된 Git 작성자 매핑" aria-describedby="mappings-scroll-hint"><table><thead><tr><th>저장소 서버</th><th>전체 이메일</th><th>배정 사용자</th><th>상태</th><th>관리</th></tr></thead><tbody>
     <c:forEach items="${mappings}" var="mapping"><tr>

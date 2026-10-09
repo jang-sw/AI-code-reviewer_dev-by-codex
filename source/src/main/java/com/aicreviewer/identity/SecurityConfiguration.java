@@ -1,5 +1,6 @@
 package com.aicreviewer.identity;
 
+import com.aicreviewer.web.SafeAccessDeniedHandler;
 import jakarta.servlet.DispatcherType;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -41,6 +42,7 @@ public class SecurityConfiguration {
                 .logout(logout -> logout.logoutUrl("/logout").logoutSuccessUrl("/login?logout")
                         .invalidateHttpSession(true).deleteCookies("JSESSIONID"))
                 .sessionManagement(session -> session.sessionFixation(fixation -> fixation.changeSessionId()))
+                .exceptionHandling(exceptions -> exceptions.accessDeniedHandler(new SafeAccessDeniedHandler()))
                 .headers(headers -> {
                     headers.addObjectPostProcessor(new ObjectPostProcessor<HeaderWriterFilter>() {
                             @Override public <O extends HeaderWriterFilter> O postProcess(O filter) {
