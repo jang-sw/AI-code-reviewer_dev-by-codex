@@ -37,10 +37,13 @@ public class IssueService {
         }
         args.add(PAGE_SIZE + 1);
         args.add(page * PAGE_SIZE);
+        // Select the scoped page before fetching issue text and related records. Deep offsets
+        // still scan IDs, but only the page plus lookahead needs these joins and provenance checks.
         List<Map<String, Object>> issues = jdbc.queryForList("select i.id, i.issue_kind, i.severity, i.status, i.title, i.file_path, i.line_number, i.assignment_reason, left(i.description, 240) as description_preview, p.name as project_name, p.repository_url, u.username as assignee_username, c.commit_sha, c.author_login, " +
                 "exists(select 1 from audit_event a where a.action = 'ISSUE_ASSIGNEE_FALLBACK' and a.target_type = 'REVIEWED_COMMIT' and a.target_id = c.id) as fallback_assignment " +
-                "from review_issue i join project p on p.id = i.project_id join app_user u on u.id = i.assignee_id join reviewed_commit c on c.id = i.reviewed_commit_id" +
-                filter + " order by i.id desc limit ? offset ?", args.toArray());
+                "from (select i.id from review_issue i" + filter + " order by i.id desc limit ? offset ?) selected " +
+                "join review_issue i on i.id = selected.id join project p on p.id = i.project_id join app_user u on u.id = i.assignee_id join reviewed_commit c on c.id = i.reviewed_commit_id " +
+                "order by i.id desc", args.toArray());
         for (var issue : issues) {
             issue.put("commit_url", GitCommitLink.from((String) issue.remove("repository_url"), (String) issue.get("commit_sha")));
         }

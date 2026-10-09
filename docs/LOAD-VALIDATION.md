@@ -135,3 +135,42 @@ try {
 기존 `lower(git_username) = ?`는 세 사례 모두 Seq Scan·shared hit518버퍼였으며, 변경 SQL은 고유 인덱스 Index Scan·2~3버퍼였다. 존재하는 활성 계정/비활성 계정/없는 계정의 결과는 양쪽에서 각각1/0/0행으로 같았다. 단일 실행 관찰 시간은 기존 약2.1~2.3ms, 변경 약0.028~0.031ms다. 캐시·합성 자료·로컬 단일 조회의 관찰값이며 운영 지연이나 처리량 보장은 아니다.
 
 시험 전후 원본14개 테이블 지문을 비교하고 직접 만든 schema만 제거한 뒤 검증 PostgreSQL을 종료했다. 근거는 Git 제외 `.local/session15-assignment-plan.json`이다. 이 시험은 실제 Git 수집·AI 추론·프로젝트 동시 부하를 포함하지 않는다. 입력 정규화와 비활성/승인 대기/반려 계정의 배정 제외는 별도 애플리케이션 테스트에서 확인한다.
+
+## 누적 이슈·감사·운영 목록의 깊은 페이지
+
+2026-10-09 WSL PostgreSQL17에서 `PageLoadPostgresTest`를 수정 전후 각각 선택 실행했다. 새 UUID schema에 이슈100,000건·감사100,000건·프로젝트3,000개·커밋3,000개·실행27,000건·요청3,000건을 만들고 실제 `IssueService`, 메서드 보안이 적용된 `AuditController`, `OperationsService`를 호출했다. Git·AI 호출은 없다. JVM 최대 heap512MiB로 순차 실행했다.
+
+관리자/담당자의 전체·OPEN 이슈, 감사, 운영7필터의 첫·중간·마지막·범위 밖·최대 페이지 등60개 조합에서 반환 ID·순서·중복·다음 페이지·권한·배정 근거를 검증했다. 최신 실행은 시각이 아닌ID로 선택하고, 운영 경계 시각과 실행 없는 프로젝트도 포함한다. 실제 호출의 SQL과 bind를 메모리에서 캡처해 `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)`으로 관찰한다. 보고서는 고정 사례명·집계·허용된 계획 속성만 저장하며 SQL·schema·계정·주소·예외 원문은 제외한다.
+
+깊은 이슈·감사 페이지에서 OFFSET 이전 행에도 관련 정보 조인이 반복되는 것을 확인했다. 권한·상태 조건과 ID 내림차순으로 페이지 ID를 먼저 고른 뒤, 이슈는 최대26건·감사는 최대51건의 상세 정보를 결합하도록 수정했다. 단일 SQL의 조회 일관성, 기존25/50건 표시와 다음 페이지 확인용1건, ID순서·권한·필터를 유지한다. 새 인덱스나 migration은 없다.
+
+| 관측 사례(페이지는0부터 시작) | 수정 전 SQL 시간 | 수정 후 SQL 시간 | 관련 조인 처리 행 |
+|---|---:|---:|---|
+| 관리자 전체 이슈 page3999 | 608.168ms | 104.492ms | 100,000 → 25 |
+| 담당자 전체 이슈 page1999 | 149.951ms | 57.578ms | 페이지 ID를 먼저 선택 |
+| 관리자 감사 page1999 | 69.123ms | 66.140ms | 100,000 → 50 |
+
+두 실행 모두60개 의미 검증과 소유schema 제거·원본14테이블 보존·소유PG 정리를 통과했다. 증거는 Git 제외 `.local/session16-page-baseline.json`과 `.local/session16-page-optimized.json`이다. 수정하지 않은 운영 목록도 같은 사례에서 결과를 확인했다.
+
+이 값은 seed·건수 확인·ANALYZE 후 순차 실행한 단회 관찰이며 캐시 상태는 통제하지 않았다. 실제 계획에는 shared read와 heap fetch가 있어 완전한 warm-cache로 볼 수 없다. 초기 두 보고서의 scope 문자열에 쓰인 warm-cache 표현은 이 한계로 정정하며, 테스트의 후속 보고서는 캐시 비통제를 명시한다. 감사의 시간 차이는 작고 첫 페이지는 추가 ID 조회 비용이 생긴다. 깊은 페이지에서 앞선 ID를 읽는 OFFSET 비용도 남는다. HTTP/JSP 렌더·동시 쓰기·장기 용량·SLA를 측정한 시험이 아니며 시간으로 합격 여부를 결정하지 않는다.
+
+### 선택 실행
+
+기본 전체 시험에서는 건너뛴다. `RUN_PAGE_LOAD_SMOKE=true`와 명시적 loopback `reviewer_integration` URL이 함께 있어야 실행된다. Windows의 기존 격리 PG 도구를 사용할 때 저장소 루트에서 다음과 같이 실행한다. 다른 검증과 동시에 실행하지 않는다.
+
+```powershell
+$pageSmokeFlags = @('RUN_PAGE_LOAD_SMOKE', 'RUN_OPERATIONS_LOAD_SMOKE', 'RUN_REVIEW_LOAD_SMOKE',
+    'RUN_GIT_LOAD_SMOKE', 'RUN_GITHUB_SMOKE', 'RUN_GITLAB_SMOKE', 'RUN_OLLAMA_SMOKE', 'RUN_AI_EVALUATION')
+$savedPageFlags = @{}
+foreach ($name in $pageSmokeFlags) { $savedPageFlags[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
+try {
+    foreach ($name in $pageSmokeFlags) { [Environment]::SetEnvironmentVariable($name, 'false', 'Process') }
+    $env:RUN_PAGE_LOAD_SMOKE = 'true'
+    & .\scripts\test-postgres.ps1
+    if ($LASTEXITCODE -ne 0) { throw 'Local page observation failed' }
+} finally {
+    foreach ($name in $pageSmokeFlags) { [Environment]::SetEnvironmentVariable($name, $savedPageFlags[$name], 'Process') }
+}
+```
+
+Linux 부모 도구는 상위 환경의 선택 플래그를 전달하지 않는다. 이번 WSL 실행은 부모 `TestRun`의 기동·소유권·정리 경계 안에서 이 플래그만 명시하고 `-Dtest=PageLoadPostgresTest test`를 실행했다. URL 이름만으로 DB 소유권이 증명되지는 않으므로 임의의 기존 DB를 이 이름으로 연결하지 않는다. 결과 `source/target/page-load-result.json`은 실행 시작 시 RUNNING으로 바꾸고, 실패·정리 실패는 FAILED로 남긴다.

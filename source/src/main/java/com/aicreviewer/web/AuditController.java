@@ -19,10 +19,12 @@ public class AuditController {
     @PreAuthorize("hasRole('ADMIN')")
     public String audit(@RequestParam(defaultValue = "0") int page, Model model) {
         if (page < 0 || page > 10000) throw new ResponseStatusException(HttpStatus.BAD_REQUEST);
+        // Resolve only this page's event text and actors, even at a deep offset.
         var events = jdbc.queryForList("""
                 SELECT a.id, a.action, a.target_type, a.target_id, a.detail, a.created_at, u.username
-                FROM audit_event a LEFT JOIN app_user u ON u.id = a.actor_id
-                ORDER BY a.id DESC LIMIT 51 OFFSET ?
+                FROM (SELECT id FROM audit_event ORDER BY id DESC LIMIT 51 OFFSET ?) selected
+                JOIN audit_event a ON a.id = selected.id LEFT JOIN app_user u ON u.id = a.actor_id
+                ORDER BY a.id DESC
                 """, page * 50);
         model.addAttribute("events", events.size() > 50 ? events.subList(0, 50) : events);
         model.addAttribute("hasNext", events.size() > 50 && page < 10000);
