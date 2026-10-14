@@ -1,10 +1,10 @@
 # 현재 작업 상태
 
 - 작업: 실사용 AI 소스코드 리뷰 시스템. **개발 중, 릴리스 완료 아님.**
-- 이번 회차: 2026-10-15 00:37 KST 시작, 최대02:37 KST까지 진행한다.
+- 이번 회차: 2026-10-15 00:37 KST 시작,01:08 KST 기준 구현·검증·후보 포장·소유자원 정리를 마쳤다. 최대2시간 제한 이내다.
 - 기록 기준: `main` / 시작 `d029c7c`. 시작 작업 트리는 깨끗하고 로컬 origin/main 기준3개 커밋이 미푸시였다. 기존 이력을 전송하지 않으며 이번에도 로컬 커밋만 진행한다.
 - 이번 완료 조건: AI 모델 선정 보류를 유지하고 현재PC·WSL의 격리 자료로 DB COMMIT 성공 후 완료 응답 유실의 저장확정/재개·중복방지 경계를 검증한다. 필요한 최소 구현·회귀와 실제 WAR/PG 검증, 소유자원 정리·재개 기록을 남긴다.
-- 이번 단계: 실제 COMMIT 후 예외 회귀3개는 `535aa0b`로 로컬 커밋했다. 전체Java/필수PG·최종Python342건 양OS·실제wire ACK유실/동일WAR재개·관측자행잠금중SIGTERM정리를 통과했다. JDBC startup와psql 식별자 시험 설정 차이를 보완했으며 초기FAIL도 보존했다. 제품 변경은 없고 후보 포장·종합정리/재개 기록을 진행 중이다. JVM최대heap384MiB, 모델호출/다운로드·푸시·운영배포는 없다.
+- 이번 단계: COMMIT 후 오류3회귀 `535aa0b`와 실제 ACK 유실 검증 `881dd1d`를 로컬 커밋했다. 전체 Java/필수PG·최종 Python342건 양OS·실제 wire ACK 유실/동일WAR 재개·관측자 행 잠금 중 SIGTERM 정리를 통과했다. 시험 설정 차이를 보완했으며 초기 FAIL도 보존했다. 동일28파일 후보2개·체크섬·종합정리를 확인했다. JVM최대heap384MiB, 모델 호출/다운로드·푸시·운영 배포는 없다.
 - 확정 요구사항: `docs/REQUIREMENTS.md`. 내부 이슈함 우선, 최초 전체 이력, Java25/Spring/Maven/JSP/PostgreSQL 유지.
 - 재개 시 이 문서와 실제 Git 상태를 대조하고 아래 다음 작업부터 진행한다. 모든 릴리스 항목 검증 전 완료라고 보고하지 않는다.
 
@@ -60,6 +60,8 @@
 - WSL 실제 wire ACK 유실은44.099초 PASS. 특정 B 저장 backend의 COMMIT/ReadyForQuery18바이트를 폐기했다. 작업자 실패는10.194초 후 관측했고, 그 전에 직접 DB에서 A/B 리뷰·이슈2건/첫 실행 저장2건·원 요청/claim/cursor null을 확인했다. 같은 WAR·DB 프로세스에서 원 요청의 새 claim/run·attempt2, A/B 상세/diff/AI 각1회·저장 행/시각/배정 감사 보존, FAILED(2)/SUCCEEDED(0)·이슈2건·진행 기준B와 준비200을 확인했다. SQL 시각 조정·실제 Git/AI 호출은 없다. proxy accepted4/peak3/연결 오류0, WAR/관측자/프록시/DB세션/schema/work·부모PG 정리와 원본14테이블 보존 PASS. 근거는 `.local/session18-ack-trial3.json`이다.
 - 실제 관측자가 프로젝트 행 잠금을 가진 idle-in-transaction 상태와 A 저장을 확인한 뒤 SIGTERM을 보냈다. 자식 FAIL/종료130/KeyboardInterrupt·ACK 주입0을 유지하면서 observer ROLLBACK/프로세스·WAR/프록시/세션/schema/work·부모PG 정리와 원본14테이블 보존 PASS,12.196초. 이 시험은 local wrapper가 실제 lock 획득 후 최대20초 대기를 추가한 취소 경계이며 정상 복구 PASS와 구분한다. 근거는 `.local/session18-ack-cancel-trial2.json`이다. 최초 취소 wrapper 진입은 SafetyError로 실행 전 중단되어 FAIL로 보존했다.
 - 최초 actual trial1은 JDBC가 ApplicationName을 나중 SET으로 보내 startup scope를 통과하지 못했고, trial2는 PGOPTIONS와 psql 연결 이름 차이로 observer identity를 통과하지 못했다. PG17 전용 opt-in에 assumeMinServerVersion17·관측자 PGAPPNAME을 명시해 검사를 유지했다. 두 FAIL 보고서를 보존했고 trial1의 빈 schema/work는 정확한 이름·owner/marker/OID·세션0/객체0·원본 지문 확인 후 별도로 제거했다(`.local/session18-trial1-cleanup.json`). trial2는 자동 정리됐다. 제품 결함은 발견하지 못했다.
+- `881dd1dc7bbd7fcd3566286e8790b023907fcfb6` 자료로 동일28파일 후보2개와 manifest·내부/외부 전체 체크섬·고정 메타데이터·원본 WAR를 확인했다. 아카이브 SHA256 `f710d0ebf6f7c2ebf865a6609132c9065a7a130454e35b55bf427e6c7673106b`,38,081,085바이트. Linux `.local/session18-candidate-{first,second}`와 Windows `.local/session18-candidate`에 보존했고 설치/릴리스 승인은 없다. 코어 소스311파일의 Windows→Linux 해시도 일치했다. 이 결과 문단은 후보 생성 후 작성되어 해당 후보에는 포함되지 않는다.
+- 종합 `.local/session18-validation-summary.json` PASS. Windows·WSL의26포트 연결 불가, 부모 PG PID/lock·소유 WAR 부재, 기존 서비스3개의 inactive/disabled 유지·소유 keeper의 PID/시작시각/명령/UID 대조 후 종료를 확인했다. Windows 포트 근거는 `.local/session18-windows-ports.json`이다. 기존 Windows Ollama/개발PG·운영 설정은 변경하지 않았다.
 
 ### 이전 회차: 외부 오류 상태·DB 연결 분리
 
@@ -258,5 +260,5 @@
 - 운영 대상은 사용자 답변으로 Linux 서버, 도커 미사용으로 확정했다(2026-09-26). 사용자 요청에 따른 전용 WSL2 Ubuntu 로컬 Linux 환경 구축과 설치/복구 검증은 2026-10-02 수행했다. 실제 서버 배포는 별도 승인 대상이다.
 - origin: jang-sw/code-reviewer_by-codex. main 직접 푸시 별도 승인 없음 → 로컬 커밋만, 푸시/배포 없음.
 - `.local/pg-test`: Windows 개발검증 전용127.0.0.1:55432. Windows `.local/pg-validation` 및 staged snapshot의pg-validation:55439. Linux PGDATA는 Linux 홈의 별도 checkout에만 만들고 Windows PGDATA를 공유하지 않는다.
-- `.local`은 Git 제외. 이번 Linux 부모 WAR/PG·프록시와 새 UUID schema를 정리하고80/443/8080~8082/18080/18081/18089~18101/55439/55449/14000/14001 총24개 포트 연결 불가·검증 PID/lock 부재를 확인했다. 이번에는 Windowsbridge를시작하지않았다. 이전 앱·Nginx·서비스PG는 계속inactive/disabled이며 서비스PG manual 설정을 유지한다. 원본 합성 DB·root 전용 설정/백업·후보·시험 기록은 전용 WSL에 보존한다. 소유keeper도PID/시작시각·명령·UID대조후종료확인했다(`.local/session17-validation-summary.json`). 사용자Windows Ollama/55432 PG를변경하지않았고 Windows재부팅은수행하지않았다.
+- `.local`은 Git 제외. 이번 Linux 부모 WAR/PG·관측자·프록시와 새 UUID schema를 정리하고80/443/8080~8082/18080/18081/18089~18103/55439/55449/14000/14001 총26개 포트 연결 불가·검증 PID/lock 부재를 Windows·WSL에서 확인했다. 이번에는 Windows bridge를 시작하지 않았다. 기존 앱·Nginx·서비스PG는 계속 inactive/disabled이며 서비스PG manual 설정을 유지한다. 원본 합성 DB·root 전용 설정/백업·후보·시험 기록은 전용 WSL에 보존한다. 소유 keeper도 PID/시작시각·명령·UID 대조 후 종료했다(`.local/session18-validation-summary.json`). 사용자 Windows Ollama/55432 PG를 변경하지 않았고 Windows 재부팅은 수행하지 않았다.
 - 런타임 Git 수집은 매번 pinned 전체 이력을 재검증, 기본1000페이지/metadata32MiB/저장SHA131072개 안전 한도. 제한을 자동 확장/절삭하지 않는다.
