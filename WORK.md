@@ -1,10 +1,10 @@
 # 현재 작업 상태
 
 - 작업: 실사용 AI 소스코드 리뷰 시스템. **개발 중, 릴리스 완료 아님.**
-- 이번 회차: 2026-10-15 01:14 KST 시작, 최대03:14 KST까지 진행한다.
+- 이번 회차: 2026-10-15 01:14 KST 시작,02:30 KST 기준 구현·검증·후보 포장·소유자원 정리를 마쳤다. 최대2시간 제한 이내다.
 - 기록 기준: `main` / 시작 `14d95ee`. 시작 작업 트리는 깨끗하고 로컬 origin/main 기준6개 커밋이 미푸시였다. 기존 이력을 전송하지 않으며 이번에도 로컬 커밋만 진행한다.
 - 이번 완료 조건: 모델 선정 보류와 현재PC 자원 범위를 유지하며 기본30분 유휴 세션 만료·옛 양식 저장 차단·재로그인 후 기존 업무 보존을 실제 WAR/WSL에서 검증한다. 필요한 최소 수정·회귀·안전 검증 도구와 소유자원 정리·재개 기록을 남긴다.
-- 이번 단계: 기본30분 유휴 만료·옛 양식 거절·재로그인/업무 보존의 실제 WAR 시험과 SIGTERM 취소 정리를 통과했다. 전체 Java1252건 중1241통과/11skip·필수PG gate, Python361건 Windows356통과/5skip·Linux351통과/10skip다. 첫 시도는 WSL 환경 중단으로 FAIL/미완료로 보존하고 명시적PG 복구·잔여 시험 자원 정리를 확인했다. 중단 이전 지문은 없어 그 구간의 보존 검증은 미확인이다. 결과 문서·후보 포장·최종 정리/커밋을 진행 중이다. 모델 호출/다운로드·푸시·운영 배포는 없다.
+- 이번 단계: 기본30분 유휴 만료·옛 양식 거절·재로그인/업무 보존과 SIGTERM 취소 정리를 통과하고 검증 도구를 `80dd9c1`로 로컬 커밋했다. 전체 Java1252건 중1241통과/11skip·필수PG gate, Python361건 Windows356통과/5skip·Linux351통과/10skip다. 첫 시도는 WSL 환경 중단으로 FAIL/미완료로 보존하고 명시적PG 복구·잔여 시험 자원 정리를 확인했다. 중단 이전 지문은 없어 그 구간의 보존 검증은 미확인이다. 동일28파일 후보2개·체크섬·소유자원 정리와 재개 기록을 마쳤다. 모델 호출/다운로드·푸시·운영 배포는 없다.
 - 확정 요구사항: `docs/REQUIREMENTS.md`. 내부 이슈함 우선, 최초 전체 이력, Java25/Spring/Maven/JSP/PostgreSQL 유지.
 - 재개 시 이 문서와 실제 Git 상태를 대조하고 아래 다음 작업부터 진행한다. 모든 릴리스 항목 검증 전 완료라고 보고하지 않는다.
 
@@ -59,6 +59,8 @@
 - 공개USER 가입·관리자 승인·사용자 프로젝트 신청/관리자 승인·사용자 리뷰로 배정 이슈2건을 만들고 서로 다른 세 세션을 확인했다. 두 세션은1,810.102초 요청0회, 별도 대조 세션은1,740.506초에 인증 유지, 업무12테이블/DB32회 관측을 통과했다. 만료 첫 POST403/no-store/고정 복구 링크와 별도GET 로그인302, 재로그인 후 옛 토큰403·새 양식만 OPEN→RESOLVED/정확1감사, 기존 행·담당자/원 요청·기존 감사 보존을 확인했다. 같은 WAR·DB, AI A/B 각1회이며 소유 WAR/fixture/DB세션/schema/work·부모PG 정리와 원본14테이블 보존 PASS다. 실제 브라우저 전체 모바일/키보드·운영 TLS/세션 용량 인수는 별도다.
 - 유휴 진입과 이미 저장된 이슈2건을 관측한 뒤 SIGTERM을 보낸 별도 시험은11.649초 PASS. 자식의 종료130/FAIL·KeyboardInterrupt를 유지하면서 모든 소유 자원과 부모PG를 정리하고 원본14테이블/DB동일성을 확인했다. `.local/session19-session-cancel.json`이며 정상 만료 합격과 구분한다. 유휴 자원25회 관측은 최고RSS501.508MiB·최소 WSL여유6,640.559MiB·최대65thread/25FD다. `.local/session19-resource-summary.json`은 유휴 관찰값이며 부하/운영 용량 판정이 아니다.
 - 첫 Java1252건/필수PG 검증 후 실제 유휴 대기 중 WSL이 종료됐고 정상 최종 보고서는 없다. Windows Update의 WSL3.0.3 설치/서비스 이벤트와 종료 시각이 일치했으며 원인을 단정하지 않았다. 정확한 PID/시작 시각·로그·소유자·현재 부팅/프로세스/포트를 대조하고 PID사본·XML102개 manifest·로그해시를 보존한 뒤 해당 stale PID/빈 잠금만 회수했다. 기존 보호 검사로PG automatic recovery/redo/ready와 기존 시험 요청/리뷰/이슈를 확인해 그 schema/work만 정리했다. 원본14테이블 보존 범위는 복구 직후→정리 후이며 중단 전 지문은 없어 미확인이다. `.local/session19-interrupted-recovery.json`과 `docs/WSL-VALIDATION.md`를 따른다. 재실행만 정상 만료 PASS로 세며 제품 런타임 결함은 발견하지 못했다.
+- `80dd9c1788bab3b8fc465eb493071bd91a75f570` 자료와 검증 WAR의28파일 후보2개는 압축 바이트·manifest·내부/외부 전체 체크섬·고정 메타데이터·원본WAR 일치를 통과했다. 아카이브SHA256 `8fbf4622019ea51284ed33b704b9012f353a84febaaa8fa1e051c1b3daecdc70`,38,083,524바이트. Linux `.local/session19-candidate-{first,second}`와 Windows `.local/session19-candidate`에 보존했고 설치하지 않았으며 `releaseApproved=false`다. 소스 식별자는 운영자 제공 기록이고 WAR 출처 증명과 구분한다. 코어313파일의 양OS 해시 동기화도 통과했으며 이 결과 문단은 후보 생성 후 작성됐다.
+- 양OS `.local/session19-validation-summary.json`에 Java/Python·실제 유휴/취소·환경 복구·유휴 자원 관측·후보·정리를 모았다. Linux28포트 연결 불가·검증PG PID/lock 부재·소유WAR/keeper 종료·기존 서비스3개inactive/disabled를 확인했다. keeper2는 PID/시작 시각/UID/명령을 대조한 뒤 종료했다. Windows28포트의 짧은 probe에서10061 즉시 거절을 기대한 첫 검사는10035로 FAIL을 보존했다. 그 코드만으로 닫힘을 판정하지 않고, 독립 OS TCP 리스너 조회의 전/후0건과 접속 성공0회·후보 해시를 함께 확인했다(`.local/session19-windows-cleanup.json`, 초기 `.local/session19-windows-probe-initial.json`). 독립 staged전체 검토·공백/비밀정보 검사도 통과했고 실제 원격CI는 미실행이다.
 
 ### 이전 회차: COMMIT 후 호출자 오류
 
@@ -268,5 +270,5 @@
 - 운영 대상은 사용자 답변으로 Linux 서버, 도커 미사용으로 확정했다(2026-09-26). 사용자 요청에 따른 전용 WSL2 Ubuntu 로컬 Linux 환경 구축과 설치/복구 검증은 2026-10-02 수행했다. 실제 서버 배포는 별도 승인 대상이다.
 - origin: jang-sw/code-reviewer_by-codex. main 직접 푸시 별도 승인 없음 → 로컬 커밋만, 푸시/배포 없음.
 - `.local/pg-test`: Windows 개발검증 전용127.0.0.1:55432. Windows `.local/pg-validation` 및 staged snapshot의pg-validation:55439. Linux PGDATA는 Linux 홈의 별도 checkout에만 만들고 Windows PGDATA를 공유하지 않는다.
-- `.local`은 Git 제외. 이번 Linux 부모 WAR/PG·관측자·프록시와 새 UUID schema를 정리하고80/443/8080~8082/18080/18081/18089~18103/55439/55449/14000/14001 총26개 포트 연결 불가·검증 PID/lock 부재를 Windows·WSL에서 확인했다. 이번에는 Windows bridge를 시작하지 않았다. 기존 앱·Nginx·서비스PG는 계속 inactive/disabled이며 서비스PG manual 설정을 유지한다. 원본 합성 DB·root 전용 설정/백업·후보·시험 기록은 전용 WSL에 보존한다. 소유 keeper도 PID/시작시각·명령·UID 대조 후 종료했다(`.local/session18-validation-summary.json`). 사용자 Windows Ollama/55432 PG를 변경하지 않았고 Windows 재부팅은 수행하지 않았다.
+- `.local`은 Git 제외. 이번 Linux 시험 WAR/fixture/새 UUID schema와 부모PG를 정리하고80/443/8080~8082/18080/18081/18089~18105/55439/55449/14000/14001 총28개 포트 연결 불가·검증 PID/lock 부재를 확인했다. Windows는 해당28포트 리스너 전/후0건·접속 성공0회로 별도 확인했다. 이번에는 Windows bridge를 시작하지 않았다. 기존 앱·Nginx·서비스PG는 inactive/disabled이며 서비스PG manual 설정을 유지한다. 기존 합성DB·root 전용 설정/백업·후보·시험 기록은 삭제하지 않았고, 중단 전 지문 부재의 한계는 위 환경 복구 기록을 따른다. keeper2도 PID/시작시각·명령·UID 대조 후 종료했다(`.local/session19-validation-summary.json`). 사용자 Windows Ollama/55432 PG를 제어하지 않았고 Windows 재부팅은 수행하지 않았다.
 - 런타임 Git 수집은 매번 pinned 전체 이력을 재검증, 기본1000페이지/metadata32MiB/저장SHA131072개 안전 한도. 제한을 자동 확장/절삭하지 않는다.
