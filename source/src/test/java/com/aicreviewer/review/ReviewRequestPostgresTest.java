@@ -8,6 +8,8 @@ import com.aicreviewer.git.GitRepositoryClient;
 import com.aicreviewer.git.GitReviewBatch;
 import com.aicreviewer.git.RateLimitedException;
 import com.aicreviewer.issue.IssueService;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Timestamp;
@@ -24,6 +26,8 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.IntConsumer;
 import javax.sql.DataSource;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.AfterEach;
@@ -38,6 +42,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.AbstractDataSource;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import org.springframework.transaction.TransactionSystemException;
 import org.springframework.transaction.support.TransactionTemplate;
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -433,6 +438,190 @@ class ReviewRequestPostgresTest {
         verify(git).batch(any(), any(), isNull(), eq(Set.of(FIRST.sha())), anyInt());
     }
 
+    @Test void lostClaimCommitAcknowledgementKeepsCommittedClaimAndRecoversTheSameRequest() {
+        requests.enqueueManual(projectId, "owner", NOW);
+        var original = requests.find(projectId).orElseThrow();
+        stubBatch(List.of(FIRST), FIRST.sha());
+        var worker = commitFailureWorker();
+        var committed = new AtomicReference<StoredState>();
+        // The actual advisory lease uses the original source; only claim starts a
+        // wrapped transaction here. No transaction ordinal selects the injection.
+        worker.source().arm(committingPid -> {
+            var state = observeCommittedState(committingPid);
+            assertSameReception(original, state.request());
+            assertThat(state.request().state()).isEqualTo("RUNNING");
+            assertThat(state.request().attemptCount()).isEqualTo(1);
+            assertThat(state.claimToken()).isNotBlank();
+            assertThat(state.runs()).singleElement().satisfies(run -> {
+                assertThat(run.get("id")).isEqualTo(state.request().runId());
+                assertThat(run.get("status")).isEqualTo("RUNNING");
+                assertThat(run.get("progress_stage")).isEqualTo("PREPARING");
+                assertThat(run.get("reviewed_commits")).isEqualTo(0);
+                assertThat(run.get("last_saved_at")).isNull();
+                assertThat(run.get("finished_at")).isNull();
+            });
+            assertThat(state.commits()).isEmpty();
+            assertThat(state.issues()).isEmpty();
+            assertThat(state.cursor()).isNull();
+            assertThat(state.audits()).extracting(row -> row.get("action"))
+                    .containsExactly("REVIEW_REQUESTED", "REVIEW_STARTED");
+            verifyNoInteractions(git, ai);
+            committed.set(state);
+        });
+
+        assertLostCommitAcknowledgement(() -> worker.coordinator().processRequest(original));
+        assertThat(worker.source().injected.get()).isEqualTo(1);
+        var before = committed.get();
+        assertThat(before).isNotNull();
+        assertThat(storedState()).isEqualTo(before);
+
+        makeRetryDue();
+        assertThat(coordinator(newRequests(), new PostgresProjectReviewLock(source)).processRequest(original))
+                .isEqualTo(ReviewCoordinator.Outcome.SUCCEEDED);
+        var recovered = storedState();
+        assertRecoveredClaim(original, before, recovered);
+        assertThat(recovered.runs()).extracting(run -> run.get("reviewed_commits")).containsExactly(0, 1);
+        assertThat(recovered.runs().getFirst().get("started_at")).isEqualTo(before.runs().getFirst().get("started_at"));
+        assertThat(recovered.commits()).hasSize(1);
+        assertThat(recovered.issues()).hasSize(1);
+        assertThat(recovered.cursor()).isEqualTo(FIRST.sha());
+        assertThat(recovered.audits()).containsAll(before.audits());
+        assertThat(recovered.audits()).extracting(row -> row.get("action"))
+                .containsExactly("REVIEW_REQUESTED", "REVIEW_STARTED", "REVIEW_STARTED", "ISSUES_ASSIGNED", "REVIEW_SUCCEEDED");
+        verify(ai).review(FIRST);
+        verifyNoMoreInteractions(ai);
+        verify(git).batch(any(), any(), isNull(), eq(Set.of()), anyInt());
+        verifyNoMoreInteractions(git);
+        assertObsoleteClaimCannotAcknowledge(before, recovered);
+    }
+
+    @Test void lostIndividualCommitAcknowledgementReusesItsRowsAndDoesNotCallAiAgain() {
+        requests.enqueueManual(projectId, "owner", NOW);
+        var original = requests.find(projectId).orElseThrow();
+        when(git.batch(any(), any(), any(), anySet(), anyInt())).thenAnswer(invocation -> {
+            Set<String> stored = invocation.getArgument(3);
+            return new GitReviewBatch(stored.isEmpty() ? List.of(FIRST, SECOND) : List.of(SECOND), SECOND.sha());
+        });
+        var worker = commitFailureWorker();
+        var committed = new AtomicReference<StoredState>();
+        doAnswer(invocation -> {
+            Object persisted = invocation.callRealMethod();
+            assertThat(persisted).isEqualTo(true);
+            // Arm after the real insert/issue/audit/progress writes, inside their
+            // transaction, so unrelated guard/progress commits cannot trigger it.
+            worker.source().arm(committingPid -> {
+                var state = observeCommittedState(committingPid);
+                assertSameReception(original, state.request());
+                assertThat(state.request().state()).isEqualTo("RUNNING");
+                assertThat(state.request().attemptCount()).isEqualTo(1);
+                assertThat(state.commits()).singleElement().satisfies(row -> {
+                    assertThat(row.get("commit_sha")).isEqualTo(FIRST.sha());
+                    assertThat(row.get("reviewed_at")).isNotNull();
+                });
+                assertThat(state.issues()).singleElement().satisfies(row -> {
+                    assertThat(row.get("reviewed_commit_id")).isEqualTo(state.commits().getFirst().get("id"));
+                    assertThat(row.get("assignee_id")).isEqualTo(1L);
+                    assertThat(row.get("status")).isEqualTo("OPEN");
+                });
+                assertThat(state.runs()).singleElement().satisfies(run -> {
+                    assertThat(run.get("status")).isEqualTo("RUNNING");
+                    assertThat(run.get("progress_stage")).isEqualTo("REVIEWING");
+                    assertThat(run.get("reviewed_commits")).isEqualTo(1);
+                    assertThat(run.get("last_saved_at")).isEqualTo(state.commits().getFirst().get("reviewed_at"));
+                    assertThat(run.get("progress_updated_at")).isEqualTo(run.get("last_saved_at"));
+                });
+                assertThat(state.cursor()).isNull();
+                assertThat(state.audits()).extracting(row -> row.get("action"))
+                        .containsExactly("REVIEW_REQUESTED", "REVIEW_STARTED", "ISSUES_ASSIGNED");
+                verify(ai).review(FIRST);
+                verify(ai, never()).review(SECOND);
+                committed.set(state);
+            });
+            return persisted;
+        }).when(worker.reviews()).persistCommit(anyLong(), any(), any(), eq(FIRST), any(), any());
+
+        assertLostCommitAcknowledgement(() -> worker.coordinator().processRequest(original));
+        assertThat(worker.source().injected.get()).isEqualTo(1);
+        var before = committed.get();
+        assertThat(before).isNotNull();
+        assertThat(storedState()).isEqualTo(before);
+
+        makeRetryDue();
+        assertThat(coordinator(newRequests(), new PostgresProjectReviewLock(source)).processRequest(original))
+                .isEqualTo(ReviewCoordinator.Outcome.SUCCEEDED);
+        var recovered = storedState();
+        assertRecoveredClaim(original, before, recovered);
+        // Full row equality covers IDs, content, assignment and original timestamps.
+        assertThat(recovered.commits()).hasSize(2).containsAll(before.commits());
+        assertThat(recovered.issues()).hasSize(2).containsAll(before.issues());
+        assertThat(recovered.audits()).containsAll(before.audits());
+        assertThat(recovered.runs()).extracting(run -> run.get("reviewed_commits")).containsExactly(1, 1);
+        assertThat(recovered.runs().getFirst().get("started_at")).isEqualTo(before.runs().getFirst().get("started_at"));
+        assertThat(recovered.runs().getFirst().get("last_saved_at")).isEqualTo(before.runs().getFirst().get("last_saved_at"));
+        assertThat(recovered.runs().getFirst().get("progress_updated_at")).isEqualTo(before.runs().getFirst().get("progress_updated_at"));
+        assertThat(recovered.cursor()).isEqualTo(SECOND.sha());
+        assertThat(recovered.audits()).extracting(row -> row.get("action"))
+                .containsExactly("REVIEW_REQUESTED", "REVIEW_STARTED", "ISSUES_ASSIGNED", "REVIEW_STARTED", "ISSUES_ASSIGNED", "REVIEW_SUCCEEDED");
+        verify(ai).review(FIRST);
+        verify(ai).review(SECOND);
+        verifyNoMoreInteractions(ai);
+        verify(git).batch(any(), any(), isNull(), eq(Set.of()), anyInt());
+        verify(git).batch(any(), any(), isNull(), eq(Set.of(FIRST.sha())), anyInt());
+        verifyNoMoreInteractions(git);
+        assertObsoleteClaimCannotAcknowledge(before, recovered);
+    }
+
+    @Test void lostFinalCommitAcknowledgementKeepsTerminalSuccessAndRejectsReplay() {
+        requests.enqueueManual(projectId, "owner", NOW);
+        var original = requests.find(projectId).orElseThrow();
+        stubBatch(List.of(FIRST, SECOND), SECOND.sha());
+        var worker = commitFailureWorker();
+        var committed = new AtomicReference<StoredState>();
+        doAnswer(invocation -> {
+            invocation.callRealMethod();
+            worker.source().arm(committingPid -> {
+                var state = observeCommittedState(committingPid);
+                assertSameReception(original, state.request());
+                assertThat(state.request().state()).isEqualTo("SUCCEEDED");
+                assertThat(state.request().resultCode()).isEqualTo("BATCH_COMPLETED");
+                assertThat(state.request().attemptCount()).isEqualTo(1);
+                assertThat(state.request().finishedAt()).isNotNull();
+                assertThat(state.runs()).singleElement().satisfies(run -> {
+                    assertThat(run.get("status")).isEqualTo("SUCCEEDED");
+                    assertThat(run.get("progress_stage")).isEqualTo("FINALIZING");
+                    assertThat(run.get("reviewed_commits")).isEqualTo(2);
+                    assertThat(run.get("last_saved_at")).isNotNull();
+                    assertThat(((Timestamp) run.get("finished_at")).toInstant()).isEqualTo(state.request().finishedAt());
+                    assertThat(run.get("error_message")).isNull();
+                });
+                assertThat(state.commits()).extracting(row -> row.get("commit_sha")).containsExactly(FIRST.sha(), SECOND.sha());
+                assertThat(state.issues()).hasSize(2);
+                assertThat(state.cursor()).isEqualTo(SECOND.sha());
+                assertThat(state.audits()).extracting(row -> row.get("action"))
+                        .containsExactly("REVIEW_REQUESTED", "REVIEW_STARTED", "ISSUES_ASSIGNED", "ISSUES_ASSIGNED", "REVIEW_SUCCEEDED");
+                committed.set(state);
+            });
+            return null;
+        }).when(worker.requests()).complete(any(), any(), any(), any());
+
+        assertLostCommitAcknowledgement(() -> worker.coordinator().processRequest(original));
+        assertThat(worker.source().injected.get()).isEqualTo(1);
+        var before = committed.get();
+        assertThat(before).isNotNull();
+        assertThat(storedState()).isEqualTo(before);
+        var restarted = newRequests();
+        assertThat(restarted.candidates(Instant.now().plusSeconds(86_400), 10)).isEmpty();
+        assertThat(coordinator(restarted, new PostgresProjectReviewLock(source)).processRequest(original))
+                .isEqualTo(ReviewCoordinator.Outcome.SKIPPED);
+        assertThat(storedState()).isEqualTo(before);
+        verify(ai).review(FIRST);
+        verify(ai).review(SECOND);
+        verifyNoMoreInteractions(ai);
+        verify(git).batch(any(), any(), isNull(), eq(Set.of()), anyInt());
+        verifyNoMoreInteractions(git);
+        assertObsoleteClaimCannotAcknowledge(before, before);
+    }
+
     @Test void enqueueDatabaseFailureCannotReportSuccessOrLeavePartialQueueState() {
         jdbc.execute("alter table review_request add constraint queue_fixture_enqueue_failure check(state <> 'QUEUED')");
         try {
@@ -718,6 +907,85 @@ class ReviewRequestPostgresTest {
 
     private ReviewRequestRepository newRequests() { return new ReviewRequestRepository(jdbc, reviews, transactionManager); }
 
+    private CommitFailureWorker commitFailureWorker() {
+        var faultSource = new PostCommitFailureDataSource(source);
+        var faultJdbc = new JdbcTemplate(faultSource);
+        faultJdbc.setQueryTimeout(10);
+        var faultTransactions = new DataSourceTransactionManager(faultSource);
+        faultTransactions.setDefaultTimeout(10);
+        var faultReviews = spy(new ReviewRepository(faultJdbc));
+        var faultRequests = spy(new ReviewRequestRepository(faultJdbc, faultReviews, faultTransactions));
+        var worker = new ReviewCoordinator(faultReviews, new PostgresProjectReviewLock(source),
+                git, ai, faultTransactions, 100, faultRequests);
+        return new CommitFailureWorker(faultSource, faultReviews, faultRequests, worker);
+    }
+
+    private StoredState observeCommittedState(int committingPid) {
+        // This JdbcTemplate uses the original DataSource, not the wrapped resource
+        // bound to Spring's current transaction. Every observation is a separate PG
+        // session and must see committed rows before the synthetic error is thrown.
+        assertThat(jdbc.queryForObject("select pg_backend_pid()", Integer.class)).isNotEqualTo(committingPid);
+        return storedState();
+    }
+
+    private StoredState storedState() {
+        return new StoredState(requests.find(projectId).orElseThrow(),
+                jdbc.queryForObject("select claim_token from review_request where project_id=?", String.class, projectId),
+                jdbc.queryForMap("select * from project where id=?", projectId),
+                jdbc.queryForList("select * from review_run where project_id=? order by id", projectId),
+                jdbc.queryForList("select * from reviewed_commit where project_id=? order by id", projectId),
+                jdbc.queryForList("select * from review_issue where project_id=? order by id", projectId),
+                jdbc.queryForList("select * from audit_event order by id"));
+    }
+
+    private static void assertSameReception(ReviewRequestRepository.Request original, ReviewRequestRepository.Request current) {
+        assertThat(current.projectId()).isEqualTo(original.projectId());
+        assertThat(current.requestId()).isEqualTo(original.requestId());
+        assertThat(current.source()).isEqualTo(original.source());
+        assertThat(current.requestedBy()).isEqualTo(original.requestedBy());
+        assertThat(current.requestedAt()).isEqualTo(original.requestedAt());
+        assertThat(current.rateLimitCount()).isZero();
+        assertThat(current.rateLimitedAt()).isNull();
+    }
+
+    private static void assertRecoveredClaim(ReviewRequestRepository.Request original, StoredState before, StoredState recovered) {
+        assertSameReception(original, recovered.request());
+        assertThat(recovered.request().state()).isEqualTo("SUCCEEDED");
+        assertThat(recovered.request().resultCode()).isEqualTo("BATCH_COMPLETED");
+        assertThat(recovered.request().attemptCount()).isEqualTo(2);
+        assertThat(recovered.request().runId()).isNotEqualTo(before.request().runId());
+        assertThat(recovered.claimToken()).isNotBlank().isNotEqualTo(before.claimToken());
+        assertThat(recovered.runs()).extracting(run -> run.get("status")).containsExactly("FAILED", "SUCCEEDED");
+    }
+
+    private void assertObsoleteClaimCannotAcknowledge(StoredState old, StoredState expected) {
+        var stale = new ReviewRequestRepository.Claim(projectId, old.request().requestId(), old.claimToken(),
+                old.request().runId(), old.request().requestedBy());
+        Boolean acknowledged = transactions.execute(status -> requests.fail(stale, "Synthetic late acknowledgement", Instant.now()));
+        assertThat(acknowledged).isFalse();
+        assertThatThrownBy(() -> transactions.executeWithoutResult(status ->
+                requests.complete(stale, reviews.project(projectId, false), old.cursor(), Instant.now())))
+                .isInstanceOf(ReviewRequestRepository.StaleClaimException.class);
+        assertThat(storedState()).isEqualTo(expected);
+    }
+
+    private static void assertLostCommitAcknowledgement(Runnable work) {
+        Throwable failure = catchThrowable(work::run);
+        assertThat(failure).isInstanceOf(TransactionSystemException.class);
+        assertThat(failure.getCause()).isExactlyInstanceOf(SQLException.class)
+                .hasMessage("Synthetic commit acknowledgement lost");
+        assertThat(((SQLException) failure.getCause()).getSQLState()).isEqualTo("08006");
+    }
+
+    private record CommitFailureWorker(PostCommitFailureDataSource source, ReviewRepository reviews,
+                                       ReviewRequestRepository requests, ReviewCoordinator coordinator) { }
+
+    private record StoredState(ReviewRequestRepository.Request request, String claimToken, Map<String, Object> project,
+                               List<Map<String, Object>> runs, List<Map<String, Object>> commits,
+                               List<Map<String, Object>> issues, List<Map<String, Object>> audits) {
+        String cursor() { return (String) project.get("last_reviewed_sha"); }
+    }
+
     private ReviewCoordinator coordinator(ReviewRequestRepository queue, ProjectReviewLock lock) {
         return new ReviewCoordinator(reviews, lock, git, ai, transactionManager, 100, queue);
     }
@@ -773,6 +1041,65 @@ class ReviewRequestPostgresTest {
         }
         result.setConnectionProperties(properties);
         return result;
+    }
+
+    /**
+     * Driver/application-boundary fault only: PostgreSQL really commits and an
+     * independent observer confirms its effect before commit() reports failure.
+     * This does not drop a wire frame or test a pool's broken-connection handling.
+     */
+    private static final class PostCommitFailureDataSource extends AbstractDataSource {
+        private final DataSource delegate;
+        private final AtomicReference<IntConsumer> observer = new AtomicReference<>();
+        private final AtomicInteger injected = new AtomicInteger();
+
+        private PostCommitFailureDataSource(DataSource delegate) { this.delegate = delegate; }
+
+        private void arm(IntConsumer committedObserver) {
+            if (!observer.compareAndSet(null, committedObserver)) throw new AssertionError("Commit fixture is already armed");
+        }
+
+        @Override public Connection getConnection() throws SQLException {
+            Connection connection = delegate.getConnection();
+            final int pid;
+            try (var statement = connection.createStatement(); var rows = statement.executeQuery("select pg_backend_pid()")) {
+                if (!rows.next()) throw new SQLException("Synthetic session identifier is unavailable");
+                pid = rows.getInt(1);
+            } catch (SQLException | RuntimeException failure) {
+                connection.close();
+                throw failure;
+            }
+            return (Connection) Proxy.newProxyInstance(Connection.class.getClassLoader(), new Class<?>[] {Connection.class},
+                    (proxy, method, arguments) -> {
+                        if (method.getDeclaringClass() == Object.class) {
+                            return switch (method.getName()) {
+                                case "equals" -> proxy == arguments[0];
+                                case "hashCode" -> System.identityHashCode(proxy);
+                                case "toString" -> "PostCommitFailureConnection";
+                                default -> throw new AssertionError("Unexpected connection object method");
+                            };
+                        }
+                        if (method.getName().equals("commit") && method.getParameterCount() == 0) {
+                            connection.commit();
+                            IntConsumer pending = observer.getAndSet(null);
+                            if (pending != null) {
+                                pending.accept(pid);
+                                injected.incrementAndGet();
+                                throw new SQLException("Synthetic commit acknowledgement lost", "08006");
+                            }
+                            return null;
+                        }
+                        try {
+                            return method.invoke(connection, arguments);
+                        } catch (InvocationTargetException failure) {
+                            throw failure.getCause();
+                        }
+                    });
+        }
+
+        @Override public Connection getConnection(String username, String password) throws SQLException {
+            throw new SQLException("Explicit credentials are not accepted by the commit fixture");
+        }
     }
 
     private static final class CapturedSessionDataSource extends AbstractDataSource {
