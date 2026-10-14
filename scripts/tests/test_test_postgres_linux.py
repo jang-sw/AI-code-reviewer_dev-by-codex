@@ -113,6 +113,61 @@ class LinuxPostgresSafetyTest(unittest.TestCase):
                         self.runner.drill('review-network-recovery', ['--port', '18101'])
             report.unlink()
 
+    def test_commit_ack_is_opt_in_with_distinct_port_and_requires_pg_gate(self):
+        base = ['--pg-bin', str(self.pg_bin), '--java', str(self.args.java)]
+        self.assertFalse(MODULE.arguments(base).review_commit_ack)
+        args = MODULE.arguments(base + ['--review-commit-ack', '--review-network-recovery'])
+        self.runner.args = args
+        self.assertEqual(self.runner.selected_ports(), [55439, 18101, 18102])
+        for port in (55439, 18101):
+            args.review_commit_ack_port = port
+            with self.subTest(port=port), self.assertRaises(MODULE.SafetyError):
+                self.runner.selected_ports()
+        args.review_commit_ack_port = 18102
+        events = []
+        with patch.object(self.runner, 'command', side_effect=lambda *a, **k: events.append('build/gate')), \
+                patch.object(self.runner, 'drill', side_effect=lambda *a: events.append(a)):
+            self.runner.verify()
+        self.assertEqual(events, ['build/gate', 'build/gate', ('review-network-recovery', ['--port', '18101']),
+                                  ('review-commit-ack', ['--port', '18102'])])
+        with patch.object(self.runner, 'command', side_effect=[None, MODULE.SafetyError('synthetic missing PG gate')]), \
+                patch.object(self.runner, 'drill') as drill, self.assertRaises(MODULE.SafetyError):
+            self.runner.verify()
+        drill.assert_not_called()
+
+    def test_commit_ack_child_requires_exact_fault_committed_work_recovery_and_cleanup(self):
+        (self.workspace / 'scripts' / 'verify-review-commit-ack.py').write_text('# synthetic fixture', encoding='utf-8')
+        self.runner.logs.mkdir()
+        report = self.runner.logs / ('review-commit-ack-' + self.runner.token + '.json')
+        checks = ('ownedWarsStopped', 'ownedSchemaRemoved', 'ownedWorkRemoved', 'originalTestTablesPreserved',
+                  'ownedProxyStopped', 'ownedObserverStopped', 'ownedDatabaseSessionsGone', 'sameLiveWarRecovered',
+                  'databaseProcessUnchanged', 'committedBeforeClientFailure', 'savedRowsReusedWithoutAi',
+                  'twoIssuesAndSafeCheckpoint')
+        variants = [('checks', key, value) for key in checks for value in (False, None, 1, 'true')]
+        variants += [('proxy', 'commitAcknowledgementsDropped', value) for value in (0, 2, True, None, '1')]
+        variants += [('proxy', key, value) for key in ('readyForQueryIdleDropped', 'targetClientClosed')
+                     for value in (False, None, 1, 'true')]
+        variants += [(None, 'cleanupFailed', True), (None, 'result', 'FAIL'), (None, 'paidAiUsed', True), (None, None, None)]
+        for section, field, value in variants:
+            def child(command, **kwargs):
+                self.assertTrue(kwargs['cooperative_cancel'])
+                self.assertNotIn('--pg-ctl', command)
+                outcome = {'result': 'PASS', 'cleanupFailed': False, 'externalServicesUsed': False, 'paidAiUsed': False,
+                           'checks': dict.fromkeys(checks, True), 'proxy': {'commitAcknowledgementsDropped': 1,
+                                'readyForQueryIdleDropped': True, 'targetClientClosed': True}}
+                if section is not None:
+                    outcome[section][field] = value
+                elif field is not None:
+                    outcome[field] = value
+                report.write_text(json.dumps(outcome), encoding='utf-8')
+            with self.subTest(section=section, field=field, value=value), patch.object(self.runner, 'command', side_effect=child):
+                if field is None:
+                    self.runner.drill('review-commit-ack', ['--port', '18102'])
+                else:
+                    with self.assertRaises(MODULE.SafetyError):
+                        self.runner.drill('review-commit-ack', ['--port', '18102'])
+            report.unlink()
+
     def test_shared_auth_is_opt_in_and_runs_after_clean_build_and_pg_gate(self):
         events = []
         with patch.object(self.runner, 'command', side_effect=lambda *a, **k: events.append('build/gate')), \

@@ -119,6 +119,18 @@ jobs:
             --war "$GITHUB_WORKSPACE/source/target/ai-code-reviewer.war" \
             --java "$java_bin" --psql "$psql_bin" --port 18101 \
             --report "$GITHUB_WORKSPACE/.local/review-network-ci.json"
+      - name: Verify committed work after a lost PostgreSQL commit response
+        env:
+          TEST_DATABASE_URL: jdbc:postgresql://127.0.0.1:${{ job.services.postgres.ports['5432'] }}/reviewer_integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          java_bin="$(command -v java)"
+          psql_bin="$(command -v psql)"
+          python3 scripts/verify-review-commit-ack.py \
+            --war "$GITHUB_WORKSPACE/source/target/ai-code-reviewer.war" \
+            --java "$java_bin" --psql "$psql_bin" --port 18102 \
+            --report "$GITHUB_WORKSPACE/.local/review-commit-ack-ci.json"
       - name: Verify repeatable local candidate packaging
         env:
           CANDIDATE_SOURCE_REVISION: ${{ github.sha }}

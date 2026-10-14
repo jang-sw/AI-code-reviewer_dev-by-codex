@@ -375,7 +375,10 @@ class OwnedWar:
         self.starts += 1
         environment = base_environment()
         require(SCHEMA_PATTERN.fullmatch(self.schema) is not None, "Invalid owned WAR schema")
-        environment.update({"DB_URL": self.database.url + "?currentSchema=" + self.schema + "&ApplicationName=" + self.schema,
+        # The PG17-only wire fixture must verify ApplicationName in StartupMessage,
+        # before permitting a backend PID to be armed. JDBC otherwise sends it later.
+        protocol_options = "&sslmode=disable&gssEncMode=disable&assumeMinServerVersion=17" if getattr(self.args, "plain_postgres_protocol", False) else ""
+        environment.update({"DB_URL": self.database.url + "?currentSchema=" + self.schema + "&ApplicationName=" + self.schema + protocol_options,
             "DB_USERNAME": self.database.user, "DB_PASSWORD": self.database.password,
             "SERVER_ADDRESS": "127.0.0.1", "SERVER_PORT": str(self.args.port), "SESSION_COOKIE_SECURE": "false",
             "BOOTSTRAP_ADMIN_USERNAME": self.username, "BOOTSTRAP_ADMIN_GIT_USERNAME": self.username,

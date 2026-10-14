@@ -4,7 +4,7 @@
 - 이번 회차: 2026-10-15 00:37 KST 시작, 최대02:37 KST까지 진행한다.
 - 기록 기준: `main` / 시작 `d029c7c`. 시작 작업 트리는 깨끗하고 로컬 origin/main 기준3개 커밋이 미푸시였다. 기존 이력을 전송하지 않으며 이번에도 로컬 커밋만 진행한다.
 - 이번 완료 조건: AI 모델 선정 보류를 유지하고 현재PC·WSL의 격리 자료로 DB COMMIT 성공 후 완료 응답 유실의 저장확정/재개·중복방지 경계를 검증한다. 필요한 최소 구현·회귀와 실제 WAR/PG 검증, 소유자원 정리·재개 기록을 남긴다.
-- 이번 단계: claim·개별커밋저장·최종완료의 실제 COMMIT 후 예외 회귀3개와 전체Java/필수PG gate를 통과했다. 실제 응답 프레임 차단 도구와 안전 회귀는 구현·리뷰 중이며 아직 실행하지 않았다. 제품 손상 결함은 확인되지 않았다. 시작 Windows 가용 메모리 약5.29GiB, 모델호출/다운로드 없이 현재PC 범위에서 진행한다.
+- 이번 단계: 실제 COMMIT 후 예외 회귀3개는 `535aa0b`로 로컬 커밋했다. 전체Java/필수PG·최종Python342건 양OS·실제wire ACK유실/동일WAR재개·관측자행잠금중SIGTERM정리를 통과했다. JDBC startup와psql 식별자 시험 설정 차이를 보완했으며 초기FAIL도 보존했다. 제품 변경은 없고 후보 포장·종합정리/재개 기록을 진행 중이다. JVM최대heap384MiB, 모델호출/다운로드·푸시·운영배포는 없다.
 - 확정 요구사항: `docs/REQUIREMENTS.md`. 내부 이슈함 우선, 최초 전체 이력, Java25/Spring/Maven/JSP/PostgreSQL 유지.
 - 재개 시 이 문서와 실제 Git 상태를 대조하고 아래 다음 작업부터 진행한다. 모든 릴리스 항목 검증 전 완료라고 보고하지 않는다.
 
@@ -56,6 +56,10 @@
 
 - 실제 PostgreSQL commit 성공 뒤 원본 DataSource의 독립 연결에서 저장 내용을 확인하고 SQLState08006을 한 번 전달하는 회귀3개를 추가했다. claim 저장 후 Git/AI 미호출·원 요청 재개, 커밋별 저장 행/이슈/감사/시각 보존·AI 중복 없음, 최종 성공/cursor/감사 유지·재처리SKIPPED·이전claim 거절을 확인했다. 실제 wire ACK 유실이나pool의 연결 퇴출 검증과는 구분한다. 회귀의 재시도 대기 시각은 기존helper로 앞당긴다.
 - 전체Java1252건 중1241통과/11선택skip·실패/오류0, 필수PG9묶음 PASS,217.562초. 새 회귀가 포함된 ReviewRequestPostgresTest24건 PASS. `.local/session18-build1-verification.json`과 `.local/linux-postgres-477dd2d43c954fffa136aaba5853c48d`에 근거를 보존했다. WAR SHA256 `84764cb8578e842b40243db1457af81e90afc6b867319d20c7ae5a0d760186b6`,42,058,885바이트. JVM최대heap384MiB, 부모PG 종료·lock 제거를 포함한다.
+- 최종 Python342건은 Windows337통과/5skip·68.829초, Linux332통과/10skip·8.539초 PASS. 프록시13·드릴16·부모gate2 회귀를 추가했다. 근거는 `.local/session18-python-{windows,linux}-verified.json`이다. 처음 proxy 취소 회귀1실패는 EOF 후 client.close가 빠진 fixture를 실제 pgJDBC 수명에 맞춰 수정했다. 정상 ParameterDescription 누락도 독립 리뷰에서 보완했다. 이후 전체 PASS다. CI/actionlint·diff 검사 통과, 실제 원격 CI는 미실행이다.
+- WSL 실제 wire ACK 유실은44.099초 PASS. 특정 B 저장 backend의 COMMIT/ReadyForQuery18바이트를 폐기했다. 작업자 실패는10.194초 후 관측했고, 그 전에 직접 DB에서 A/B 리뷰·이슈2건/첫 실행 저장2건·원 요청/claim/cursor null을 확인했다. 같은 WAR·DB 프로세스에서 원 요청의 새 claim/run·attempt2, A/B 상세/diff/AI 각1회·저장 행/시각/배정 감사 보존, FAILED(2)/SUCCEEDED(0)·이슈2건·진행 기준B와 준비200을 확인했다. SQL 시각 조정·실제 Git/AI 호출은 없다. proxy accepted4/peak3/연결 오류0, WAR/관측자/프록시/DB세션/schema/work·부모PG 정리와 원본14테이블 보존 PASS. 근거는 `.local/session18-ack-trial3.json`이다.
+- 실제 관측자가 프로젝트 행 잠금을 가진 idle-in-transaction 상태와 A 저장을 확인한 뒤 SIGTERM을 보냈다. 자식 FAIL/종료130/KeyboardInterrupt·ACK 주입0을 유지하면서 observer ROLLBACK/프로세스·WAR/프록시/세션/schema/work·부모PG 정리와 원본14테이블 보존 PASS,12.196초. 이 시험은 local wrapper가 실제 lock 획득 후 최대20초 대기를 추가한 취소 경계이며 정상 복구 PASS와 구분한다. 근거는 `.local/session18-ack-cancel-trial2.json`이다. 최초 취소 wrapper 진입은 SafetyError로 실행 전 중단되어 FAIL로 보존했다.
+- 최초 actual trial1은 JDBC가 ApplicationName을 나중 SET으로 보내 startup scope를 통과하지 못했고, trial2는 PGOPTIONS와 psql 연결 이름 차이로 observer identity를 통과하지 못했다. PG17 전용 opt-in에 assumeMinServerVersion17·관측자 PGAPPNAME을 명시해 검사를 유지했다. 두 FAIL 보고서를 보존했고 trial1의 빈 schema/work는 정확한 이름·owner/marker/OID·세션0/객체0·원본 지문 확인 후 별도로 제거했다(`.local/session18-trial1-cleanup.json`). trial2는 자동 정리됐다. 제품 결함은 발견하지 못했다.
 
 ### 이전 회차: 외부 오류 상태·DB 연결 분리
 
@@ -242,7 +246,7 @@
 
 ## 다음 작업
 
-0. AI 모델 선정/품질 평가는 사용자 요청대로 보류한다. 이번에는 오류본문의HTTP상태보존과 실제65초DB연결분리/동일요청재개·취소정리를검증했다. 다음에는 현재PC 범위에서 아직 증거가 없는 commit응답만유실된경우의 저장확정/재개·중복방지 경계 또는 UI 입력·세션 인수 항목을 하나씩 진행한다. 실제30분 유휴만료·몇시간단절은 미검증이다. 통과한 표시/예약/조회/65초연결분리를 변경이나 새 근거 없이 반복하지 않는다. 재개 시 배포판·서비스·소스 동기화를 확인한다. 일반403/불명 통신실패는 기존실패 처리한다.
+0. AI 모델 선정/품질 평가는 사용자 요청대로 보류한다. 이번에는 COMMIT 후 호출자 오류3경계와 실제 B 저장 wire ACK 유실/동일 요청 재개·행 잠금 관측자 취소 정리를 검증했다. 다음 우선 작업은 현재PC의 실제 WAR에서30분 유휴 세션 만료·옛 양식 재접수 차단·재로그인 후 기존 업무 보존의 UI 인수 범위를 검증하는 것이다. 몇 시간 단절·claim/최종 완료의 wire ACK 차단은 미검증이다. 통과한 표시/예약/조회/연결 분리/ACK 검증을 변경이나 새 근거 없이 반복하지 않는다. 재개 시 배포판·서비스·소스 동기화를 확인한다. 일반403/불명 통신 실패는 기존 실패 처리한다.
 1. 공개 GitHub/GitLab 바이너리·빈 파일 실서비스5건은 통과했다. 실제 대형/설치형/비공개 응답으로 호환 범위를 확대하며 전체 변경 경로를 증명할 수 없는 응답이나 API 장애는 계속 실패 처리한다.
 2. 로컬 LiteLLM1.104.0→기존 Windows Ollama gemma3:1b의 실제 연결/인증은 검증했다. 운영 프록시·모델을 정하고 작은 합성 집합 외의 독립 사례·실제 범위와 사람의 의미 검토로 품질을 승인해야 한다. 현재6사례 품질0/6, 로컬 Prisma 보완은 유지보수 종료 의존성으로 운영 승인 대상이 아니다. 실제 설치형 GitLab·비공개 GitHub·유료 OpenAI 검증도 남아 있다.
 3. 실제 대형 저장소 부하/API할당량·다중 인스턴스 장시간 공정성/지연·장기 네트워크 단절·모니터링/보존 정책 구현·검증.429의 합성 검증은 `docs/EXTERNAL-RATE-LIMITS.md` 범위이며 실제 공급자 quota·24시간 지속 운영은 미검증이다. 로컬 단일WAR 중단·DB fast stop 복구는 `docs/QUEUE-VALIDATION.md`·`docs/DB-RECOVERY-VALIDATION.md` 범위로 통과했다.

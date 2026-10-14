@@ -79,3 +79,43 @@ python3 scripts/verify-review-network-recovery.py \
 2026-10-15 WSL의 검증WAR와 새 부모PG 실행에서65.020초 단절·총77.532초에 통과했다. 작업자 실패는30.495초 후 관측했고55회 관측에서 원 요청/토큰·A의 저장과 진행 기록이 보존됐다. 같은WAR/요청의 새claim·attempt2로B만 재검토해 이슈2개·진행기준B를 확인했다. 프록시 accepted17/peakActive4/폐기930바이트/연결오류0, 소유WAR/프록시/세션/schema/work·부모PG 정리·원본14테이블 지문 보존을 확인했다. 실제 운영 시간 제한의 성능 보장은 아니다. 근거는 Git 제외 `.local/session17-network-trial1.json`이다.
 
 같은 날 실제 단절 중 작업자DB실패와A보존을 확인한 뒤 자식도구에SIGTERM을 보냈다.65초 관측이 끝나기 전 취소되어 보고서는FAIL·종료130·KeyboardInterrupt를 유지했고, 소유WAR/프록시/세션/schema/work·원본14테이블과 부모PG종료 정리를 확인했다. 이 취소 검증은42.662초에 통과했으며 정상복구 합격과 구분한다. 근거는 `.local/session17-network-cancel.json`이다.
+
+## COMMIT 성공 후 완료 응답 유실
+
+이 경계는 저장 전 SQL 오류나 위의 연결 전체 단절과 구분한다. 서버가 이미 저장한 트랜잭션을 호출자가 실패로 인식할 수 있으므로, 요청을 실패로 덮어쓰거나 기존 리뷰를 다시 생성하지 않고 다음 소유자가 저장 상태를 확인해야 한다.
+
+`ReviewRequestPostgresTest`의 세 회귀는 실제 PostgreSQL 연결의 `commit()`이 성공한 뒤 독립 연결로 저장 내용을 확인하고, 호출자에게 SQLState `08006` 예외를 한 번 전달한다. claim 발급 후 오류에서는 Git/AI 호출 없이 남은 요청을 새 token/run으로 복구하고, 커밋별 저장 후 오류에서는 기존 행 전체와 감사·시각·배정을 재사용한다. 최종 완료 후 오류에서는 이미 성공한 요청·진행 기준·성공 감사가 유지되며 이전 snapshot의 재처리는 SKIPPED여야 한다. 이전 claim의 늦은 실패/완료도 저장을 바꿀 수 없다. 이 회귀는 driver/application 경계의 예외이며 실제 응답 프레임 유실이나 pool의 연결 퇴출을 재현하지 않는다. 재시도 대기 시각은 기존 테스트 helper로 앞당기므로 실제 대기 시간의 근거도 아니다.
+
+실제 통신 경계는 별도 `scripts/verify-review-commit-ack.py`에서 검증한다. `pg-commit-ack-fixture.py`는 PostgreSQL startup의 DB·사용자·실행별 ApplicationName과 BackendKeyData의 backend PID로 특정 연결을 확인한다. 소유 관측자가 해당 프로젝트 행을 잠시 잠그고, 그 관측자가 차단한 WAR backend를 `pg_blocking_pids`로 식별해 한 번만 arm한 뒤 잠금을 해제한다. 프록시는 backend의 정확한 CommandComplete `COMMIT` 프레임을 전송 전에 차단하고 ReadyForQuery를 포함한 해당 연결의 이후 모든 서버 바이트를 EOF/heal까지 버린다. 다른 연결·frontend 바이트는 계속 전달한다. SQL 문자열이나 전체 실행의 몇 번째 COMMIT인지로 주입 위치를 추측하지 않는다.
+
+프레임 형식은 [PostgreSQL17 공식 프로토콜](https://www.postgresql.org/docs/17/protocol-message-formats.html)을 따른다. 서버의 commit 후 완료 응답 순서는 [PG17 서버 구현](https://github.com/postgres/postgres/blob/REL_17_STABLE/src/backend/tcop/postgres.c), 클라이언트의 COMMIT 처리 경계는 고정 의존성 [pgJDBC42.7.13 구현](https://github.com/pgjdbc/pgjdbc/blob/REL42.7.13/pgjdbc/src/main/java/org/postgresql/jdbc/PgConnection.java)을 참조했다. 프록시는 검증용 loopback plaintext만 지원하며 이 시험의 WAR에만 SSL/GSS 암호화를 명시적으로 끈다. 제품의 TLS 설정을 변경하지 않는다.
+
+시험의 JDBC 옵션에만 `assumeMinServerVersion=17`도 지정한다. [드라이버의 startup 구현](https://github.com/pgjdbc/pgjdbc/blob/REL42.7.13/pgjdbc/src/main/java/org/postgresql/core/v3/ConnectionFactoryImpl.java)은 최소 버전 가정이 없으면 ApplicationName을 연결 후 SET으로 전달하므로, 검증PG17임이 확정된 이 시험에서는 시작 메시지에 포함시켜 엄격한 실행 식별자 검사를 유지한다. 다른 WAR 시험의 기본 옵션은 그대로다.
+
+별도의 psql 관측자는 [libpq의 `PGAPPNAME`](https://www.postgresql.org/docs/17/libpq-envars.html)으로 실행별 이름을 명시한다. `PGOPTIONS`의 서버 설정에만 이름을 넣고 psql의 연결 이름과 같다고 가정하지 않는다.
+
+권장 Linux 재현은 다음과 같다. 부모 도구는 전체 빌드·필수PG gate 뒤 새 시험을 실행하며, WAR 포트 기본값은18102다.
+
+```bash
+python3 scripts/test-postgres-linux.py \
+  --pg-bin /usr/lib/postgresql/17/bin \
+  --java /usr/lib/jvm/temurin-25-jdk-amd64/bin/java \
+  --review-commit-ack
+```
+
+이미 시작한 소유 검증DB에서 직접 실행할 때는 다음과 같다. 기존 도구와 같은 query 없는 loopback `TEST_DATABASE_URL` 및 환경 계정을 사용하고, 새 report는 checkout `.local` 안에 생성한다. 전체 시나리오 기본180초·시작45초·query5/socket10/connect5초·pool10초의 합성 설정이며 운영 복구 시간의 보장이 아니다.
+
+```bash
+python3 scripts/verify-review-commit-ack.py \
+  --war /absolute/path/ai-code-reviewer.war \
+  --java /absolute/path/java --psql /absolute/path/psql \
+  --port 18102 --report /absolute/checkout/.local/commit-ack-new.json
+```
+
+응답을 버린 뒤 독립 관측자에게 A/B 리뷰·이슈2건과 첫 실행 저장2건이 보여야 하고, 요청은 원래 claim의 RUNNING·진행 기준null이어야 한다. 실제 클라이언트 EOF와 작업자 DB 실패 뒤 같은 WAR가 원 요청의 새claim/attempt2로 재개하며, A/B의 상세/diff/AI는 모두 각1회·기존 전체 행/시각/배정 감사 보존·실행 FAILED(2)/SUCCEEDED(0)·진행 기준B를 요구한다. SQL로 재시도 시각을 당기지 않는다. 연결 하나의 응답 유실이므로 준비503을 필수 결과로 가정하지 않으며 최종 준비200만 확인한다.
+
+프록시는 단일 selector·최대32연결·방향별64KiB pending buffer, startup8KiB·backend 프레임 length1MiB·CommandComplete 본문128바이트 상한과 짧은 제어 프레임만 보류하는 점진 파서를 사용한다. frontend 일반 메시지는 해석하지 않고 기존64KiB queue로 전달한다. 관측자 명령·프로세스 종료도 유한 대기를 적용하고, cancel secret은 전달용 바이트를 제외한 식별 정보·로그·보고서에 저장하지 않는다. 먼저 관측자 트랜잭션/프로세스를 종료하고 WAR/프록시를 중지한 뒤 양쪽 ApplicationName의 DB세션0·schema OID/owner/marker를 확인해 직접 만든 schema만 제거한다. 원본14테이블·DB PID/시작시각·작업 디렉터리까지 확인돼야 PASS다. 프로세스·세션·schema 소유권을 확인할 수 없으면 해당 schema/work 삭제를 거부하고 모든 정리 실패를 FAIL로 기록한다. 이 wire 시험의 주입 지점은 커밋별 저장 하나이며 claim/최종 완료 응답 유실은 앞의 Java 회귀 범위다. 실제 운영 다중 서버·TLS·장기 단절·외부 AI 과금의 정확히 한 번 실행은 별도로 남는다.
+
+2026-10-15 WSL에서 최종 Java1252건(1241통과/11선택skip)·필수PG9묶음, Python342건(Windows337통과/5skip·Linux332통과/10skip)과 실제 ACK 시험44.099초 PASS를 확인했다. 프록시는 COMMIT/idle 응답18바이트를 폐기했다. 작업자 실패는10.194초 후 관측했고, 그 전에 독립 DB에서 A/B 저장2건을 확인했다. 같은 WAR 시작1회/동일DB·요청의 attempt2에서 상세/diff/AI는 A/B 각1회, 기존 행·시각·배정 감사와 이슈2건·진행 기준B·FAILED(2)/SUCCEEDED(0)가 유지됐다. proxy accepted4/peakActive3/connectionErrors0이며 관측자·WAR·프록시·세션/schema/work·부모PG 정리와 원본14테이블 보존을 확인했다. 근거는 Git 제외 `.local/session18-ack-trial3.json`이다.
+
+별도 취소 검증은 실제 관측자가 행 잠금을 가진 idle-in-transaction과 A 저장을 확인한 뒤 SIGTERM을 보냈다. 시험용 local wrapper는 lock 획득 후 최대20초 대기를 추가했다. 자식 FAIL·종료130·KeyboardInterrupt·ACK 주입0을 유지하며 전용 관측자 ROLLBACK/프로세스·WAR/프록시/세션/schema/work·부모PG 정리와 원본14테이블 보존을12.196초에 확인했다. 근거는 `.local/session18-ack-cancel-trial2.json`이며 정상 ACK 복구의 PASS와 구분한다. 최초 startup/observer 설정 불일치2실행은 FAIL로 보존했고 각 자원을 확인·정리한 뒤 위 최종 실행을 진행했다. 원격 CI·운영 환경의 실제 실행은 미수행이다.

@@ -324,6 +324,8 @@ class TestRun:
             ports.extend((self.args.review_schedule_port_a, self.args.review_schedule_port_b))
         if getattr(self.args, 'review_network_recovery', False):
             ports.append(self.args.review_network_recovery_port)
+        if getattr(self.args, 'review_commit_ack', False):
+            ports.append(self.args.review_commit_ack_port)
         require(len(set(ports)) == len(ports), 'Selected PostgreSQL and WAR ports must all differ.')
         return ports
 
@@ -386,12 +388,12 @@ class TestRun:
             outcome = json.loads(limited_text(report, 131072))
             require(outcome.get('result') == 'PASS' and outcome.get('externalServicesUsed') is False
                     and outcome.get('paidAiUsed') is False, 'A child drill did not produce a successful isolated report.')
-            if name in ('shared-auth', 'review-rate-limit', 'review-rate-limit-wallclock', 'review-schedule', 'review-network-recovery'):
+            if name in ('shared-auth', 'review-rate-limit', 'review-rate-limit-wallclock', 'review-schedule', 'review-network-recovery', 'review-commit-ack'):
                 require(outcome.get('cleanupFailed') is False
                         and outcome.get('checks', {}).get('ownedWarsStopped') is True
                         and outcome.get('checks', {}).get('ownedSchemaRemoved') is True,
                         'The isolated verification did not confirm owned resource cleanup.')
-            if name in ('review-rate-limit-wallclock', 'review-schedule', 'review-network-recovery'):
+            if name in ('review-rate-limit-wallclock', 'review-schedule', 'review-network-recovery', 'review-commit-ack'):
                 require(outcome.get('checks', {}).get('ownedWorkRemoved') is True
                         and outcome.get('checks', {}).get('originalTestTablesPreserved') is True,
                         'The repeated-time verification did not confirm work cleanup and unchanged original tables.')
@@ -402,6 +404,16 @@ class TestRun:
                         and type(outcome.get('blackholeSecondsObserved')) in (int, float)
                         and outcome['blackholeSecondsObserved'] >= 65,
                         'The network drill did not confirm its connection fault, recovery and cleanup.')
+            if name == 'review-commit-ack':
+                require(all(outcome.get('checks', {}).get(key) is True for key in
+                            ('ownedProxyStopped', 'ownedObserverStopped', 'ownedDatabaseSessionsGone',
+                             'sameLiveWarRecovered', 'databaseProcessUnchanged', 'committedBeforeClientFailure',
+                             'savedRowsReusedWithoutAi', 'twoIssuesAndSafeCheckpoint'))
+                        and outcome.get('proxy', {}).get('commitAcknowledgementsDropped') == 1
+                        and type(outcome.get('proxy', {}).get('commitAcknowledgementsDropped')) is int
+                        and outcome.get('proxy', {}).get('readyForQueryIdleDropped') is True
+                        and outcome.get('proxy', {}).get('targetClientClosed') is True,
+                        'The commit ACK drill did not confirm committed work, one lost response, recovery and cleanup.')
             if name == 'review-schedule' and getattr(self.args, 'review_schedule_observe_resources', False):
                 resource = outcome.get('resources', {})
                 require(resource.get('enabled') is True and resource.get('complete') is True
@@ -427,6 +439,8 @@ class TestRun:
             self.drill('review-db-recovery', ['--port', str(self.args.review_database_recovery_port)])
         if getattr(self.args, 'review_network_recovery', False):
             self.drill('review-network-recovery', ['--port', str(self.args.review_network_recovery_port)])
+        if getattr(self.args, 'review_commit_ack', False):
+            self.drill('review-commit-ack', ['--port', str(self.args.review_commit_ack_port)])
         if getattr(self.args, 'review_upgrade', False):
             self.upgrade()
         if getattr(self.args, 'shared_auth', False):
@@ -525,7 +539,7 @@ def arguments(argv=None):
     parser.add_argument('--java', type=Path, required=True)
     parser.add_argument('--port', type=int, default=55439)
     for name in ('review-restart', 'review-concurrency', 'review-database-recovery', 'backup-restore', 'review-upgrade',
-                 'shared-auth', 'review-rate-limit', 'review-rate-limit-wallclock', 'review-schedule', 'review-network-recovery'):
+                 'shared-auth', 'review-rate-limit', 'review-rate-limit-wallclock', 'review-schedule', 'review-network-recovery', 'review-commit-ack'):
         parser.add_argument('--' + name, action='store_true')
     parser.add_argument('--previous-war', type=Path)
     parser.add_argument('--expected-previous-war-sha256')
@@ -537,7 +551,8 @@ def arguments(argv=None):
                           ('review-upgrade-port', 18093), ('shared-auth-port-a', 18094), ('shared-auth-port-b', 18095),
                           ('review-rate-limit-port', 18096), ('review-rate-limit-wallclock-port-a', 18097),
                           ('review-rate-limit-wallclock-port-b', 18098), ('review-schedule-port-a', 18099),
-                          ('review-schedule-port-b', 18100), ('review-network-recovery-port', 18101)):
+                          ('review-schedule-port-b', 18100), ('review-network-recovery-port', 18101),
+                          ('review-commit-ack-port', 18102)):
         parser.add_argument('--' + name, type=int, default=default)
     args = parser.parse_args(argv)
     for name, value in vars(args).items():

@@ -16,6 +16,7 @@
 - `scripts/test-postgres.ps1`: Windows 격리 PostgreSQL 검증. `-BackupRestore -ReviewRestart`는 백업/복원과 실제 WAR 강제 중단 후 재기동, `-ReviewConcurrency`는 두 WAR의 잠금 경쟁과 다른 프로젝트 진행을 검증한다.
 - `scripts/test-postgres-linux.py`: 일반 Linux 사용자와 native 파일시스템의 전용 PostgreSQL17에서 전체 빌드·필수 DB 검증을 실행한다. `--backup-restore --review-restart --review-concurrency --review-database-recovery`로 백업과 세 복구 검증을 함께 실행한다.
 - 같은 도구의 `--review-network-recovery`는 살아 있는 DB 앞의 검증용 loopback 프록시로 앱 연결만65초 차단하고 동일 요청의 재개·저장 결과 보존을 검사한다. [범위와 재현](docs/DB-RECOVERY-VALIDATION.md)을 따른다.
+- 같은 도구의 `--review-commit-ack`는 특정 커밋 저장이 실제 성공한 뒤 PostgreSQL 완료 응답만 차단해, 동일 WAR의 저장 결과 재사용·중복 AI/이슈 방지를 검사한다. claim/최종 완료 후 예외의 Java 회귀와 [실제 통신 시험 범위](docs/DB-RECOVERY-VALIDATION.md)를 구분한다.
 - 같은 Linux 도구의 `--review-upgrade`는 명시한 V12 WAR·체크섬을 받아 누적 리뷰 데이터의 V15 업데이트와 별도 DB의 V12 백업 복귀를 검증한다. [실행 조건과 범위](docs/UPGRADE-VALIDATION.md)를 따른다.
 - `--shared-auth`는 같은 DB의 두 WAR에서 로그인·가입 제한 공유, 재시작 유지, 저장소 오류 시503과 복구를 검증한다. [동작·재현 명령](docs/AUTH-LIMITING.md)을 따른다.
 - `--review-rate-limit`는 실제 WAR와 합성 Git/AI429에서 요청·저장 결과 보존, origin 공유 대기와 재시작 후 재개를 검증한다. [정책·시간 가속 범위·재현 명령](docs/EXTERNAL-RATE-LIMITS.md)을 따른다.

@@ -206,6 +206,7 @@ class OwnedTcpProxy:
                 pair[0].pair = pair[1].pair = pair
                 pair[0].peer, pair[1].peer = pair[1], pair[0]
                 self._pairs.add(pair)
+                self._pair_opened(pair)
                 with self._statistics:
                     self._stats['active'] = len(self._pairs)
                     self._stats['peakActive'] = max(self._stats['peakActive'], len(self._pairs))
@@ -219,6 +220,23 @@ class OwnedTcpProxy:
                         upstream.close()
                 self._increment('connectionErrors')
         return False
+
+    # Narrow stream hooks let protocol fixtures reuse owned sockets and bounded I/O.
+    # The default implementation keeps this byte-transparent proxy unchanged.
+    def _pair_opened(self, pair):
+        pass
+
+    def _receive_capacity(self, endpoint, paused):
+        return self.BUFFER_LIMIT if paused else self.BUFFER_LIMIT - len(endpoint.peer.pending)
+
+    def _receive_data(self, endpoint, data):
+        endpoint.peer.pending.extend(data)
+
+    def _receive_eof(self, endpoint):
+        endpoint.read_closed = True
+
+    def _pair_closed(self, pair):
+        pass
 
     def _interest(self, endpoint, events):
         if events:
@@ -251,7 +269,7 @@ class OwnedTcpProxy:
                 events = selectors.EVENT_WRITE
             else:
                 events = 0
-                if not endpoint.read_closed and (paused or len(endpoint.peer.pending) < self.BUFFER_LIMIT):
+                if not endpoint.read_closed and self._receive_capacity(endpoint, paused) > 0:
                     events |= selectors.EVENT_READ
                 if not paused and endpoint.pending and not endpoint.write_closed:
                     events |= selectors.EVENT_WRITE
@@ -269,19 +287,19 @@ class OwnedTcpProxy:
             else:
                 paused = self.metrics()['mode'] == 'BLACKHOLE'
                 if events & selectors.EVENT_READ:
-                    capacity = self.BUFFER_LIMIT if paused else self.BUFFER_LIMIT - len(endpoint.peer.pending)
+                    capacity = self._receive_capacity(endpoint, paused)
                     if capacity:
                         try:
                             data = endpoint.connection.recv(capacity)
                         except BlockingIOError:
                             data = None
                         if data == b'':
-                            endpoint.read_closed = True
+                            self._receive_eof(endpoint)
                         elif data:
                             if paused:
                                 self._increment('droppedBytes', len(data))
                             else:
-                                endpoint.peer.pending.extend(data)
+                                self._receive_data(endpoint, data)
                 if events & selectors.EVENT_WRITE and endpoint.pending and not paused:
                     try:
                         written = endpoint.connection.send(endpoint.pending)
@@ -299,6 +317,7 @@ class OwnedTcpProxy:
         if pair not in self._pairs:
             return
         self._pairs.remove(pair)
+        self._pair_closed(pair)
         for endpoint in pair:
             if endpoint.registered:
                 try:
