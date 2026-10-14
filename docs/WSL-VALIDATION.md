@@ -220,6 +220,14 @@ WAR SHA256은 `42f2490ee84112f9063cf60f050215eaeb33da81498b62470aaa64ab0d45b94e`
 
 같은 WAR를 예약/처리OFF·SQL 합성 자료로 실행해 일반 사용자 수동 사유 오류 복구와 관리자 반려/재검토/승인 뒤 사유 보존을 실제 브라우저로 확인했다.390px/1280px 본문 넘침 없음, 오류 링크의 입력 포커스·키보드 저장·원래 목록2페이지 복귀, 관리자 모바일 표40px 키보드 이동을 확인했다. 오류 시DB/감사 무변경, 수정 뒤사유1건 및 최종 승인 뒤과거사유감사2건을 대조했다. 임시 loopback HTTP bridge와 소유WAR/schema/work·PG를 정리했고 원본14테이블을 보존했다. Windows `.local/session13-ui-observation.json`, Linux `.local/session13-ui-harness.json`에 증거를 보존한다. 실제 서비스 계정·유료 모델을 호출하거나 systemd/TLS에 새 WAR를 설치하지 않았다.
 
+### 2026-10-15 환경 중단과 명시적 복구
+
+실제30분 유휴 세션 시험의 첫 실행은 최종 보고서를 남기기 전에 배포판 종료로 중단됐다. Windows Update의 WSL3.0.3 설치와 WSL Service 재설정 이벤트가 같은 시각에 관측됐으며, 환경 중단과 시간상 일치한다는 기록으로 남긴다. 이 시험은 FAIL/미완료로 보존하고 만료 검증 합격으로 세지 않는다. Windows Update 설정이나 서비스를 변경하지 않았다.
+
+남아 있던 PID476·시작epoch1791995207·port55439와 실행 토큰/로그, 현재 부팅 시각·프로세스 부재·닫힌 포트·소유자·native 경로/마커를 대조했다. PID 원문·파일 식별자·로그 해시·완료된 Java1252건의 XML manifest를 보존하고 즉시 재검사한 뒤 해당 PID 파일과 비어 있는 실행 잠금만 회수했다. 부모 도구의 기존 stale PID/lock 거부 검사는 유지한다.
+
+기존PGDATA를 재초기화하지 않고 정상 PostgreSQL 시작으로 automatic recovery·redo·ready 로그를 확인했다. 복구된 고유 시험 schema에서 성공 요청1건·리뷰/OPEN 이슈2건을 확인하고, OID/owner/marker·DB세션0·작업 경로를 재검사한 뒤 해당 schema/work만 제거했다. 원본14테이블 보존은 **PG 복구 직후부터 이 정리 후까지** 확인했으며, 중단 전 지문은 없어 그 이전 구간의 일치 여부는 미확인이다. 정상 복구 부모 종료·28포트 연결 불가와 기존 서비스 inactive/disabled도 확인했다. 근거는 `.local/session19-interrupted-recovery.json`과 해당 incident archive다. 이후 세션 만료 시험은 새 실행으로 별도 검증한다.
+
 ### 남은 검증
 
 운영 Linux 서버의 실제 부팅·지속 실행·공개 네트워크/TLS와 인증서 갱신, 운영 데이터 규모의 업그레이드·rollback, 백업 암호화·보존·RPO/RTO, 실제 GitLab/LiteLLM 인증과 모델 품질, 장시간 부하·다중 인스턴스 정책 검증은 남아 있다. 이번 WSL 합성 환경의 통과는 이 항목이나 릴리스 승인을 대신하지 않는다.

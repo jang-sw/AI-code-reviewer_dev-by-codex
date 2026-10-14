@@ -181,6 +181,68 @@ class LinuxPostgresSafetyTest(unittest.TestCase):
         self.assertEqual(events, ['build/gate', 'build/gate',
                                  ('shared-auth', ['--port-a', '18094', '--port-b', '18095'])])
 
+    def test_session_expiry_opt_in_requires_real_time_budget_distinct_ports_and_pg_gate(self):
+        base = ['--pg-bin', str(self.pg_bin), '--java', str(self.args.java)]
+        self.assertFalse(MODULE.arguments(base).session_expiry)
+        for options in (['--session-expiry-timeout-seconds', '2200'],
+                        ['--session-expiry', '--session-expiry-timeout-seconds', '1949'],
+                        ['--session-expiry', '--session-expiry-timeout-seconds', '3601']):
+            with self.subTest(options=options), self.assertRaises(MODULE.SafetyError):
+                MODULE.arguments(base + options)
+        args = MODULE.arguments(base + ['--session-expiry'])
+        self.runner.args = args
+        self.assertEqual(self.runner.selected_ports(), [55439, 18104])
+        args.session_expiry_port = 55439
+        with self.assertRaises(MODULE.SafetyError):
+            self.runner.selected_ports()
+        args.session_expiry_port = 18104
+        events = []
+        with patch.object(self.runner, 'command', side_effect=lambda *a, **k: events.append('build/gate')), \
+                patch.object(self.runner, 'drill', side_effect=lambda *a: events.append(a)):
+            self.runner.verify()
+        self.assertEqual(events, ['build/gate', 'build/gate',
+                                 ('session-expiry', ['--port', '18104', '--timeout-seconds', '2100'])])
+        with patch.object(self.runner, 'command', side_effect=[None, MODULE.SafetyError('synthetic missing PG gate')]), \
+                patch.object(self.runner, 'drill') as drill, self.assertRaises(MODULE.SafetyError):
+            self.runner.verify()
+        drill.assert_not_called()
+
+    def test_session_child_needs_elapsed_time_isolated_sessions_and_safe_recovery_evidence(self):
+        (self.workspace / 'scripts' / 'verify-session-expiry.py').write_text('# synthetic fixture', encoding='utf-8')
+        self.runner.logs.mkdir()
+        report = self.runner.logs / ('session-expiry-' + self.runner.token + '.json')
+        checks = ('ownedWarsStopped', 'ownedSchemaRemoved', 'ownedWorkRemoved', 'originalTestTablesPreserved',
+                  'ownedDatabaseSessionsGone', 'defaultThirtyMinuteTimeout', 'victimsUnrequestedDuringIdle',
+                  'controlAuthenticatedBeforeExpiry', 'expiredGetRedirectedToLogin', 'expiredPostRejected',
+                  'storedWorkPreservedAfterExpiry', 'oldTokenRejectedAfterLogin', 'freshFormSavedExactlyOnce',
+                  'sameLiveWarAndDatabase')
+        variants = [(key, value) for key in checks for value in (False, None, 1, 'true')]
+        variants += [('idleSecondsObserved', value) for value in (None, True, 1809.999, '1810', float('nan'), float('inf'))]
+        variants += [('controlProbeAfterSeconds', value) for value in (1739.999, 1800, True, '1740')]
+        variants += [('victimRequestsDuringIdle', value) for value in (1, False, None, '0')]
+        variants += [('sessionTimeoutSeconds', value) for value in (1799, 1800.0, True, '1800')]
+        variants += [('cleanupFailed', True), ('result', 'FAIL'), ('externalServicesUsed', True), (None, None)]
+        for field, value in variants:
+            def child(command, **kwargs):
+                self.assertTrue(kwargs['cooperative_cancel'])
+                self.assertEqual(kwargs['timeout'], 2190)
+                self.assertNotIn('--pg-ctl', command)
+                outcome = {'result': 'PASS', 'cleanupFailed': False, 'externalServicesUsed': False, 'paidAiUsed': False,
+                           'idleSecondsObserved': 1810.1, 'controlProbeAfterSeconds': 1740.1,
+                           'victimRequestsDuringIdle': 0, 'sessionTimeoutSeconds': 1800, 'checks': dict.fromkeys(checks, True)}
+                if field in checks:
+                    outcome['checks'][field] = value
+                elif field is not None:
+                    outcome[field] = value
+                report.write_text(json.dumps(outcome), encoding='utf-8')
+            with self.subTest(field=field, value=value), patch.object(self.runner, 'command', side_effect=child):
+                if field is None:
+                    self.runner.drill('session-expiry', ['--port', '18104'])
+                else:
+                    with self.assertRaises(MODULE.SafetyError):
+                        self.runner.drill('session-expiry', ['--port', '18104'])
+            report.unlink()
+
     def test_rate_limit_drill_is_opt_in_and_checks_port_collision(self):
         args = MODULE.arguments(['--pg-bin', str(self.pg_bin), '--java', str(self.args.java), '--review-rate-limit'])
         self.runner.args = args
