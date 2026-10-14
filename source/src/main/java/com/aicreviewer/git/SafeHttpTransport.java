@@ -65,33 +65,35 @@ public final class SafeHttpTransport {
         rateLimitGate.beforeRequest(classification, uri);
         effectiveTimeout = effectiveTimeout.minusNanos(System.nanoTime() - started);
         if (effectiveTimeout.isZero() || effectiveTimeout.isNegative()) throw new IntegrationException(service + " operation exceeded its time budget");
-        AtomicReference<RateLimitedException> receivedLimit = new AtomicReference<>();
+        AtomicReference<IntegrationException> rejectedResponse = new AtomicReference<>();
         var future = client.sendAsync(builder.timeout(effectiveTimeout).build(), info -> {
             if (info.statusCode() == 429) {
                 RateLimitedException error = new RateLimitedException(classification,
                         RetryAfterPolicy.retryAt(info.headers(), clock.instant()), true);
-                receivedLimit.set(error);
+                rejectedResponse.set(error);
+                return new RejectedBody(error);
+            }
+            if (info.statusCode() < 200 || info.statusCode() >= 300) {
+                IntegrationException error = new IntegrationException(service + " returned HTTP " + info.statusCode());
+                rejectedResponse.set(error);
                 return new RejectedBody(error);
             }
             return new LimitedBody(maxBytes);
         });
         try {
             HttpResponse<byte[]> response = future.get(effectiveTimeout.toNanos(), TimeUnit.NANOSECONDS);
-            if (receivedLimit.get() != null) throw publishRateLimit(receivedLimit.get(), uri);
-            if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                throw new IntegrationException(service + " returned HTTP " + response.statusCode());
-            }
+            if (rejectedResponse.get() != null) throw publishResponseFailure(rejectedResponse.get(), uri);
             return response;
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
             throw new IntegrationException(service + " request interrupted");
         } catch (TimeoutException ex) {
-            if (receivedLimit.get() != null) throw publishRateLimit(receivedLimit.get(), uri);
+            if (rejectedResponse.get() != null) throw publishResponseFailure(rejectedResponse.get(), uri);
             throw new IntegrationException(service + " request timed out");
         } catch (ExecutionException ex) {
-            // A received 429 takes precedence over cancellation of its deliberately unread body.
-            RateLimitedException rateLimited = receivedLimit.get();
-            if (rateLimited != null) throw publishRateLimit(rateLimited, uri);
+            // A known error status takes precedence over its deliberately unread body's failure.
+            IntegrationException rejected = rejectedResponse.get();
+            if (rejected != null) throw publishResponseFailure(rejected, uri);
             if (ex.getCause() instanceof java.net.http.HttpTimeoutException) {
                 throw new IntegrationException(service + " request timed out");
             }
@@ -101,8 +103,10 @@ public final class SafeHttpTransport {
         }
     }
 
-    private RateLimitedException publishRateLimit(RateLimitedException error, URI uri) {
-        if (error.retryAt() != null) rateLimitGate.onRateLimited(error.service(), uri, error.retryAt());
+    private IntegrationException publishResponseFailure(IntegrationException error, URI uri) {
+        if (error instanceof RateLimitedException limited && limited.retryAt() != null) {
+            rateLimitGate.onRateLimited(limited.service(), uri, limited.retryAt());
+        }
         return error;
     }
 
@@ -130,7 +134,7 @@ public final class SafeHttpTransport {
     /** Finish from headers and cancel the body even if the server never sends it. */
     private static final class RejectedBody implements HttpResponse.BodySubscriber<byte[]> {
         private final CompletableFuture<byte[]> result;
-        private RejectedBody(RateLimitedException error) { result = CompletableFuture.failedFuture(error); }
+        private RejectedBody(IntegrationException error) { result = CompletableFuture.failedFuture(error); }
         @Override public CompletionStage<byte[]> getBody() { return result; }
         @Override public void onSubscribe(Flow.Subscription subscription) { subscription.cancel(); }
         @Override public void onNext(List<ByteBuffer> items) { }
