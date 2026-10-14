@@ -374,7 +374,8 @@ class OwnedWar:
         require(time.monotonic() < self.deadline, "The restart drill exceeded its total deadline")
         self.starts += 1
         environment = base_environment()
-        environment.update({"DB_URL": self.database.url + "?currentSchema=" + self.schema,
+        require(SCHEMA_PATTERN.fullmatch(self.schema) is not None, "Invalid owned WAR schema")
+        environment.update({"DB_URL": self.database.url + "?currentSchema=" + self.schema + "&ApplicationName=" + self.schema,
             "DB_USERNAME": self.database.user, "DB_PASSWORD": self.database.password,
             "SERVER_ADDRESS": "127.0.0.1", "SERVER_PORT": str(self.args.port), "SESSION_COOKIE_SECURE": "false",
             "BOOTSTRAP_ADMIN_USERNAME": self.username, "BOOTSTRAP_ADMIN_GIT_USERNAME": self.username,

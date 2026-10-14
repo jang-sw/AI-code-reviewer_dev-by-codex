@@ -4,7 +4,7 @@
 - 이번 회차: 2026-10-15 00:10 KST 시작, 최대02:10 KST까지 진행한다.
 - 기록 기준: `main` / 시작 `e94c27d`. 시작 작업 트리는 깨끗하고 현재 로컬 origin/main과 같았다. 이전 회차의 미푸시 기록과 달라졌으며 이번에는 원격 변경 없이 로컬 커밋만 진행한다.
 - 이번 완료 조건: AI 모델 선정 보류를 유지하고 현재PC·WSL의 격리 자료로 장기 통신 중단·미완료 요청 복구의 미검증 경계를 확인한다. 필요한 최소 구현·회귀와 실제 WAR/PG 검증, 소유자원 정리·재개 기록을 남긴다.
-- 이번 단계: non-2xx 오류 본문 때문에 HTTP 상태가 시간 초과/통신 실패로 가려지는 문제를 수정했다. 전체Java1249건 중1238통과/11선택skip·필수PG9묶음, Python311건은Windows306통과/5skip·Linux301통과/10skip을 확인했다.65초 DB연결 blackhole·동일WAR 복구 도구와 부모/CI 연결은 구현했고 실제 WSL 실행 중이다. JVM 최대heap384MiB로 순차 검증하며 실제모델호출은없다.
+- 이번 단계: 외부 오류 상태 개선을 `5a0b4dc`로 로컬 커밋했다. Java1238통과/11선택skip·필수PG9묶음, Python311건 양OS PASS. 실제65초 DB연결 blackhole·동일WAR/요청 재개·커밋 재사용·정리와 장애 중 SIGTERM 취소를 통과했다. 후보 포장·종합 정리는 남았다. JVM 최대heap384MiB로 순차 검증하며 실제모델호출은없다.
 - 확정 요구사항: `docs/REQUIREMENTS.md`. 내부 이슈함 우선, 최초 전체 이력, Java25/Spring/Maven/JSP/PostgreSQL 유지.
 - 재개 시 이 문서와 실제 Git 상태를 대조하고 아래 다음 작업부터 진행한다. 모든 릴리스 항목 검증 전 완료라고 보고하지 않는다.
 
@@ -56,7 +56,10 @@
 
 - 외부 Git/AI의 non-2xx는 헤더에서 본문을 취소하고 고정 HTTP 상태 예외를 유지한다.429의 공유 대기 정책·DB실패/인터럽트 전파는 유지하며 일반403/503·불완전한200본문은 실패다. 같은 실패 요청의 자동429재개와 다음 정상 예약/수동의 새 요청을 구분한다.
 - 새 loopback18사례는 Git/AI×403/503×정지/과대/절단본문12개,200 fixed/chunk절단4개·정상2개다. 전체Java1249건 중1238통과/11선택skip·실패/오류0·필수PG9묶음 PASS,209.538초. `.local/session17-build1-verification.json`, `.local/linux-postgres-5e2bc6a70dbb45379b9b8424f4cba129`. WAR SHA256 `69b235a17f0fea53d22b7ebe219a4ad51b029a405cff8947cec9e1975946621a`,42,058,885바이트. JVM최대heap384MiB.
-- Python311건은Windows306통과/5skip·66.272초, Linux301통과/10skip·5.964초 PASS. 신규프록시10·상태보존/오류/정리게이트15·부모게이트2를포함한다. `.local/session17-python-verification.json`. 최초Linux Bash wrapper는unittest OK뒤빈종료값으로exit1이어서Python wrapper로실제child종료코드를보존해재검증했다. 실제WAR 연결분리는 실행 중이다. CI/actionlint·Python문법·diff공백 검사는 통과했고 원격CI는실행하지않았다.
+- Python311건은Windows306통과/5skip·66.272초, Linux301통과/10skip·5.964초 PASS. 신규프록시10·상태보존/오류/정리게이트15·부모게이트2를포함한다. `.local/session17-python-verification.json`. 최초Linux Bash wrapper는unittest OK뒤빈종료값으로exit1이어서Python wrapper로실제child종료코드를보존해재검증했다. CI/actionlint·Python문법·diff공백 검사는 통과했고 원격CI는실행하지않았다.
+- 실제WSL 단일WAR/살아있는PG의 양방향application-byte blackhole65.020초,총77.532초 PASS. query5/socket10/connect5초·pool10초의 합성설정에서 작업자실패30.495초,55회 관측 동안 요청ID/담당자/접수시각/claim/run/attempt·A저장1/이슈1/진행시각/빈cursor가 보존됐다. 준비503/생존200·상태전용 응답, DB PID/시작시각 불변, 같은WAR·같은요청의 새claim/run/attempt2·A내용/AI1회/B2회·이슈2/진행기준B·새진행카드를 확인했다. `.local/session17-network-trial1.json`과 `.local/linux-postgres-970b6fcd2b6846b58c0fc0dfb39be95e`에 근거가 있다. SQL시각 조정·DB프로세스 종료·실제Git/AI호출은없다.
+- 프록시17연결·최대동시4·폐기930바이트·connectionErrors0, WAR/프록시/고유ApplicationName DB세션0·schemaOID/owner/marker확인후삭제·원본14테이블지문·작업디렉터리·부모PG정리 PASS. 기본운영45초socket한도의SLA·kernel packet loss·commit응답만유실·몇시간단절·운영다중서버는 검증하지 않았다. 신규부모옵션/CI 연결과 재현범위는 `docs/DB-RECOVERY-VALIDATION.md`에 기록했다. 기존운영안내의 예약풀3스레드를 실제코드기본4와 인증제한정리작업을 포함하도록 정정했다.
+- 실제단절중 작업자DB실패·A보존을 확인한 뒤 자식도구에SIGTERM을보낸 검증도42.662초 PASS. 자식은65초관측미완료를FAIL/종료130·KeyboardInterrupt로남기고 WAR/프록시/세션/schema/work를정리했으며 원본14테이블/부모PG동일성·최종부모종료를확인했다. `.local/session17-network-cancel.json`. 취소시험의 기대실패를 정상복구합격으로세지않는다.
 
 ### 이전 회차: 오류 복구·빈 페이지·누적 목록
 
@@ -232,7 +235,7 @@
 
 ## 다음 작업
 
-0. AI 모델 선정/품질 평가는 사용자 요청대로 보류한다. 이번에 오래된 양식/권한 오류 복귀·빈 끝 페이지와 누적 이슈/감사/운영60조합을 검증했다. 다음에는 현재PC 범위에서 아직 증거가 없는 장기 통신 중단·미완료 요청의 복구 경계 또는 UI 입력·세션 인수 항목을 하나씩 진행한다. 실제30분 유휴만료는 미검증이다. 이미 통과한 표시/예약/조회 비용 검증은 변경이나 새 근거 없이 반복하지 않는다. 재개 시 배포판·서비스·소스 동기화를 확인한다. 일반403/불명 통신실패는 기존실패 처리한다.
+0. AI 모델 선정/품질 평가는 사용자 요청대로 보류한다. 이번에는 오류본문의HTTP상태보존과 실제65초DB연결분리/동일요청재개·취소정리를검증했다. 다음에는 현재PC 범위에서 아직 증거가 없는 commit응답만유실된경우의 저장확정/재개·중복방지 경계 또는 UI 입력·세션 인수 항목을 하나씩 진행한다. 실제30분 유휴만료·몇시간단절은 미검증이다. 통과한 표시/예약/조회/65초연결분리를 변경이나 새 근거 없이 반복하지 않는다. 재개 시 배포판·서비스·소스 동기화를 확인한다. 일반403/불명 통신실패는 기존실패 처리한다.
 1. 공개 GitHub/GitLab 바이너리·빈 파일 실서비스5건은 통과했다. 실제 대형/설치형/비공개 응답으로 호환 범위를 확대하며 전체 변경 경로를 증명할 수 없는 응답이나 API 장애는 계속 실패 처리한다.
 2. 로컬 LiteLLM1.104.0→기존 Windows Ollama gemma3:1b의 실제 연결/인증은 검증했다. 운영 프록시·모델을 정하고 작은 합성 집합 외의 독립 사례·실제 범위와 사람의 의미 검토로 품질을 승인해야 한다. 현재6사례 품질0/6, 로컬 Prisma 보완은 유지보수 종료 의존성으로 운영 승인 대상이 아니다. 실제 설치형 GitLab·비공개 GitHub·유료 OpenAI 검증도 남아 있다.
 3. 실제 대형 저장소 부하/API할당량·다중 인스턴스 장시간 공정성/지연·장기 네트워크 단절·모니터링/보존 정책 구현·검증.429의 합성 검증은 `docs/EXTERNAL-RATE-LIMITS.md` 범위이며 실제 공급자 quota·24시간 지속 운영은 미검증이다. 로컬 단일WAR 중단·DB fast stop 복구는 `docs/QUEUE-VALIDATION.md`·`docs/DB-RECOVERY-VALIDATION.md` 범위로 통과했다.

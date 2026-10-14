@@ -107,6 +107,18 @@ jobs:
           python3 scripts/verify-review-concurrency.py \
             --war "$GITHUB_WORKSPACE/source/target/ai-code-reviewer.war" \
             --java "$java_bin" --psql "$psql_bin" --port-a 18090 --port-b 18091
+      - name: Verify live database connection loss and recovery
+        env:
+          TEST_DATABASE_URL: jdbc:postgresql://127.0.0.1:${{ job.services.postgres.ports['5432'] }}/reviewer_integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          java_bin="$(command -v java)"
+          psql_bin="$(command -v psql)"
+          python3 scripts/verify-review-network-recovery.py \
+            --war "$GITHUB_WORKSPACE/source/target/ai-code-reviewer.war" \
+            --java "$java_bin" --psql "$psql_bin" --port 18101 \
+            --report "$GITHUB_WORKSPACE/.local/review-network-ci.json"
       - name: Verify repeatable local candidate packaging
         env:
           CANDIDATE_SOURCE_REVISION: ${{ github.sha }}

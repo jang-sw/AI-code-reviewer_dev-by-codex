@@ -64,6 +64,55 @@ class LinuxPostgresSafetyTest(unittest.TestCase):
             with self.subTest(port=port), self.assertRaises(MODULE.SafetyError):
                 self.runner.selected_ports()
 
+    def test_network_recovery_is_opt_in_with_distinct_port_and_follows_required_pg_gate(self):
+        base = ['--pg-bin', str(self.pg_bin), '--java', str(self.args.java)]
+        self.assertFalse(MODULE.arguments(base).review_network_recovery)
+        args = MODULE.arguments(base + ['--review-network-recovery'])
+        self.runner.args = args
+        self.assertEqual(self.runner.selected_ports(), [55439, 18101])
+        args.review_network_recovery_port = 55439
+        with self.assertRaises(MODULE.SafetyError):
+            self.runner.selected_ports()
+        args.review_network_recovery_port = 18101
+        events = []
+        with patch.object(self.runner, 'command', side_effect=lambda *a, **k: events.append('build/gate')), \
+                patch.object(self.runner, 'drill', side_effect=lambda *a: events.append(a)):
+            self.runner.verify()
+        self.assertEqual(events, ['build/gate', 'build/gate', ('review-network-recovery', ['--port', '18101'])])
+        with patch.object(self.runner, 'command', side_effect=[None, MODULE.SafetyError('synthetic missing PG gate')]), \
+                patch.object(self.runner, 'drill') as drill, self.assertRaises(MODULE.SafetyError):
+            self.runner.verify()
+        drill.assert_not_called()
+
+    def test_network_child_cannot_claim_pass_without_fault_recovery_and_cleanup_evidence(self):
+        (self.workspace / 'scripts' / 'verify-review-network-recovery.py').write_text('# synthetic fixture', encoding='utf-8')
+        self.runner.logs.mkdir()
+        report = self.runner.logs / ('review-network-recovery-' + self.runner.token + '.json')
+        checks = ('ownedWarsStopped', 'ownedSchemaRemoved', 'ownedWorkRemoved', 'originalTestTablesPreserved',
+                  'ownedProxyStopped', 'ownedDatabaseSessionsGone', 'sameLiveWarRecovered', 'databaseProcessUnchanged',
+                  'unchangedRequestClaimAndSavedA', 'twoIssuesAndSafeCheckpoint')
+        variants = [(key, value) for key in checks for value in (False, None, 1, 'true')]
+        variants += [('blackholeSecondsObserved', value) for value in (None, True, 64.99, '65')]
+        variants += [('cleanupFailed', True), ('result', 'FAIL'), ('externalServicesUsed', True), (None, None)]
+        for field, value in variants:
+            def child(command, **kwargs):
+                self.assertTrue(kwargs['cooperative_cancel'])
+                self.assertNotIn('--pg-ctl', command)
+                outcome = {'result': 'PASS', 'cleanupFailed': False, 'externalServicesUsed': False, 'paidAiUsed': False,
+                           'blackholeSecondsObserved': 65.1, 'checks': dict.fromkeys(checks, True)}
+                if field in checks:
+                    outcome['checks'][field] = value
+                elif field is not None:
+                    outcome[field] = value
+                report.write_text(json.dumps(outcome), encoding='utf-8')
+            with self.subTest(field=field, value=value), patch.object(self.runner, 'command', side_effect=child):
+                if field is None:
+                    self.runner.drill('review-network-recovery', ['--port', '18101'])
+                else:
+                    with self.assertRaises(MODULE.SafetyError):
+                        self.runner.drill('review-network-recovery', ['--port', '18101'])
+            report.unlink()
+
     def test_shared_auth_is_opt_in_and_runs_after_clean_build_and_pg_gate(self):
         events = []
         with patch.object(self.runner, 'command', side_effect=lambda *a, **k: events.append('build/gate')), \

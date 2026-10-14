@@ -45,3 +45,37 @@ python scripts/verify-review-db-recovery.py
 보고서에는 전달받은 `parentRunToken`을 기록한다. 정리 후 현재 클러스터의 디스크·SQL 소유권을 다시 확인한 경우에만 `parentOwnedPostmaster`의 PID와 시작 시각을 기록한다. 실패한 시작 뒤 나타난 모호한 PID, 예고 없는 PID 교체, marker 불일치는 인계 대상으로 기록하지 않는다. 부모는 고유 보고서의 실행 토큰을 확인한 뒤에만 인계를 받아 마지막 종료 대상을 갱신해야 한다. 인계 실패가 부모의 무조건 종료로 이어져서는 안 된다.
 
 이는 한 번의 fast stop과 재연결·작업 복구를 검증한다. OS 강제 종료, WAL 손상, 장시간 네트워크 단절, 여러 운영 DB/노드, 실제 서비스의 복구 시간이나 외부 AI 과금의 정확히 한 번 실행을 보장하지 않는다. 중단 시 미저장 B의 AI 호출이 반복되는 것은 의도한 시나리오다. 운영 백업/복원·대형 부하·Linux 서비스 종료 검증은 별도로 남는다.
+
+## 살아 있는 DB의 연결 단절 검증
+
+`scripts/verify-review-network-recovery.py`는 DB 프로세스를 유지하며 직접 시작한 WAR의 DB 연결만 loopback TCP 프록시로 차단한다. 실제 방화벽이나 사용자 네트워크 설정은 바꾸지 않는다. PostgreSQL의 즉시 연결 종료와 달리, 양방향 application stream의 바이트를 버려 실제 pgJDBC/Hikari 시간 제한·죽은 연결 퇴출·새 연결 확보를 확인하는 선택 시험이다. kernel packet loss나 TCP 재전송 전체를 재현하는 도구는 아니다.
+
+권장 Linux 재현은 저장소 루트에서 다음을 실행하는 것이다. 일반 Linux 사용자와 native 파일시스템의 전용PG17/Java25를 사용한다. 전체 빌드와 필수PG 보고 gate가 통과한 뒤에만 실행하며 WAR 기본포트는18101이다.
+
+```bash
+python3 scripts/test-postgres-linux.py \
+  --pg-bin /usr/lib/postgresql/17/bin \
+  --java /usr/lib/jvm/temurin-25-jdk-amd64/bin/java \
+  --review-network-recovery
+```
+
+기존의 검증용 `reviewer_integration` DB를 명시적으로 사용할 때는 다음과 같이 직접 실행할 수 있다. `TEST_DATABASE_URL`은 query 없는 명시적 loopback JDBC URL이어야 하며, 계정/비밀번호는 기존 검증과 같은 환경변수로 전달한다. URL의 이름만으로 소유권이 보장되지 않으므로 임의의 운영DB를 연결하지 않는다. 증거 경로는 이번 checkout의 `.local` 안에서 존재하지 않는 새 파일을 지정한다.
+
+```bash
+python3 scripts/verify-review-network-recovery.py \
+  --war /absolute/path/ai-code-reviewer.war \
+  --java /absolute/path/java --psql /absolute/path/psql \
+  --port 18101 --report /absolute/checkout/.local/network-new.json
+```
+
+새 UUID schema에 합성 사용자/프로젝트를 만들고, 관측자는 원래DB로 직접 접속하며 WAR만 전용 프록시로 접속한다. A 저장·B의 AI 응답 보류를 확인한 뒤 양방향 전달을65초 중지하고 B 응답을 허용한다. query5초/socket10초/connect5초·pool 연결 대기10초인 검증 설정을 사용한다. 준비503/생존200의 상태 전용 응답, 작업자 DB 실패·요청ID/담당자/접수시각/claim/run/attempt·A저장/진행 시각 보존·B미저장과 DB PID/시작시각 불변을 관측한다. 실제 기본 운영 한도의 복구 SLA로 해석하지 않는다.
+
+프록시는 기존 연결의 양쪽 소켓을 닫고 새 연결만 전달하며, 같은 WAR가 새claim/run·attempt2로 재개해야 한다. 이전 결과A의 내용/AI는1회, 미저장B는2회이고 이슈2개·진행기준B·새 실행의 진행 카드가 맞아야 한다. SQL로 접수/재시도 시각을 당기지 않는다. 이전 작업자의 저장 거절은 기존PG fencing 회귀의 범위이며 이 시험은 새 토큰 발급과 기존 결과 보존을 확인한다.
+
+모든 경로에서 직접 시작한 WAR·fixture·프록시만 종료한다. 프록시는 단일 selector 스레드, 최대32연결·방향별64KiB buffer·유한 전환/종료 시간을 사용하며 payload를 기록하지 않는다. EOF는 전달해 취소한 클라이언트가 서버 세션을 붙잡지 않게 한다. WAR 종료·프록시 정리·고유 ApplicationName의 DB 세션0건 후 schema OID/owner/marker를 재검사해 직접 만든 schema만 삭제한다. 원본14테이블 지문과 DB 프로세스 불변, 작업 디렉터리 제거가 확인돼야PASS다. 실패·정리 실패·SIGTERM은 합격으로 기록하지 않고 기존 보고서를 덮어쓰지 않는다.
+
+이 시나리오는 한 번의 제한된 연결 분리·재연결이며, commit 응답만 유실되는 경우·몇 시간의 단절·운영 다중 서버·실제 Git/AI 호출·과금 중복 방지를 검증하지 않는다. 자동화는 CI에 정의했으며 실제 원격 실행과 이번 로컬 실행 결과는 WORK.md에서 구분한다.
+
+2026-10-15 WSL의 검증WAR와 새 부모PG 실행에서65.020초 단절·총77.532초에 통과했다. 작업자 실패는30.495초 후 관측했고55회 관측에서 원 요청/토큰·A의 저장과 진행 기록이 보존됐다. 같은WAR/요청의 새claim·attempt2로B만 재검토해 이슈2개·진행기준B를 확인했다. 프록시 accepted17/peakActive4/폐기930바이트/연결오류0, 소유WAR/프록시/세션/schema/work·부모PG 정리·원본14테이블 지문 보존을 확인했다. 실제 운영 시간 제한의 성능 보장은 아니다. 근거는 Git 제외 `.local/session17-network-trial1.json`이다.
+
+같은 날 실제 단절 중 작업자DB실패와A보존을 확인한 뒤 자식도구에SIGTERM을 보냈다.65초 관측이 끝나기 전 취소되어 보고서는FAIL·종료130·KeyboardInterrupt를 유지했고, 소유WAR/프록시/세션/schema/work·원본14테이블과 부모PG종료 정리를 확인했다. 이 취소 검증은42.662초에 통과했으며 정상복구 합격과 구분한다. 근거는 `.local/session17-network-cancel.json`이다.
