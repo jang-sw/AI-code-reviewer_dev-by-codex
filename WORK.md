@@ -1,10 +1,10 @@
 # 현재 작업 상태
 
 - 작업: 실사용 AI 소스코드 리뷰 시스템. **개발 중, 릴리스 완료 아님.**
-- 이번 회차: 2026-10-15 00:10 KST 시작, 최대02:10 KST까지 진행한다.
+- 이번 회차: 2026-10-15 00:10 KST 시작,00:33 KST 기준 구현·검증·후보 포장·소유자원 정리를 마쳤다. 최대2시간 제한 이내다.
 - 기록 기준: `main` / 시작 `e94c27d`. 시작 작업 트리는 깨끗하고 현재 로컬 origin/main과 같았다. 이전 회차의 미푸시 기록과 달라졌으며 이번에는 원격 변경 없이 로컬 커밋만 진행한다.
 - 이번 완료 조건: AI 모델 선정 보류를 유지하고 현재PC·WSL의 격리 자료로 장기 통신 중단·미완료 요청 복구의 미검증 경계를 확인한다. 필요한 최소 구현·회귀와 실제 WAR/PG 검증, 소유자원 정리·재개 기록을 남긴다.
-- 이번 단계: 외부 오류 상태 개선을 `5a0b4dc`로 로컬 커밋했다. Java1238통과/11선택skip·필수PG9묶음, Python311건 양OS PASS. 실제65초 DB연결 blackhole·동일WAR/요청 재개·커밋 재사용·정리와 장애 중 SIGTERM 취소를 통과했다. 후보 포장·종합 정리는 남았다. JVM 최대heap384MiB로 순차 검증하며 실제모델호출은없다.
+- 이번 단계: 외부 오류 상태 개선 `5a0b4dc`와 DB연결분리 검증 `7c23eab`를 로컬 커밋했다. Java1238통과/11선택skip·필수PG9묶음, Python311건 양OS, 실제65초단절/동일요청재개와SIGTERM취소정리 PASS. 동일28파일 후보2개·전체체크섬·종합정리까지 확인했다. JVM최대heap384MiB로순차검증했으며 모델호출/다운로드·푸시·운영배포는없다.
 - 확정 요구사항: `docs/REQUIREMENTS.md`. 내부 이슈함 우선, 최초 전체 이력, Java25/Spring/Maven/JSP/PostgreSQL 유지.
 - 재개 시 이 문서와 실제 Git 상태를 대조하고 아래 다음 작업부터 진행한다. 모든 릴리스 항목 검증 전 완료라고 보고하지 않는다.
 
@@ -60,6 +60,8 @@
 - 실제WSL 단일WAR/살아있는PG의 양방향application-byte blackhole65.020초,총77.532초 PASS. query5/socket10/connect5초·pool10초의 합성설정에서 작업자실패30.495초,55회 관측 동안 요청ID/담당자/접수시각/claim/run/attempt·A저장1/이슈1/진행시각/빈cursor가 보존됐다. 준비503/생존200·상태전용 응답, DB PID/시작시각 불변, 같은WAR·같은요청의 새claim/run/attempt2·A내용/AI1회/B2회·이슈2/진행기준B·새진행카드를 확인했다. `.local/session17-network-trial1.json`과 `.local/linux-postgres-970b6fcd2b6846b58c0fc0dfb39be95e`에 근거가 있다. SQL시각 조정·DB프로세스 종료·실제Git/AI호출은없다.
 - 프록시17연결·최대동시4·폐기930바이트·connectionErrors0, WAR/프록시/고유ApplicationName DB세션0·schemaOID/owner/marker확인후삭제·원본14테이블지문·작업디렉터리·부모PG정리 PASS. 기본운영45초socket한도의SLA·kernel packet loss·commit응답만유실·몇시간단절·운영다중서버는 검증하지 않았다. 신규부모옵션/CI 연결과 재현범위는 `docs/DB-RECOVERY-VALIDATION.md`에 기록했다. 기존운영안내의 예약풀3스레드를 실제코드기본4와 인증제한정리작업을 포함하도록 정정했다.
 - 실제단절중 작업자DB실패·A보존을 확인한 뒤 자식도구에SIGTERM을보낸 검증도42.662초 PASS. 자식은65초관측미완료를FAIL/종료130·KeyboardInterrupt로남기고 WAR/프록시/세션/schema/work를정리했으며 원본14테이블/부모PG동일성·최종부모종료를확인했다. `.local/session17-network-cancel.json`. 취소시험의 기대실패를 정상복구합격으로세지않는다.
+- `7c23eab612e41e317ca9669ce55f668117bc9789` 자료와 최종검증WAR의28파일후보2개는 동일바이트·전체내부/외부체크섬·manifest·고정메타데이터·원본WAR를통과했다. 아카이브SHA256 `d67d60181fe40e444a2ad9d8f8d9ae349294ee1cb6677ac5e02faf0d19633601`,38,078,290바이트. Windows `.local/session17-candidate`로복사후해시도확인했다. 설치하지않았고 `releaseApproved=false`다. 소스식별자는운영자제공기록이며WAR출처증명과구분한다. 본결과문단은후보생성이후작성했다.
+- 양OS `.local/session17-validation-summary.json`에 Java/Python·실제연결복구/취소·후보·정리를모았다. Linux24포트·PG PID/lock부재·소유WAR/프록시/keeper종료·기존서비스3개inactive/disabled를확인했다. keeper는PID/시작시각/UID/명령을대조한뒤종료했다. 소스307파일각OS해시동기화·독립staged전체검토·공백/비밀정보검사도통과했다. 기존Windows Ollama/개발PG는변경하지않았다.
 
 ### 이전 회차: 오류 복구·빈 페이지·누적 목록
 
@@ -247,5 +249,5 @@
 - 운영 대상은 사용자 답변으로 Linux 서버, 도커 미사용으로 확정했다(2026-09-26). 사용자 요청에 따른 전용 WSL2 Ubuntu 로컬 Linux 환경 구축과 설치/복구 검증은 2026-10-02 수행했다. 실제 서버 배포는 별도 승인 대상이다.
 - origin: jang-sw/code-reviewer_by-codex. main 직접 푸시 별도 승인 없음 → 로컬 커밋만, 푸시/배포 없음.
 - `.local/pg-test`: Windows 개발검증 전용127.0.0.1:55432. Windows `.local/pg-validation` 및 staged snapshot의pg-validation:55439. Linux PGDATA는 Linux 홈의 별도 checkout에만 만들고 Windows PGDATA를 공유하지 않는다.
-- `.local`은 Git 제외. 이번 Linux 부모 WAR/PG와 새 UUID schema를 정리하고80/443/8080~8082/18080/18081/18089~18100/55439/55449/14000/14001 총23개 포트 연결 불가·검증 PID/lock 부재를 확인했다. Windows 임시bridge18081도 닫혔다. 이전 앱·Nginx·서비스PG는 계속inactive/disabled이며 서비스PG manual 설정을 유지한다. 원본 합성 DB·root 전용 설정/백업·후보·시험 기록은 전용 WSL에 보존한다. 소유keeper도PID/시작시각·명령·UID대조후종료확인했다(`.local/session16-validation-summary.json`). 사용자Windows Ollama/55432 PG를변경하지않았고 Windows재부팅은수행하지않았다.
+- `.local`은 Git 제외. 이번 Linux 부모 WAR/PG·프록시와 새 UUID schema를 정리하고80/443/8080~8082/18080/18081/18089~18101/55439/55449/14000/14001 총24개 포트 연결 불가·검증 PID/lock 부재를 확인했다. 이번에는 Windowsbridge를시작하지않았다. 이전 앱·Nginx·서비스PG는 계속inactive/disabled이며 서비스PG manual 설정을 유지한다. 원본 합성 DB·root 전용 설정/백업·후보·시험 기록은 전용 WSL에 보존한다. 소유keeper도PID/시작시각·명령·UID대조후종료확인했다(`.local/session17-validation-summary.json`). 사용자Windows Ollama/55432 PG를변경하지않았고 Windows재부팅은수행하지않았다.
 - 런타임 Git 수집은 매번 pinned 전체 이력을 재검증, 기본1000페이지/metadata32MiB/저장SHA131072개 안전 한도. 제한을 자동 확장/절삭하지 않는다.
