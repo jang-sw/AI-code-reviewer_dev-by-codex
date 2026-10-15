@@ -347,6 +347,202 @@ class AdminEmptyPageHttpTest {
         assertThat(followRecovery(html, "users-first-page")).contains("조회 조건에 맞는 사용자가 없습니다");
     }
 
+    @Test
+    void staleGitCorrectionExplainsCurrentValueOutsideTheListAndItsFreshRetryChangesOnlyTheIntendedAccount() throws Exception {
+        long target = syntheticAccount("correction_target");
+        syntheticAccount("other_admin");
+        jdbc.update("UPDATE app_user SET role='ADMIN' WHERE username='other_admin'");
+        jdbc.update("UPDATE app_user SET enabled=FALSE,approval_status='REJECTED' WHERE id=?", target);
+        String oldForm = httpGet("/admin/users?status=REJECTED&search=correction_target").body();
+        String path = "/admin/users/" + target + "/git-username";
+        mvc.perform(post(CONTEXT + path).contextPath(CONTEXT)
+                        .with(user(details.loadUserByUsername("other_admin"))).with(csrf())
+                        .param("expectedGitUsername", "correction_target").param("newGitUsername", "already-corrected"))
+                .andExpect(status().is3xxRedirection());
+        var before = domainState();
+        var attempted = Map.of("_csrf", formValue(oldForm, "_csrf"), "expectedGitUsername", "correction_target",
+                "newGitUsername", "intended-name", "status", "PENDING", "search", "different-account", "page", "3");
+
+        var stale = httpPost(path, attempted);
+        assertThat(stale.statusCode()).isEqualTo(409);
+        assertThat(stale.headers().firstValue("Location")).isEmpty();
+        assertThat(stale.headers().firstValue("Cache-Control").orElseThrow()).contains("no-store");
+        assertThat(stale.body()).contains("대상 아이디: <strong>correction_target</strong>",
+                        "현재 Git 사용자명: <strong>already-corrected</strong>", "다른 관리자가 Git 계정을 변경했습니다.",
+                        "href=\"#git-correction-value\"", "이 페이지에 표시할 사용자가 없습니다")
+                .doesNotContain("value=\"correction_target\"");
+        String retry = formFor(stale.body(), path);
+        assertThat(formValue(retry, "expectedGitUsername")).isEqualTo("already-corrected");
+        assertThat(formValue(retry, "newGitUsername")).isEqualTo("intended-name");
+        assertThat(formValue(retry, "status")).isEqualTo("PENDING");
+        assertThat(formValue(retry, "search")).isEqualTo("different-account");
+        assertThat(formValue(retry, "page")).isEqualTo("3");
+        String field = elementOpeningTag(retry, "git-correction-value");
+        assertThat(field).contains("aria-invalid=\"true\"");
+        List<String> descriptions = List.of(attribute(field, "aria-describedby").split("\\s+"));
+        assertThat(descriptions).hasSize(2).contains("git-correction-help");
+        var errorIds = Pattern.compile("<p\\b([^>]*)>(.*?)</p>", Pattern.DOTALL).matcher(stale.body()).results()
+                .filter(match -> match.group(1).contains("role=\"alert\"") && match.group(2).contains("href=\"#git-correction-value\""))
+                .map(match -> attribute(match.group(1), "id")).toList();
+        assertThat(errorIds).hasSize(1);
+        assertThat(descriptions).contains(errorIds.getFirst());
+        for (String description : descriptions) {
+            assertThat(Pattern.compile("\\bid=\"" + Pattern.quote(description) + "\"").matcher(stale.body()).results().count()).isEqualTo(1);
+        }
+        assertThat(domainState()).isEqualTo(before);
+
+        var saved = httpPost(path, Map.of("_csrf", formValue(retry, "_csrf"),
+                "expectedGitUsername", formValue(retry, "expectedGitUsername"), "newGitUsername", formValue(retry, "newGitUsername"),
+                "status", formValue(retry, "status"), "search", formValue(retry, "search"), "page", formValue(retry, "page")));
+        assertThat(saved.statusCode()).isEqualTo(302);
+        assertThat(uri("/").resolve(saved.headers().firstValue("Location").orElseThrow()))
+                .isEqualTo(uri("/admin/users?status=PENDING&search=different-account&page=3"));
+        var expectedAccount = new LinkedHashMap<>(before.get("app_user").stream().filter(row -> ((Number) row.get("id")).longValue() == target).findFirst().orElseThrow());
+        expectedAccount.put("git_username", "intended-name");
+        assertThat(jdbc.queryForMap("SELECT * FROM app_user WHERE id=?", target)).isEqualTo(expectedAccount);
+        var after = domainState();
+        assertThat(after.get("app_user").stream().filter(row -> ((Number) row.get("id")).longValue() != target).toList())
+                .isEqualTo(before.get("app_user").stream().filter(row -> ((Number) row.get("id")).longValue() != target).toList());
+        assertThat(after.get("audit_event")).hasSize(before.get("audit_event").size() + 1);
+        assertThat(after.get("audit_event").getLast()).containsEntry("actor_id", administratorId)
+                .containsEntry("action", "USER_GIT_USERNAME_CHANGED").containsEntry("target_id", target);
+        for (String table : before.keySet()) {
+            if (!List.of("app_user", "audit_event").contains(table)) assertThat(after.get(table)).as(table).isEqualTo(before.get(table));
+        }
+    }
+
+    @Test
+    void mappingErrorRestoresTheActualFiftyFirstMatchingUserWithoutExpandingOrDuplicatingTheSearchPage() throws Exception {
+        for (int i = 0; i < 51; i++) syntheticAccount(String.format(java.util.Locale.ROOT, "mapping_%03d", i));
+        long selected = jdbc.queryForObject("SELECT id FROM app_user WHERE username='mapping_050'", Long.class);
+        String initial = httpGet("/admin/git-authors?userSearch=mapping_").body();
+        var initiallyDisplayed = userOptions(initial);
+        assertThat(initiallyDisplayed).hasSize(50).doesNotContainKey(selected);
+        assertThat(initiallyDisplayed.values()).containsExactlyElementsOf(IntStream.range(0, 50)
+                .mapToObj(i -> String.format(java.util.Locale.ROOT, "mapping_%03d", i)).toList());
+        var before = domainState();
+
+        var response = httpPost("/admin/git-authors", Map.of("_csrf", formValue(initial, "_csrf"),
+                "userId", Long.toString(selected), "repositoryOrigin", "https://github.com", "authorEmail", "incorrect-email",
+                "userSearch", "mapping_", "page", "2"));
+        assertThat(response.statusCode()).isEqualTo(400);
+        assertThat(response.headers().firstValue("Location")).isEmpty();
+        String html = response.body();
+        var restored = userOptions(html);
+        assertThat(restored).hasSize(51).containsAllEntriesOf(initiallyDisplayed);
+        assertThat(restored.get(selected)).isEqualTo("mapping_050 (직전 선택 · 현재 활성)");
+        assertThat(Pattern.compile("<option\\b[^>]*value=\"" + selected + "\"[^>]*selected").matcher(html).results().count()).isEqualTo(1);
+        assertThat(html).contains("활성 사용자 50명까지 표시합니다.", "href=\"#authorEmail\"", "직전 선택 · 현재 활성");
+        String retry = formFor(html, "/admin/git-authors");
+        assertThat(formValue(retry, "repositoryOrigin")).isEqualTo("https://github.com");
+        assertThat(formValue(retry, "authorEmail")).isEqualTo("incorrect-email");
+        assertThat(formValue(retry, "userSearch")).isEqualTo("mapping_");
+        assertThat(formValue(retry, "page")).isEqualTo("2");
+        assertThat(elementOpeningTag(retry, "authorEmail")).contains("aria-invalid=\"true\"", "mapping-email-error");
+        assertThat(domainState()).isEqualTo(before);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"APPROVED", "PENDING", "REJECTED"})
+    void mappingSubmissionAfterTheSelectedAccountBecomesInactiveAsksForANewEligibleSelection(String approval) throws Exception {
+        long selected = syntheticAccount("stale_selection");
+        String initial = httpGet("/admin/git-authors?userSearch=stale_selection").body();
+        assertThat(userOptions(initial)).containsEntry(selected, "stale_selection");
+        jdbc.update("UPDATE app_user SET enabled=FALSE,approval_status=? WHERE id=?", approval, selected);
+        var before = domainState();
+
+        var response = httpPost("/admin/git-authors", Map.of("_csrf", formValue(initial, "_csrf"),
+                "userId", Long.toString(selected), "repositoryOrigin", "https://github.com", "authorEmail", "safe+fixture@example.invalid",
+                "userSearch", "stale_selection", "page", "2"));
+        assertThat(response.statusCode()).isEqualTo(400);
+        assertInactiveMappingRecovery(response.body(), selected, "safe+fixture@example.invalid");
+        assertThat(response.body()).doesNotContain("id=\"mapping-email-error\"");
+        assertThat(domainState()).isEqualTo(before);
+    }
+
+    @Test
+    void invalidMappingEmailStillExplainsWhyTheFormerlyEligibleSelectionWasCleared() throws Exception {
+        long selected = syntheticAccount("stale_selection");
+        String initial = httpGet("/admin/git-authors?userSearch=stale_selection").body();
+        jdbc.update("UPDATE app_user SET enabled=FALSE WHERE id=?", selected);
+        var before = domainState();
+
+        var response = httpPost("/admin/git-authors", Map.of("_csrf", formValue(initial, "_csrf"),
+                "userId", Long.toString(selected), "repositoryOrigin", "https://github.com", "authorEmail", "incorrect-email",
+                "userSearch", "stale_selection", "page", "2"));
+        assertThat(response.statusCode()).isEqualTo(400);
+        assertInactiveMappingRecovery(response.body(), selected, "incorrect-email");
+        assertThat(response.body()).contains("href=\"#authorEmail\"", "id=\"mapping-email-error\"");
+        assertThat(elementOpeningTag(response.body(), "authorEmail")).contains("aria-invalid=\"true\"", "mapping-email-error");
+        assertThat(domainState()).isEqualTo(before);
+    }
+
+    private static void assertInactiveMappingRecovery(String html, long selected, String email) {
+        assertThat(userOptions(html)).doesNotContainKey(selected);
+        assertThat(html).contains("href=\"#userId\"", "id=\"mapping-user-error\"", "승인된 활성 사용자")
+                .doesNotContain("직전 선택 · 현재 활성");
+        String retry = formFor(html, "/admin/git-authors");
+        assertThat(elementOpeningTag(retry, "userId")).contains("aria-invalid=\"true\"", "mapping-user-error");
+        assertThat(formValue(retry, "repositoryOrigin")).isEqualTo("https://github.com");
+        assertThat(formValue(retry, "authorEmail")).isEqualTo(email);
+        assertThat(formValue(retry, "userSearch")).isEqualTo("stale_selection");
+        assertThat(formValue(retry, "page")).isEqualTo("2");
+    }
+
+    private long syntheticAccount(String username) {
+        jdbc.update("INSERT INTO app_user(username,password_hash,git_username,role,enabled,approval_status) VALUES(?,'unused-synthetic-hash',?,'USER',TRUE,'APPROVED')",
+                username, username);
+        return jdbc.queryForObject("SELECT id FROM app_user WHERE username=?", Long.class, username);
+    }
+
+    private HttpResponse<String> httpPost(String path, Map<String, String> fields) throws Exception {
+        String body = fields.entrySet().stream().map(entry -> encode(entry.getKey()) + "=" + encode(entry.getValue()))
+                .collect(java.util.stream.Collectors.joining("&"));
+        return browser.send(HttpRequest.newBuilder(uri(path)).timeout(Duration.ofSeconds(10))
+                        .header("Content-Type", "application/x-www-form-urlencoded")
+                        .POST(HttpRequest.BodyPublishers.ofString(body)).build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+    }
+
+    private static String formFor(String html, String path) {
+        var forms = Pattern.compile("<form\\b([^>]*)>(.*?)</form>", Pattern.DOTALL).matcher(html).results()
+                .filter(match -> match.group(1).contains("method=\"post\"")
+                        && match.group(1).contains("action=\"" + CONTEXT + path + "\""))
+                .map(java.util.regex.MatchResult::group).toList();
+        assertThat(forms).hasSize(1);
+        return forms.getFirst();
+    }
+
+    private static String formValue(String html, String name) {
+        var values = Pattern.compile("<input\\b[^>]*>").matcher(html).results().map(java.util.regex.MatchResult::group)
+                .filter(tag -> tag.contains("name=\"" + name + "\""))
+                .map(tag -> attribute(tag, "value")).distinct().toList();
+        assertThat(values).as(name).hasSize(1);
+        return values.getFirst();
+    }
+
+    private static String elementOpeningTag(String html, String id) {
+        var tags = Pattern.compile("<(?:input|select)\\b[^>]*>").matcher(html).results().map(java.util.regex.MatchResult::group)
+                .filter(tag -> tag.contains("id=\"" + id + "\"")).toList();
+        assertThat(tags).as(id).hasSize(1);
+        return tags.getFirst();
+    }
+
+    private static String attribute(String tag, String name) {
+        var value = Pattern.compile("\\b" + Pattern.quote(name) + "=\"([^\"]*)\"").matcher(tag);
+        assertThat(value.find()).as(name).isTrue();
+        return value.group(1);
+    }
+
+    private static Map<Long, String> userOptions(String html) {
+        var select = Pattern.compile("<select\\b[^>]*id=\"userId\"[^>]*>(.*?)</select>", Pattern.DOTALL).matcher(html);
+        assertThat(select.find()).isTrue();
+        Map<Long, String> options = new LinkedHashMap<>();
+        Pattern.compile("<option\\b[^>]*value=\"([0-9]+)\"[^>]*>([^<]+)</option>").matcher(select.group(1)).results().forEach(match -> {
+            assertThat(options.put(Long.valueOf(match.group(1)), match.group(2))).as("duplicate selectable user").isNull();
+        });
+        return options;
+    }
+
     private MockHttpServletRequestBuilder adminGet(String path) {
         return get(CONTEXT + path).contextPath(CONTEXT).with(user(details.loadUserByUsername(ADMIN)));
     }

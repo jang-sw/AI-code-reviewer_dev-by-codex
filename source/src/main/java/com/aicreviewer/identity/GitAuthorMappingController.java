@@ -3,6 +3,7 @@ package com.aicreviewer.identity;
 import jakarta.servlet.http.HttpServletResponse;
 import java.net.URI;
 import java.security.Principal;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.regex.Pattern;
 import org.springframework.http.HttpStatus;
@@ -70,7 +71,11 @@ public class GitAuthorMappingController {
             String safeEmail = safeText(authorEmail, 320);
             model.addAttribute("mappingForm", Map.of("userId", selected.map(option -> Long.toString(option.id())).orElse(""),
                     "repositoryOrigin", safeOrigin, "authorEmail", safeEmail));
-            model.addAttribute("mappingErrors", exception.fieldErrors());
+            var errors = new LinkedHashMap<>(exception.fieldErrors());
+            if (targetId > 0 && selected.isEmpty()) {
+                errors.putIfAbsent("userId", "직전 선택을 현재 사용할 수 없습니다. 승인된 활성 사용자 계정을 다시 선택해 주세요.");
+            }
+            model.addAttribute("mappingErrors", errors);
             model.addAttribute("mappingFormCleared", (!repositoryOrigin.isEmpty() && safeOrigin.isEmpty())
                     || (!authorEmail.isEmpty() && safeEmail.isEmpty()));
             response.setStatus(exception.status().value());

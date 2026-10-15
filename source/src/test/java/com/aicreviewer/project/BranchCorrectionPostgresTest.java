@@ -3,6 +3,7 @@ package com.aicreviewer.project;
 import com.aicreviewer.identity.AuditEventWriter;
 import com.aicreviewer.identity.UserAccountService;
 import com.aicreviewer.review.PostgresProjectReviewLock;
+import com.aicreviewer.review.ReviewRecoveryService;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -18,6 +19,7 @@ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Duration;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
@@ -189,6 +191,53 @@ class BranchCorrectionPostgresTest {
         }
         assertThat(jdbc.queryForMap("SELECT * FROM project WHERE id=?", projectId)).isEqualTo(project);
         assertThat(history()).isEqualTo(history);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audit_event", Long.class)).isZero();
+        try (var lease = locks().tryAcquire(projectId).orElseThrow()) { assertThat(lease).isNotNull(); }
+    }
+
+    @ParameterizedTest @ValueSource(booleans = {true, false})
+    void administratorRevokedDuringProjectRowLockWaitCannotResetProgressOrAudit(boolean disabled) throws Exception {
+        var project = jdbc.queryForMap("SELECT * FROM project WHERE id=?", projectId);
+        var history = history();
+        var owner = jdbc.queryForMap("SELECT * FROM app_user WHERE id=1");
+        var actor = new LinkedHashMap<>(jdbc.queryForMap("SELECT * FROM app_user WHERE id=3"));
+        actor.put(disabled ? "enabled" : "role", disabled ? false : "USER");
+        actor.put("security_version", ((Number) actor.get("security_version")).longValue() + 1);
+        var audit = new AuditEventWriter(jdbc);
+        var recovery = new ReviewRecoveryService(jdbc,
+                new UserAccountService(jdbc, new BCryptPasswordEncoder(4), audit), audit,
+                locks(), new DataSourceTransactionManager(source));
+        try (var blocker = source.getConnection(); var workers = Executors.newSingleThreadExecutor()) {
+            blocker.setAutoCommit(false);
+            try {
+                try (var statement = blocker.prepareStatement("SELECT id FROM project WHERE id=? FOR UPDATE")) {
+                    statement.setLong(1, projectId);
+                    try (var rows = statement.executeQuery()) { assertThat(rows.next()).isTrue(); }
+                }
+                var pending = workers.submit(() -> {
+                    try {
+                        recovery.resetProgress("admin", projectId, "https://github.com/fixture/branch", CURSOR,
+                                "확인한 이력 변경 뒤 진행 기준을 복구합니다");
+                        return 200;
+                    } catch (ResponseStatusException denied) { return denied.getStatusCode().value(); }
+                });
+                awaitLockedQuery("SELECT repository_url, status, last_reviewed_sha FROM project");
+                assertThat(locks().tryAcquire(projectId)).isEmpty();
+                // Revoke only this fixture's actor after PostgreSQL proves the recovery is waiting.
+                // Demotion is a direct fixture mutation; there is no product role-change action.
+                if (disabled) {
+                    jdbc.update("UPDATE app_user SET enabled=FALSE,security_version=security_version+1 WHERE id=3");
+                } else {
+                    jdbc.update("UPDATE app_user SET role='USER',security_version=security_version+1 WHERE id=3");
+                }
+                blocker.commit();
+                assertThat(pending.get(10, TimeUnit.SECONDS)).isEqualTo(disabled ? 401 : 403);
+            } finally { blocker.rollback(); workers.shutdownNow(); }
+        }
+        assertThat(jdbc.queryForMap("SELECT * FROM project WHERE id=?", projectId)).isEqualTo(project);
+        assertThat(history()).isEqualTo(history);
+        assertThat(jdbc.queryForMap("SELECT * FROM app_user WHERE id=1")).isEqualTo(owner);
+        assertThat(jdbc.queryForMap("SELECT * FROM app_user WHERE id=3")).isEqualTo(actor);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audit_event", Long.class)).isZero();
         try (var lease = locks().tryAcquire(projectId).orElseThrow()) { assertThat(lease).isNotNull(); }
     }

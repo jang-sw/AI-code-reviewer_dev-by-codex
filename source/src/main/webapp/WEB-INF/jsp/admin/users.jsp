@@ -32,14 +32,14 @@
 <c:if test="${not empty gitCorrectionTarget}">
 <section class="card" aria-labelledby="git-correction-title">
   <h2 id="git-correction-title">Git 사용자명 정정</h2>
-  <p role="alert" class="form-error"><a href="#git-correction-value"><c:out value="${gitCorrectionError}"/></a></p>
+  <p id="git-correction-error" role="alert" class="form-error"><a href="#git-correction-value"><c:out value="${gitCorrectionError}"/></a></p>
   <p>대상 아이디: <strong><c:out value="${gitCorrectionTarget.username}"/></strong> · 현재 Git 사용자명: <strong><c:out value="${gitCorrectionTarget.gitUsername}"/></strong></p>
   <c:url var="gitCorrectionAction" value="/admin/users/${gitCorrectionTarget.id}/git-username"/>
   <form method="post" action="<c:out value='${gitCorrectionAction}'/>" class="form-stack">
     <input type="hidden" name="<c:out value='${_csrf.parameterName}'/>" value="<c:out value='${_csrf.token}'/>">
     <input type="hidden" name="expectedGitUsername" value="<c:out value='${gitCorrectionTarget.gitUsername}'/>">
     <input type="hidden" name="status" value="<c:out value='${approvalFilter}'/>"><input type="hidden" name="search" value="<c:out value='${search}'/>"><input type="hidden" name="page" value="<c:out value='${page}'/>">
-    <label for="git-correction-value">새 Git 사용자명</label><input id="git-correction-value" name="newGitUsername" required maxlength="100" autocomplete="off" aria-invalid="true" aria-describedby="git-correction-help" value="<c:out value='${gitCorrectionValue}'/>">
+    <label for="git-correction-value">새 Git 사용자명</label><input id="git-correction-value" name="newGitUsername" required maxlength="100" autocomplete="off" aria-invalid="true" aria-describedby="git-correction-error git-correction-help" value="<c:out value='${gitCorrectionValue}'/>">
     <p id="git-correction-help" class="muted">토큰·비밀번호를 입력하지 마세요. 안전한 사용자명 형태의 입력만 복원합니다. 기존 이슈의 담당자는 유지하며, 정정 후 새 작성자 매칭 조회부터 반영합니다. 이미 매칭 중인 리뷰는 이전 배정으로 저장될 수 있습니다.</p>
     <button type="submit">Git 사용자명 저장</button>
   </form>

@@ -44,7 +44,7 @@ public class ReviewRecoveryService {
         try (lease) {
             // executeWithoutResult commits (or rolls back) before returning; close the lease afterward.
             transactions.executeWithoutResult(transaction -> {
-                var actor = users.requireAdmin(username);
+                users.requireAdmin(username);
                 var projects = jdbc.query("SELECT repository_url, status, last_reviewed_sha FROM project WHERE id = ? FOR UPDATE",
                         (rs, row) -> new RecoveryProject(rs.getString("repository_url"), rs.getString("status"), rs.getString("last_reviewed_sha")), projectId);
                 if (projects.isEmpty()) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "프로젝트를 찾을 수 없습니다.");
@@ -56,6 +56,8 @@ public class ReviewRecoveryService {
                 if (!project.repositoryUrl().equals(repositoryUrl)) {
                     throw new ReviewRecoveryException(REPOSITORY_MISMATCH);
                 }
+                // Waiting for the project row can outlive the administrator's authorization.
+                var actor = users.requireAdmin(username);
                 jdbc.update("UPDATE project SET last_reviewed_sha = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?", projectId);
                 audit.write(actor.id(), "PROJECT_REVIEW_PROGRESS_RESET", "PROJECT", projectId,
                         "oldSha=" + project.cursor() + "; reason=" + explanation);
