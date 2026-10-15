@@ -14,6 +14,21 @@
     <div><button type="submit">조회</button></div>
   </form>
 </section>
+<c:if test="${not empty passwordResetTarget}">
+<section class="card auth-panel" aria-labelledby="password-reset-retry-title">
+  <h2 id="password-reset-retry-title">비밀번호 초기화 다시 입력</h2>
+  <p>대상 아이디: <strong><c:out value="${passwordResetTarget.username}"/></strong></p>
+  <div class="notice error" role="alert"><p id="password-reset-error"><a href="#password-reset-retry-value"><c:out value="${passwordResetError}"/></a></p><p>비밀번호는 초기화되지 않았습니다. 새 비밀번호를 다시 입력해 주세요.</p></div>
+  <c:url var="passwordResetRetryAction" value="/admin/users/${passwordResetTarget.id}/password"/>
+  <form method="post" action="<c:out value='${passwordResetRetryAction}'/>" class="form-stack">
+    <input type="hidden" name="<c:out value='${_csrf.parameterName}'/>" value="<c:out value='${_csrf.token}'/>">
+    <input type="hidden" name="status" value="<c:out value='${approvalFilter}'/>"><input type="hidden" name="search" value="<c:out value='${search}'/>"><input type="hidden" name="page" value="<c:out value='${page}'/>">
+    <label for="password-reset-retry-value">새 비밀번호</label><input id="password-reset-retry-value" name="newPassword" type="password" required minlength="12" autocomplete="new-password" aria-invalid="true" aria-describedby="password-reset-error password-reset-retry-help">
+    <p id="password-reset-retry-help" class="muted">12자 이상, UTF-8 기준 72바이트 이하. 비밀번호를 초기화하면 이 계정의 모든 기존 로그인 세션이 만료됩니다.</p>
+    <button type="submit" class="button-secondary">비밀번호 초기화</button>
+  </form>
+</section>
+</c:if>
 <c:if test="${not empty gitCorrectionTarget}">
 <section class="card" aria-labelledby="git-correction-title">
   <h2 id="git-correction-title">Git 사용자명 정정</h2>
@@ -57,7 +72,7 @@
     <td><c:if test="${user.approved}">
       <c:url var="enabledAction" value="/admin/users/${user.id}/enabled"/><form method="post" action="<c:out value='${enabledAction}'/>"><input type="hidden" name="<c:out value='${_csrf.parameterName}'/>" value="<c:out value='${_csrf.token}'/>"><input type="hidden" name="status" value="<c:out value='${approvalFilter}'/>"><input type="hidden" name="search" value="<c:out value='${search}'/>"><input type="hidden" name="page" value="<c:out value='${page}'/>"><input type="hidden" name="enabled" value="${not user.enabled}"><button type="submit" class="button-secondary"><c:choose><c:when test="${user.enabled}">이용 중지</c:when><c:otherwise>이용 재개</c:otherwise></c:choose></button></form>
       <details><summary>비밀번호 초기화</summary><c:url var="passwordAction" value="/admin/users/${user.id}/password"/>
-      <form method="post" action="<c:out value='${passwordAction}'/>" class="form-stack"><input type="hidden" name="<c:out value='${_csrf.parameterName}'/>" value="<c:out value='${_csrf.token}'/>"><input type="hidden" name="status" value="<c:out value='${approvalFilter}'/>"><input type="hidden" name="search" value="<c:out value='${search}'/>"><input type="hidden" name="page" value="<c:out value='${page}'/>"><label for="reset-${user.id}">새 비밀번호</label><input id="reset-${user.id}" name="newPassword" type="password" required minlength="12" autocomplete="new-password"><p class="muted">이 계정의 기존 로그인 세션을 만료합니다.</p><button type="submit" class="button-secondary">비밀번호 초기화</button></form></details>
+      <form method="post" action="<c:out value='${passwordAction}'/>" class="form-stack"><input type="hidden" name="<c:out value='${_csrf.parameterName}'/>" value="<c:out value='${_csrf.token}'/>"><input type="hidden" name="status" value="<c:out value='${approvalFilter}'/>"><input type="hidden" name="search" value="<c:out value='${search}'/>"><input type="hidden" name="page" value="<c:out value='${page}'/>"><label for="reset-${user.id}">새 비밀번호</label><input id="reset-${user.id}" name="newPassword" type="password" required minlength="12" autocomplete="new-password" aria-describedby="reset-help-${user.id}"><p id="reset-help-${user.id}" class="muted">12자 이상, UTF-8 기준 72바이트 이하. 이 계정의 모든 기존 로그인 세션을 만료합니다.</p><button type="submit" class="button-secondary">비밀번호 초기화</button></form></details>
     </c:if>
       <details><summary>Git 사용자명 정정</summary><c:url var="gitAction" value="/admin/users/${user.id}/git-username"/>
       <form method="post" action="<c:out value='${gitAction}'/>" class="form-stack">

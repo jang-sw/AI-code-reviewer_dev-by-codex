@@ -104,11 +104,24 @@ public class IdentityController {
     public String resetPassword(Principal principal, @PathVariable long id, @RequestParam String newPassword,
                                 @RequestParam(required = false) String status,
                                 @RequestParam(defaultValue = "") String search,
-                                @RequestParam(defaultValue = "0") int page, RedirectAttributes redirect) {
+                                @RequestParam(defaultValue = "0") int page, Model model,
+                                HttpServletResponse response, RedirectAttributes redirect) {
         String returnPath = usersReturnPath(status, search, page);
         try {
             users.resetPassword(principal.getName(), id, newPassword);
             redirect.addFlashAttribute("notice", "비밀번호를 초기화하고 기존 세션을 만료했습니다.");
+        } catch (UserAccountService.PasswordValidationException invalid) {
+            // The failed mutation has rolled back. Recheck access and the current target before rendering it.
+            UserAccount current = users.forAdmin(principal.getName(), id);
+            if (!current.approved()) {
+                redirect.addFlashAttribute("error", invalid.getMessage());
+                return "redirect:" + returnPath;
+            }
+            users(principal, page, status, search, model);
+            model.addAttribute("passwordResetTarget", current);
+            model.addAttribute("passwordResetError", invalid.getMessage());
+            response.setStatus(HttpStatus.BAD_REQUEST.value());
+            return "admin/users";
         } catch (IllegalArgumentException exception) {
             redirect.addFlashAttribute("error", exception.getMessage());
         }
@@ -167,15 +180,22 @@ public class IdentityController {
     @PostMapping("/account/password")
     public String changePassword(Authentication authentication, @RequestParam String currentPassword,
                                  @RequestParam String newPassword, @RequestParam String confirmPassword,
-                                 HttpServletRequest request, HttpServletResponse response, RedirectAttributes redirect) {
+                                 HttpServletRequest request, HttpServletResponse response, Model model) {
         try {
-            if (!newPassword.equals(confirmPassword)) throw new IllegalArgumentException("새 비밀번호 확인이 일치하지 않습니다.");
+            if (!newPassword.equals(confirmPassword)) {
+                throw new UserAccountService.PasswordValidationException(UserAccountService.PasswordProblem.CONFIRM_MISMATCH);
+            }
             users.changePassword(authentication.getName(), currentPassword, newPassword);
             new SecurityContextLogoutHandler().logout(request, response, authentication);
             return "redirect:/login?changed";
-        } catch (IllegalArgumentException exception) {
-            redirect.addFlashAttribute("error", exception.getMessage());
-            return "redirect:/account/password";
+        } catch (UserAccountService.PasswordValidationException invalid) {
+            // Only a fixed error code/message reaches the view; passwords are never restored or flashed.
+            users.requireAccount(authentication.getName());
+            password(model);
+            model.addAttribute("passwordErrorField", invalid.problem().fieldId());
+            model.addAttribute("passwordError", invalid.getMessage());
+            response.setStatus(HttpStatus.BAD_REQUEST.value());
+            return "account/password";
         }
     }
 }

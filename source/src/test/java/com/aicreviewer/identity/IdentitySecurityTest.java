@@ -195,7 +195,7 @@ class IdentitySecurityTest {
         mvc.perform(post("/account/password").session(session).with(csrf())
                         .param("currentPassword", "wrong").param("newPassword", "New-password-8392!")
                         .param("confirmPassword", "New-password-8392!"))
-                .andExpect(redirectedUrl("/account/password"));
+                .andExpect(status().isBadRequest());
         assertThat(passwords.matches(PASSWORD, details.loadUserByUsername("alice").getPassword())).isTrue();
         mvc.perform(post("/account/password").session(session).with(csrf())
                         .param("currentPassword", PASSWORD).param("newPassword", "New-password-8392!")

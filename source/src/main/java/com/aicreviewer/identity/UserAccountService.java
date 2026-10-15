@@ -193,7 +193,7 @@ public class UserAccountService {
     @Transactional
     public void resetPassword(String actorName, long targetId, String newPassword) {
         requireAdmin(actorName);
-        String encoded = passwords.encode(AccountInput.password(newPassword));
+        String encoded = passwords.encode(replacementPassword(newPassword));
         lockAdministrators();
         UserAccount target = findLocked(targetId);
         UserAccount actor = requireAdmin(actorName);
@@ -271,12 +271,40 @@ public class UserAccountService {
                 String.class, actor.id());
         actor = requireAccount(actorName);
         if (currentPassword == null || !passwords.matches(currentPassword, existing)) {
-            throw new IllegalArgumentException("현재 비밀번호가 일치하지 않습니다.");
+            throw new PasswordValidationException(PasswordProblem.CURRENT_MISMATCH);
         }
-        AccountInput.password(newPassword);
-        if (passwords.matches(newPassword, existing)) throw new IllegalArgumentException("현재와 다른 새 비밀번호를 입력해 주세요.");
+        replacementPassword(newPassword);
+        if (passwords.matches(newPassword, existing)) throw new PasswordValidationException(PasswordProblem.UNCHANGED);
         jdbc.update("UPDATE app_user SET password_hash = ?, security_version = security_version + 1 WHERE id = ?", passwords.encode(newPassword), actor.id());
         audit.write(actor.id(), "PASSWORD_CHANGED", "USER", actor.id(), "기존 로그인 세션 만료");
+    }
+
+    private static String replacementPassword(String value) {
+        try {
+            return AccountInput.password(value);
+        } catch (IllegalArgumentException invalid) {
+            throw new PasswordValidationException(PasswordProblem.NEW_RULE);
+        }
+    }
+
+    /** Fixed validation codes keep submitted credentials out of recovery models and exceptions. */
+    public enum PasswordProblem {
+        CURRENT_MISMATCH("currentPassword", "현재 비밀번호가 일치하지 않습니다."),
+        NEW_RULE("newPassword", "비밀번호는 12자 이상, UTF-8 기준 72바이트 이하로 입력해 주세요."),
+        UNCHANGED("newPassword", "현재와 다른 새 비밀번호를 입력해 주세요."),
+        CONFIRM_MISMATCH("confirmPassword", "새 비밀번호 확인이 일치하지 않습니다.");
+
+        private final String fieldId;
+        private final String message;
+        PasswordProblem(String fieldId, String message) { this.fieldId = fieldId; this.message = message; }
+        public String fieldId() { return fieldId; }
+        public String message() { return message; }
+    }
+
+    public static final class PasswordValidationException extends IllegalArgumentException {
+        private final PasswordProblem problem;
+        PasswordValidationException(PasswordProblem problem) { super(problem.message()); this.problem = problem; }
+        public PasswordProblem problem() { return problem; }
     }
 
     private UserAccount find(long id) {
