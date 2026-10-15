@@ -3,6 +3,7 @@ package com.aicreviewer.web;
 import com.aicreviewer.ai.AiReviewClient;
 import com.aicreviewer.git.GitRepositoryClient;
 import com.aicreviewer.identity.AccountUserDetailsService;
+import com.aicreviewer.operations.OperationsTelemetryService;
 import java.net.CookieManager;
 import java.net.CookiePolicy;
 import java.net.URI;
@@ -13,6 +14,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -38,6 +40,7 @@ import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilde
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -67,6 +70,7 @@ class AdminEmptyPageHttpTest {
     @Autowired AccountUserDetailsService details;
     @MockitoBean GitRepositoryClient git;
     @MockitoBean AiReviewClient ai;
+    @MockitoBean OperationsTelemetryService telemetry;
     private long administratorId;
     private HttpClient browser;
 
@@ -81,6 +85,7 @@ class AdminEmptyPageHttpTest {
         jdbc.update("DELETE FROM app_user WHERE username <> ?", ADMIN);
         jdbc.update("DELETE FROM auth_attempt_bucket");
         administratorId = jdbc.queryForObject("SELECT id FROM app_user WHERE username=?", Long.class, ADMIN);
+        when(telemetry.observation()).thenReturn(monitoringObservation("STARTING", false));
         browser = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5))
                 .cookieHandler(new CookieManager(null, CookiePolicy.ACCEPT_ALL))
                 .followRedirects(HttpClient.Redirect.NEVER).build();
@@ -244,10 +249,80 @@ class AdminEmptyPageHttpTest {
             assertThat(response.statusCode()).as(path).isEqualTo(400);
         }
         for (String path : List.of("/admin/audit", "/admin/operations?filter=RATE_LIMITED&page=10000",
-                "/admin/operations?filter=ALL&page=-1")) {
+                "/admin/operations?filter=ALL&page=-1", "/admin/monitoring", "/admin/monitoring/snapshot")) {
             mvc.perform(get(CONTEXT + path).contextPath(CONTEXT)
                             .with(user(details.loadUserByUsername("observationmember"))))
                     .andExpect(status().isForbidden());
+        }
+        assertThat(domainState()).isEqualTo(before);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"STARTING", "READY", "STALE", "FAILED"})
+    void monitoringRendersAnHonestObservationStateWithoutChangingBusinessRows(String state) throws Exception {
+        when(telemetry.observation()).thenReturn(monitoringObservation(state, false));
+        var before = domainState();
+        var response = httpGet("/admin/monitoring");
+        assertThat(response.headers().firstValue("Cache-Control")).contains("no-store");
+        String html = response.body();
+        assertThat(html).contains("data-observation-status=\"" + state + "\"", "role=\"status\"",
+                "이 화면의 알림은 이메일이나 푸시로 발송되지 않습니다.",
+                "화면을 새로고침해도 즉시 재집계하지 않습니다.",
+                "지금 접속한 서버의 설정입니다.", "일시 중지 · 요청은 저장되며", "꺼짐 · 이미 접수된 요청과 직접 요청의 처리를 중지하는 설정은 아닙니다.");
+        if (state.equals("READY")) {
+            assertThat(html).contains("최신 관측 사용 가능", "id=\"monitoring-counts\"", "화면 알림",
+                    "최근 실행이 실패한 프로젝트 3개", "오래된 미완료 요청 2건", "2026-10-15 12:00:00",
+                    "2026-10-15 12:00:30", "30초 전 기준", "datetime=\"2026-10-15T12:00:00Z\"",
+                    "처리 중이라는 기록은 실제 작업자가 실행 중임을 보장하지 않습니다.")
+                    .doesNotContain("운영 수치 확인 불가", "첫 수집 대기", "관측이 오래됨", "수집 실패");
+        } else {
+            assertThat(html).contains("운영 수치 확인 불가", "정상 또는 0건으로 해석하지 마세요.", "프로젝트별 상태 직접 확인")
+                    .doesNotContain("id=\"monitoring-counts\"", "id=\"monitoring-alerts-heading\"", "id=\"monitoring-scope-heading\"", "최근 실행이 실패한 프로젝트 3개",
+                            "오래된 미완료 요청 2건", "이 관측에서 최근 실행 실패나 오래된 미완료 요청은 없습니다.",
+                            "filter=FAILED", "filter=REQUEST_DELAYED", "filter=QUEUED");
+            assertThat(html).contains(switch (state) {
+                case "STARTING" -> "첫 수집 대기";
+                case "STALE" -> "관측이 오래됨";
+                default -> "수집 실패";
+            });
+            if (state.equals("STARTING")) {
+                assertThat(html).contains("아직 성공한 관측 없음", "아직 시도 기록 없음")
+                        .doesNotContain("2026-10-15 12:00:00", "초 전 기준");
+            } else {
+                assertThat(html).contains("2026-10-15 12:00:00", "2026-10-15 12:00:30", "180초 전 기준")
+                        .doesNotContain("아직 성공한 관측 없음", "아직 시도 기록 없음");
+            }
+        }
+        assertThat(domainState()).isEqualTo(before);
+    }
+
+    @Test
+    void readyMonitoringShowsObservedZerosWithoutClaimingThereAreNoOtherOperationalConcerns() throws Exception {
+        when(telemetry.observation()).thenReturn(monitoringObservation("READY", true));
+        var before = domainState();
+        String html = httpGet("/admin/monitoring").body();
+        assertThat(html).contains("최신 관측 사용 가능", "id=\"monitoring-counts\"", "미완료 요청 없음",
+                        "이 관측에서 최근 실행 실패나 오래된 미완료 요청은 없습니다.",
+                        "실패·지연이 없어도 미실행 등 다른 확인 대상은 프로젝트별 운영 상태에서 확인하세요.")
+                .doesNotContain("운영 수치 확인 불가", "실패한 프로젝트 확인", "지연된 요청 확인");
+        assertApplicationLink(monitoringLink(html, "실행 대기 요청"), "/admin/operations", Map.of("filter", "QUEUED"));
+        assertThat(domainState()).isEqualTo(before);
+    }
+
+    @Test
+    void readyMonitoringAlertAndQueueLinksActuallyOpenTheCorrespondingOperationalFilters() throws Exception {
+        syntheticOperation("FAILED");
+        syntheticOperation("REQUEST_DELAYED");
+        syntheticOperation("QUEUED");
+        when(telemetry.observation()).thenReturn(monitoringObservation("READY", false));
+        var before = domainState();
+        String html = httpGet("/admin/monitoring").body();
+        for (var expected : Map.of("실패한 프로젝트 확인", "FAILED", "지연된 요청 확인", "REQUEST_DELAYED", "실행 대기 요청", "QUEUED").entrySet()) {
+            URI link = monitoringLink(html, expected.getKey());
+            assertApplicationLink(link, "/admin/operations", Map.of("filter", expected.getValue()));
+            String operations = httpGet(link.toString().substring(CONTEXT.length())).body();
+            assertThat(operations).containsPattern("<option value=\"" + expected.getValue() + "\"\\s+selected>");
+            assertThat(tableRows(operations)).hasSize(expected.getValue().equals("FAILED") ? 3 : 2);
         }
         assertThat(domainState()).isEqualTo(before);
     }
@@ -320,6 +395,24 @@ class AdminEmptyPageHttpTest {
     }
 
     private static String auditAction(int index) { return String.format(java.util.Locale.ROOT, "OBSERVATION_FIXTURE_%03d", index); }
+
+    private static OperationsTelemetryService.Observation monitoringObservation(String state, boolean zero) {
+        boolean starting = state.equals("STARTING");
+        Instant observed = Instant.parse("2026-10-15T12:00:00Z");
+        return new OperationsTelemetryService.Observation(state, starting ? null : observed,
+                starting ? null : observed.plusSeconds(30), starting ? null : state.equals("READY") ? 30L : 180L, 120,
+                Map.of("PENDING", 0L, "APPROVED", zero ? 0L : 3L, "REJECTED", 0L, "PAUSED", 0L),
+                Map.of("QUEUED", zero ? 0L : 2L, "RUNNING", 0L, "SUCCEEDED", 0L, "FAILED", 0L, "CANCELLED", 0L),
+                zero || starting ? null : observed.minusSeconds(7200), zero ? 0L : 2L, zero ? 0L : 3L);
+    }
+
+    private static URI monitoringLink(String html, String label) {
+        var links = Pattern.compile("<a\\b[^>]*href=\"([^\"]+)\"[^>]*>(.*?)</a>", Pattern.DOTALL).matcher(html).results()
+                .filter(match -> match.group(2).contains(label))
+                .map(match -> URI.create(match.group(1).replace("&amp;", "&"))).toList();
+        assertThat(links).as(label).hasSize(1);
+        return links.getFirst();
+    }
 
     private static List<String> auditActions(String html) {
         return Pattern.compile("<code>(OBSERVATION_FIXTURE_[0-9]{3})</code>").matcher(html).results()
