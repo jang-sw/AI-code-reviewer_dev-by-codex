@@ -16,12 +16,15 @@ import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.regex.Pattern;
+import java.util.stream.IntStream;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
@@ -70,6 +73,9 @@ class AdminEmptyPageHttpTest {
     @BeforeEach
     void syntheticDataOnly() throws Exception {
         // This dedicated H2 URL cannot use TEST_DATABASE_URL or any existing PostgreSQL database.
+        jdbc.update("DELETE FROM review_request");
+        jdbc.update("DELETE FROM review_run");
+        jdbc.update("DELETE FROM project");
         jdbc.update("DELETE FROM git_author_mapping");
         jdbc.update("DELETE FROM audit_event");
         jdbc.update("DELETE FROM app_user WHERE username <> ?", ADMIN);
@@ -155,6 +161,97 @@ class AdminEmptyPageHttpTest {
                 .doesNotContain("이 페이지에 표시할 감사 기록이 없습니다");
     }
 
+    @Test
+    void auditRendersFiftyNewestEventsThenOneWithEscapedSystemDetailAndLinkedKeyboardRegion() throws Exception {
+        String longDetail = "긴 감사 내용 ".repeat(90);
+        String untrustedDetail = "<script>alert(1)</script>&" + longDetail;
+        for (int i = 0; i < 51; i++) {
+            jdbc.update("INSERT INTO audit_event(actor_id,action,target_type,target_id,detail,created_at) VALUES(?,?,'USER',?,?,?)",
+                    i == 50 ? null : administratorId, auditAction(i), administratorId,
+                    i == 50 ? untrustedDetail : "Synthetic audit detail " + i,
+                    java.sql.Timestamp.valueOf(i == 0 ? "2099-01-01 00:00:00" : "2000-01-01 00:00:00"));
+        }
+        var before = domainState();
+        String first = httpGet("/admin/audit").body();
+        assertThat(auditActions(first)).containsExactlyElementsOf(IntStream.iterate(50, i -> i >= 1, i -> i - 1)
+                .mapToObj(AdminEmptyPageHttpTest::auditAction).toList());
+        assertThat(tableRows(first)).hasSize(50);
+        assertThat(tableRows(first).getFirst()).contains("시스템", auditAction(50), "&lt;script&gt;alert(1)&lt;/script&gt;&amp;" + longDetail)
+                .doesNotContain("<script>alert(1)</script>");
+        assertThat(first).contains("id=\"audit-scroll-hint\"", "키보드는 표를 선택한 뒤 좌우 방향키를 사용하세요.")
+                .doesNotContain(untrustedDetail, ">이전</a>");
+        var region = Pattern.compile("<div\\b[^>]*aria-label=\"감사 기록 표, 좌우 스크롤\"[^>]*>").matcher(first);
+        assertThat(region.find()).isTrue();
+        assertThat(region.group()).contains("tabindex=\"0\"", "role=\"region\"", "aria-describedby=\"audit-scroll-hint\"");
+
+        var next = Pattern.compile("<a\\b[^>]*href=\"([^\"]+)\"[^>]*>다음</a>").matcher(first);
+        assertThat(next.find()).isTrue();
+        URI nextPage = URI.create(next.group(1).replace("&amp;", "&"));
+        assertApplicationLink(nextPage, "/admin/audit", Map.of("page", "1"));
+        String second = httpGet(nextPage.toString().substring(CONTEXT.length())).body();
+        assertThat(auditActions(second)).containsExactly(auditAction(0));
+        assertThat(tableRows(second)).hasSize(1);
+        assertThat(second).contains(ADMIN, ">이전</a>").doesNotContain(">다음</a>");
+        assertThat(domainState()).isEqualTo(before);
+
+        jdbc.update("DELETE FROM audit_event WHERE action LIKE 'OBSERVATION_FIXTURE_%'");
+        var emptyBefore = domainState();
+        String empty = httpGet("/admin/audit").body();
+        assertThat(empty).contains("아직 기록이 없습니다").doesNotContain("audit-scroll-hint", "감사 기록 표, 좌우 스크롤", "audit-first-page");
+        assertThat(domainState()).isEqualTo(emptyBefore);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "ATTENTION", "FAILED", "STALE", "NEVER_RUN", "QUEUED", "REQUEST_DELAYED", "RATE_LIMITED"
+    })
+    void operationsDeepEmptyPageReturnsToTheSameFilterWithoutChangingTheObservation(String filter) throws Exception {
+        long projectId = syntheticOperation(filter);
+        var before = domainState();
+        String deep = httpGet("/admin/operations?filter=" + filter + "&page=10000").body();
+        assertThat(deep).contains(">이전</a>").doesNotContain(">다음</a>", "operations-scroll-hint");
+        assertRecoveryLink(deep, "operations-first-page", "/admin/operations", Map.of("page", "0", "filter", filter));
+        String first = followRecovery(deep, "operations-first-page");
+        assertThat(first).contains("Synthetic operations " + filter, "id=\"operations-scroll-hint\"", "aria-describedby=\"operations-scroll-hint\"",
+                        "운영 현황 표, 좌우 스크롤", CONTEXT + "/projects/" + projectId)
+                .doesNotContain("id=\"operations-first-page\"", ">이전</a>", ">다음</a>", "private-operation-error");
+        before.get("review_request").forEach(request -> assertThat(first).doesNotContain(request.get("request_id").toString()));
+        assertThat(first).containsPattern("<option value=\"" + filter + "\"\\s+selected>");
+        assertThat(tableRows(first)).hasSize(1);
+        assertThat(domainState()).isEqualTo(before);
+
+        jdbc.update("DELETE FROM review_request WHERE project_id=?", projectId);
+        jdbc.update("DELETE FROM review_run WHERE project_id=?", projectId);
+        jdbc.update("DELETE FROM project WHERE id=?", projectId);
+        var emptyBefore = domainState();
+        String emptyFirst = httpGet("/admin/operations?filter=" + filter + "&page=0").body();
+        assertThat(emptyFirst).contains("조회 조건에 해당하는 프로젝트가 없습니다")
+                .doesNotContain("operations-first-page", "operations-scroll-hint", ">이전</a>", ">다음</a>");
+        assertThat(emptyFirst).containsPattern("<option value=\"" + filter + "\"\\s+selected>");
+        assertThat(domainState()).isEqualTo(emptyBefore);
+    }
+
+    @Test
+    void observationQueryErrorsAndOrdinaryUserDenialsPreserveAllDomainRows() throws Exception {
+        syntheticOperation("FAILED");
+        jdbc.update("INSERT INTO app_user(username,password_hash,git_username,role) SELECT 'observationmember',password_hash,'observationmember','USER' FROM app_user WHERE id=?", administratorId);
+        var before = domainState();
+        for (String path : List.of("/admin/audit?page=-1", "/admin/audit?page=10001", "/admin/audit?page=not-a-number",
+                "/admin/operations?filter=ALL", "/admin/operations?filter=FAILED&page=-1",
+                "/admin/operations?filter=FAILED&page=10001", "/admin/operations?filter=FAILED&page=not-a-number")) {
+            var response = browser.send(HttpRequest.newBuilder(uri(path)).timeout(Duration.ofSeconds(10)).GET().build(),
+                    HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            assertThat(response.statusCode()).as(path).isEqualTo(400);
+        }
+        for (String path : List.of("/admin/audit", "/admin/operations?filter=RATE_LIMITED&page=10000",
+                "/admin/operations?filter=ALL&page=-1")) {
+            mvc.perform(get(CONTEXT + path).contextPath(CONTEXT)
+                            .with(user(details.loadUserByUsername("observationmember"))))
+                    .andExpect(status().isForbidden());
+        }
+        assertThat(domainState()).isEqualTo(before);
+    }
+
     @ParameterizedTest
     @CsvSource({
             "/admin/git-authors,등록된 매핑이 없습니다,mappings-first-page",
@@ -201,6 +298,10 @@ class AdminEmptyPageHttpTest {
 
     private static void assertRecoveryLink(String html, String id, String expectedPath, Map<String, String> expectedQuery) {
         URI link = recoveryUri(html, id);
+        assertApplicationLink(link, expectedPath, expectedQuery);
+    }
+
+    private static void assertApplicationLink(URI link, String expectedPath, Map<String, String> expectedQuery) {
         assertThat(link.isAbsolute()).isFalse();
         assertThat(link.getRawAuthority()).isNull();
         assertThat(link.getPath()).isEqualTo(CONTEXT + expectedPath);
@@ -216,5 +317,41 @@ class AdminEmptyPageHttpTest {
         URI link = recoveryUri(html, id);
         assertThat(link.getPath()).startsWith(CONTEXT + "/admin/");
         return httpGet(link.toString().substring(CONTEXT.length())).body();
+    }
+
+    private static String auditAction(int index) { return String.format(java.util.Locale.ROOT, "OBSERVATION_FIXTURE_%03d", index); }
+
+    private static List<String> auditActions(String html) {
+        return Pattern.compile("<code>(OBSERVATION_FIXTURE_[0-9]{3})</code>").matcher(html).results()
+                .map(match -> match.group(1)).toList();
+    }
+
+    private static List<String> tableRows(String html) {
+        var body = Pattern.compile("<tbody>(.*?)</tbody>", Pattern.DOTALL).matcher(html);
+        assertThat(body.find()).isTrue();
+        return Pattern.compile("<tr>(.*?)</tr>", Pattern.DOTALL).matcher(body.group(1)).results()
+                .map(match -> match.group(1)).toList();
+    }
+
+    private long syntheticOperation(String filter) {
+        jdbc.update("INSERT INTO project(name,repository_url,provider,repository_host,repository_path,owner_id,status) VALUES(?,?,'GITHUB','github.com',?,?,'APPROVED')",
+                "Synthetic operations " + filter, "https://github.com/fixture/" + filter, "fixture/" + filter, administratorId);
+        long id = jdbc.queryForObject("SELECT id FROM project WHERE repository_path=?", Long.class, "fixture/" + filter);
+        if (!filter.equals("NEVER_RUN")) {
+            jdbc.update("INSERT INTO review_run(project_id,status,started_at,error_message) VALUES(?,'FAILED',TIMESTAMP '2000-01-01 00:00:00','private-operation-error')", id);
+        }
+        if (List.of("QUEUED", "REQUEST_DELAYED", "RATE_LIMITED").contains(filter)) {
+            jdbc.update("INSERT INTO review_request(project_id,request_id,state,source,requested_at,available_at,result_code) VALUES(?,?,'QUEUED','SCHEDULED',TIMESTAMP '2000-01-01 00:00:00',CURRENT_TIMESTAMP,?)",
+                    id, UUID.randomUUID().toString(), filter.equals("RATE_LIMITED") ? "AI_RATE_LIMITED" : null);
+        }
+        return id;
+    }
+
+    private Map<String, List<Map<String, Object>>> domainState() {
+        Map<String, List<Map<String, Object>>> state = new LinkedHashMap<>();
+        for (String table : List.of("app_user", "project", "review_run", "review_request", "reviewed_commit", "review_issue", "manual_review_file", "audit_event", "git_author_mapping")) {
+            state.put(table, jdbc.queryForList("SELECT * FROM " + table + " ORDER BY " + (table.equals("review_request") ? "project_id" : "id")));
+        }
+        return state;
     }
 }

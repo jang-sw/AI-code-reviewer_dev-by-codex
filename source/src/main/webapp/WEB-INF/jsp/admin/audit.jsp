@@ -8,10 +8,11 @@
       <c:url var="firstAuditPage" value="/admin/audit"><c:param name="page" value="0"/></c:url><a id="audit-first-page" href="<c:out value='${firstAuditPage}'/>">첫 페이지로</a>
     </c:when><c:otherwise><p>아직 기록이 없습니다.</p></c:otherwise></c:choose></div></c:when>
     <c:otherwise>
-      <div class="table-wrap"><table>
+      <p id="audit-scroll-hint" class="hint review-history-scroll-hint">표를 좌우로 이동해 확인하세요. 키보드는 표를 선택한 뒤 좌우 방향키를 사용하세요.</p>
+      <div class="table-wrap" tabindex="0" role="region" aria-label="감사 기록 표, 좌우 스크롤" aria-describedby="audit-scroll-hint"><table class="audit-table">
         <thead><tr><th scope="col">발생 시각</th><th scope="col">작업자</th><th scope="col">작업</th><th scope="col">대상</th><th scope="col">내용</th></tr></thead>
         <tbody><c:forEach var="event" items="${events}"><tr>
-          <td><c:out value="${event.created_at}"/></td>
+          <td class="audit-timestamp"><c:out value="${event.created_at}"/></td>
           <td><c:out value="${event.username}" default="시스템"/></td>
           <td><code><c:out value="${event.action}"/></code></td>
           <td><c:out value="${event.target_type}"/> #<c:out value="${event.target_id}"/></td>

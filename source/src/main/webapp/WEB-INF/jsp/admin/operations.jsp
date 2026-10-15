@@ -26,7 +26,11 @@
   <p class="hint">페이지당 50건. 대기·호출 제한·미완료 요청 필터는 접수 시각이 오래된 순이며 나머지 필터는 미실행 먼저, 실행 시작이 오래된 순입니다. 최근 실행 실패는 프로젝트 상태와 무관하게 표시하며 이후 실행이 시작되면 이전 실패는 제외합니다. 일시중지된 프로젝트의 대기 요청은 작업자가 재확인할 때 취소됩니다.</p>
 </section>
 <section class="card" aria-labelledby="operations-projects-heading"><h2 id="operations-projects-heading">확인할 프로젝트</h2>
-  <c:choose><c:when test="${empty operations.projects}"><p class="empty-state">이 페이지에서 조회 조건에 해당하는 프로젝트가 없습니다. 필터와 페이지를 확인하세요.</p></c:when><c:otherwise>
+  <c:choose><c:when test="${empty operations.projects}"><div class="empty-state"><c:choose><c:when test="${operations.page > 0}">
+    <p>이 페이지에서 조회 조건에 해당하는 프로젝트가 없습니다.</p><p>첫 페이지나 이전 페이지에서 같은 필터로 확인해 주세요.</p>
+    <c:url var="firstOperationsPage" value="/admin/operations"><c:param name="filter" value="${operations.filter}"/><c:param name="page" value="0"/></c:url>
+    <a id="operations-first-page" href="<c:out value='${firstOperationsPage}'/>">첫 페이지로</a>
+  </c:when><c:otherwise><p>이 페이지에서 조회 조건에 해당하는 프로젝트가 없습니다. 필터와 페이지를 확인하세요.</p></c:otherwise></c:choose></div></c:when><c:otherwise>
     <p id="operations-scroll-hint" class="hint review-history-scroll-hint">표를 좌우로 이동해 확인하세요. 키보드는 표를 선택한 뒤 좌우 방향키를 사용하세요.</p>
     <div class="table-wrap" tabindex="0" role="region" aria-label="운영 현황 표, 좌우 스크롤" aria-describedby="operations-scroll-hint"><table class="operations-table"><thead><tr><th scope="col">프로젝트</th><th scope="col">확인 이유</th><th scope="col">최근 요청 상태</th><th scope="col">접수 시각 (UTC) / 접수 후 경과</th><th scope="col">최근 실행 기록</th><th scope="col">시작 시각 (UTC)</th><th scope="col">시작 후 경과</th><th scope="col">기록 확인</th></tr></thead><tbody>
       <c:forEach var="observation" items="${operations.projects}"><tr>
