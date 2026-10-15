@@ -1,10 +1,10 @@
 # 현재 작업 상태
 
 - 작업: 실사용 AI 소스코드 리뷰 시스템. **개발 중, 릴리스 완료 아님.**
-- 이번 회차: 2026-10-15 23:36 KST 시작, 최대 2026-10-16 01:36 KST까지 약2시간 범위로 진행한다.
+- 이번 회차: 2026-10-15 23:36 KST 시작, 2026-10-16 00:05 KST 기준 수정·전체검증·이번 인수 범위·후보·소유자원 정리를 마쳤다. 최대2시간 제한 이내다.
 - 기록 기준: `main` / 시작 `75d919d`. 시작 작업 트리는 깨끗하고 로컬 origin/main 기준14개 커밋이 미푸시다. 기존 이력은 보존하며 직접 main 푸시/운영 배포 승인 없이 로컬 커밋만 진행한다.
 - 이번 완료 조건: 모델 선정 보류·현재PC 범위를 유지하고 M03현재값 변경409의1280px 복구·M04선택 비활성/실제50명밖 대상의390px 오류 복구를 실제WAR·키보드/정확감사·업무보존으로 확인한다. 재현한 안내/접근성과 추가로 확인한 복구 권한 경합을 최소 수정하고 전체Java/필수PG와 자원정리를 수행한다.
-- 이번 단계: UI 두 곳과 복구 저장 직전 관리자 권한 재검사를 수정했다. 전체Java1288건 중1277통과/선택11skip·실패/오류0·필수PG9묶음, 최종WAR의 실제브라우저9판정과 DB/HTTP companion7단계 PASS. 정상 재시도는HTTP 근거이며 비밀번호 변경·승인 철회 브라우저 인수로 확대하지 않는다. 로컬 커밋·후보 패키지·최종 자원 정리는 진행 중이다.
+- 이번 단계: UI 두 곳과 복구 저장 직전 관리자 권한 재검사를 수정해 `5af341a`로 로컬 커밋했다. 전체Java1288건 중1277통과/선택11skip·실패/오류0·필수PG9묶음, 최종WAR의 실제브라우저9판정과 DB/HTTP companion7단계, 동일후보2개/28파일·양OS36포트/2bridge/keeper 정리 PASS. 정상 재시도는HTTP 근거이며 비밀번호 변경·승인 철회 브라우저 인수로 확대하지 않는다. 다음은 P03복구충돌·C01공통 오류/역순탐색 등의 남은 조건이다. 모델 선정은 보류하며 실제 모델/유료 호출·푸시·운영 배포는 없다.
 - 확정 요구사항: `docs/REQUIREMENTS.md`. 내부 이슈함 우선, 최초 전체 이력, Java25/Spring/Maven/JSP/PostgreSQL 유지.
 - 재개 시 이 문서와 실제 Git 상태를 대조하고 아래 다음 작업부터 진행한다. 모든 릴리스 항목 검증 전 완료라고 보고하지 않는다.
 
@@ -62,6 +62,9 @@
 - 전체 WSL Java1288건 중1277통과/선택11skip·실패/오류0, 필수PG9묶음 gate PASS,215.921초. `.local/session23-build2-verification.json`·`.local/linux-postgres-6158b61960d94457a0486cb470cb9444`. WAR SHA256 `a9b19977c16f6cdb9d75d93ea28de9cc2af80bb20149acf834b410e815865dbe`,42,062,631바이트. 선택11건은 외부Git5/Ollama1/모델평가1/이력·수동·페이지·telemetry 부하 각1이며 이번 필수PG·HTTP는 제외 없이 실행했다. 추적Python/포장도구 변경이 없어 이전Python전체·30분유휴/기존복구 시험은 반복하지 않았다.
 - 수정 전/후 각각 새UUID 스키마의52계정·매핑51·기존 리뷰/커밋/이슈를 유지하며 7체크포인트 DB/HTTP companion PASS(273.848/210.895초). baseline 후 정확계정 변경은 같은 관리자 계정의 별도 HTTP 세션에서 정상 변경3회와 각감사1건만 허용했다. 실제브라우저는 오래된 양식3개를 제출했고 companion도 상태/HTML 검증을 위해 거절POST3개를 명시적으로 재실행했다. 거절 전후12업무표·기존감사/담당자·원본public14표 보존, 동일WAR/PG·Git/AI0호출·소유schema/work/WAR/fixture/PG·lock 정리를 확인했다. `.local/session23-boundary-ui-{pre,final}-harness.json`.
 - 최종 실제브라우저9판정 PASS:1280px Git409의 현재값/안전 입력·오류/도움말 고유 연결·Enter 오류→입력 초점/Tab 저장버튼,390px 중지된 선택 해제/두 오류·오류링크 초점·나머지 입력/검색/page1 보존,50번째 선택이 실제51위가 된 뒤 현재50+직전선택1/중복없음·상한안내/활성표시를 확인했다. 본문폭은 각각1265/375로 scroll과 동일했다. 정상 새양식 재시도는HTTP만 실행했고 승인철회·비밀번호 변경·일반409/500 전체 인수는 주장하지 않는다. 수정전 JPEG3개/최종5개와 SHA·판정은 `.local/session23-{pre,final}-ui-observation.json`; 임시 탭/viewport 정리 완료.
+- 변경된10파일 staged 전체의 독립 검토·비밀정보/공백 검사를 통과했다. 빌드2의source/232파일과 현재파일 바이트 일치를 확인하고, 핵심커밋 `5af341a5624ee553c8965501ce7a9f447f08b115`의315소스파일을 양OS로 동기화했다. `.local/session23-core-sync.json`,아카이브SHA256 `c68756d2bcf60adafd0b2bbc4962deaaa406c3166e110f0d79ed41f7fda75994`. 기존14개 미푸시 이력은 보존했으며 이후 결과 기록은 별도 문서 변경이다.
+- 최종WAR 후보2개는28허용파일·고정metadata·manifest·내부/외부 전체체크섬·압축바이트 일치 PASS. 아카이브SHA256 `44d1ba9715766d164cee7f3cdb6e1b64805be3e94959a9d5f0edcb54a96366af`,38,092,092바이트. Linux `.local/session23-candidate-{first,second}`·Windows `.local/session23-candidate`에 보존한다. 소스 식별자는 운영자 제공 기록이며 WAR 출처의 별도 증명이 아니다. `releaseApproved=false`·설치 없음, 후보 생성 후 이 최종 결과 문단은 포함되지 않는다.
+- 양OS `.local/session23-validation-summary.json`에 전체Java/수정전 예상PG실패/최종PG·두UI companion/별도브라우저·화면8개SHA/후보와 정리 근거를 모았다. Linux36포트ECONNREFUSED·검증WAR/PG PID/lock부재·서비스3개inactive/disabled·keeper PID/starttick/UID1000/정확명령 대조 후 종료 PASS. Windows `.local/session23-windows-cleanup.json`은 서로 다른readySHA/context/nonce의2bridge 종료·36포트리스너전후0/접속성공0을 확인했다.10035만으로 즉시거절을 주장하지 않는다. 합성credential파일 미생성·양OS부재·탭/viewport 정리, 사용자Windows Ollama/개발PG55432 미변경을 확인했다.
 
 ### 이전 회차: 서버 상태 네 관측 상태·회복의 실제 화면 인수
 
@@ -320,5 +323,5 @@
 - 운영 대상은 사용자 답변으로 Linux 서버, 도커 미사용으로 확정했다(2026-09-26). 사용자 요청에 따른 전용 WSL2 Ubuntu 로컬 Linux 환경 구축과 설치/복구 검증은 2026-10-02 수행했다. 실제 서버 배포는 별도 승인 대상이다.
 - origin: jang-sw/code-reviewer_by-codex. main 직접 푸시 별도 승인 없음 → 로컬 커밋만, 푸시/배포 없음.
 - `.local/pg-test`: Windows 개발검증 전용127.0.0.1:55432. Windows `.local/pg-validation` 및 staged snapshot의pg-validation:55439. Linux PGDATA는 Linux 홈의 별도 checkout에만 만들고 Windows PGDATA를 공유하지 않는다.
-- `.local`은 Git 제외. session22 Linux시험WAR/fixture/새UUID schema2개/부모PG·lock과 Windows18107·18109 bridge2개를 순서대로 정리했다.80/443/8080~8082/18080/18081/18089~18109/55439/55449/14000/14001 총32시험포트는Linux연결거절·Windows리스너전후0/접속성공0으로 확인했다. 기존 앱·Nginx·서비스PG는inactive/disabled·서비스PG manual설정을 유지한다. 기존합성DB·root전용설정/백업·후보·시험기록과 이전중단전지문부재의한계는 보존한다. keeper는PID/starttick/UID/정확명령대조후종료했다(`.local/session22-validation-summary.json`). 사용자Windows Ollama/55432개발PG를 제어하지 않았고 Windows재부팅은 없다.
+- `.local`은 Git 제외. session23 Linux시험WAR/fixture/새UUID schema2개/부모PG·lock과 Windows18111·18113 bridge2개를 순서대로 정리했다.80/443/8080~8082/18080/18081/18089~18113/55439/55449/14000/14001 총36시험포트는Linux연결거절·Windows리스너전후0/접속성공0으로 확인했다. 기존 앱·Nginx·서비스PG는inactive/disabled·서비스PG manual설정을 유지한다. 기존합성DB·root전용설정/백업·후보·시험기록과 이전중단전지문부재의한계는 보존한다. keeper는PID/starttick/UID/정확명령대조후종료했다(`.local/session23-validation-summary.json`). 사용자Windows Ollama/55432개발PG를 제어하지 않았고 Windows재부팅은 없다.
 - 런타임 Git 수집은 매번 pinned 전체 이력을 재검증, 기본1000페이지/metadata32MiB/저장SHA131072개 안전 한도. 제한을 자동 확장/절삭하지 않는다.
