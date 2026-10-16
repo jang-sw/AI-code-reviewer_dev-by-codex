@@ -44,6 +44,11 @@ public final class SafeUnexpectedExceptionResolver implements HandlerExceptionRe
         view.addObject("statusCode", HttpStatus.INTERNAL_SERVER_ERROR.value());
         view.addObject("pageTitle", "요청 처리 안내");
         view.addObject("errorTitle", "요청을 처리하지 못했습니다");
+        view.addObject("errorMessage", ApplicationErrorController.UNEXPECTED_ERROR_MESSAGE);
+        // Ordinary MVC failures use the current URI, never client input or error-dispatch attributes.
+        String recovery = ApplicationErrorController.recoveryPath(request.getRequestURI(), request.getContextPath());
+        view.addObject("recoveryPath", recovery);
+        view.addObject("recoveryLabel", ApplicationErrorController.recoveryLabel(recovery));
         return view;
     }
 }

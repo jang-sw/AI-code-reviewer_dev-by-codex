@@ -11,6 +11,8 @@ import org.springframework.web.bind.annotation.RequestMapping;
 /** Do not render exception messages, URLs, submitted values or stack traces. */
 @Controller
 public class ApplicationErrorController implements ErrorController {
+    static final String UNEXPECTED_ERROR_MESSAGE = "일시적인 문제로 요청을 완료하지 못했습니다. 잠시 후 다시 확인하고, 문제가 계속되면 관리자에게 문의해 주세요.";
+
     @RequestMapping("/error")
     public String error(HttpServletRequest request, HttpServletResponse response, Model model) {
         Object attribute = request.getAttribute(RequestDispatcher.ERROR_STATUS_CODE);
@@ -35,11 +37,16 @@ public class ApplicationErrorController implements ErrorController {
                     case 403 -> "이 요청을 처리할 권한이 없습니다. 계정의 접근 권한을 확인하거나 관리자에게 문의해 주세요.";
                     case 404 -> "항목이 없거나 접근할 수 없습니다. 목록에서 다시 확인해 주세요.";
                     case 409 -> "항목의 상태가 바뀌었거나 다른 처리가 진행 중입니다. 최신 상태를 확인한 뒤 다시 요청해 주세요.";
-                    default -> "일시적인 문제로 요청을 완료하지 못했습니다. 잠시 후 다시 확인하고, 문제가 계속되면 관리자에게 문의해 주세요.";
+                    default -> UNEXPECTED_ERROR_MESSAGE;
                 });
         String recovery = status == 401 ? "/login" : status == 403 && !csrfFailure ? "/" : recoveryPath(request);
         model.addAttribute("recoveryPath", recovery);
-        model.addAttribute("recoveryLabel", switch (recovery) {
+        model.addAttribute("recoveryLabel", recoveryLabel(recovery));
+        return "request-error";
+    }
+
+    static String recoveryLabel(String recovery) {
+        return switch (recovery) {
             case "/login" -> "로그인 화면 열기";
             case "/signup" -> "회원가입 양식 다시 열기";
             case "/account/password" -> "비밀번호 변경 양식 다시 열기";
@@ -50,15 +57,18 @@ public class ApplicationErrorController implements ErrorController {
             case "/admin/operations" -> "운영 현황 다시 열기";
             case "/admin/audit" -> "감사 기록 목록 열기";
             default -> "대시보드로 돌아가기";
-        });
-        return "request-error";
+        };
     }
 
     /** Original URI selects a fixed category only: no IDs, queries, return URL or submitted data escape. */
     private static String recoveryPath(HttpServletRequest request) {
         Object original = request.getAttribute(RequestDispatcher.ERROR_REQUEST_URI);
         if (!(original instanceof String uri)) return "/";
-        String context = request.getContextPath();
+        return recoveryPath(uri, request.getContextPath());
+    }
+
+    static String recoveryPath(String uri, String context) {
+        if (uri == null || context == null) return "/";
         if (!context.isEmpty() && !uri.startsWith(context + "/")) return "/";
         String path = uri.substring(context.length());
         return switch (path) {

@@ -85,8 +85,8 @@ public final class SharedAttemptStore {
                 }, scope, accountKey, addressKey);
         Bucket account = buckets.get(accountKey);
         Bucket address = buckets.get(addressKey);
-        if (account != null && account.count() >= accountLimit) return denied(account.expiresAt(), now);
-        if (address != null && address.count() >= addressLimit) return denied(address.expiresAt(), now);
+        if (account != null && account.count() >= accountLimit) return denied(account.expiresAt(), now, windowSeconds);
+        if (address != null && address.count() >= addressLimit) return denied(address.expiresAt(), now, windowSeconds);
 
         int needed = (account == null ? 1 : 0) + (address == null ? 1 : 0);
         if (needed > 0 && entryCount(scope) + needed > maxEntries) {
@@ -97,7 +97,7 @@ public final class SharedAttemptStore {
                         return expiry == null ? null : expiry.toInstant();
                     }, scope);
             if (earliest == null) throw new AttemptStoreUnavailableException();
-            return denied(earliest, now);
+            return denied(earliest, now, windowSeconds);
         }
 
         increment(scope, accountKey, account, now.plusSeconds(windowSeconds));
@@ -196,10 +196,11 @@ public final class SharedAttemptStore {
         }
     }
 
-    private static LoginAttemptLimiter.Decision denied(Instant expiry, Instant now) {
+    private static LoginAttemptLimiter.Decision denied(Instant expiry, Instant now, int windowSeconds) {
         Duration remaining = Duration.between(now, expiry);
         long seconds = remaining.getSeconds() + (remaining.getNano() == 0 ? 0 : 1);
-        return new LoginAttemptLimiter.Decision(false, Math.max(1, seconds));
+        // Bound only the retry hint if the database clock moves backward; stored quotas and expiry stay intact.
+        return new LoginAttemptLimiter.Decision(false, Math.max(1, Math.min(windowSeconds, seconds)));
     }
 
     private static void requireOne(int affected) {

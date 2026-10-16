@@ -4,6 +4,7 @@ import com.aicreviewer.ai.AiReviewClient;
 import com.aicreviewer.git.GitRepositoryClient;
 import com.aicreviewer.identity.AccountUserDetailsService;
 import com.aicreviewer.operations.OperationsTelemetryService;
+import com.aicreviewer.review.ProjectReviewLock;
 import java.net.CookieManager;
 import java.net.CookiePolicy;
 import java.net.URI;
@@ -18,6 +19,7 @@ import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.regex.Pattern;
 import java.util.stream.IntStream;
@@ -39,6 +41,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
@@ -71,6 +74,8 @@ class AdminEmptyPageHttpTest {
     @MockitoBean GitRepositoryClient git;
     @MockitoBean AiReviewClient ai;
     @MockitoBean OperationsTelemetryService telemetry;
+    // H2 cannot acquire PostgreSQL advisory leases; controllers, transactions and SQL remain real.
+    @MockitoBean ProjectReviewLock locks;
     private long administratorId;
     private HttpClient browser;
 
@@ -86,6 +91,7 @@ class AdminEmptyPageHttpTest {
         jdbc.update("DELETE FROM auth_attempt_bucket");
         administratorId = jdbc.queryForObject("SELECT id FROM app_user WHERE username=?", Long.class, ADMIN);
         when(telemetry.observation()).thenReturn(monitoringObservation("STARTING", false));
+        when(locks.tryAcquire(anyLong())).thenReturn(Optional.of(() -> { }));
         browser = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5))
                 .cookieHandler(new CookieManager(null, CookiePolicy.ACCEPT_ALL))
                 .followRedirects(HttpClient.Redirect.NEVER).build();
@@ -475,6 +481,208 @@ class AdminEmptyPageHttpTest {
         assertThat(response.body()).contains("href=\"#authorEmail\"", "id=\"mapping-email-error\"");
         assertThat(elementOpeningTag(response.body(), "authorEmail")).contains("aria-invalid=\"true\"", "mapping-email-error");
         assertThat(domainState()).isEqualTo(before);
+    }
+
+    @Test
+    void staleBranchCorrectionShowsTheCurrentSnapshotAndSafeAttemptWithUnconfirmedLinkedInputs() throws Exception {
+        long project = syntheticPausedProject();
+        String path = "/admin/projects/" + project + "/branch";
+        String initial = httpGet("/projects/" + project).body();
+        assertThat(initial).doesNotContain("href=\"#corrected-branch\"", "href=\"#branch-correction-reason\"");
+        String oldForm = formFor(initial, path);
+        jdbc.update("UPDATE project SET review_branch='release/current',last_reviewed_sha=? WHERE id=?", "b".repeat(40), project);
+        var before = domainState();
+
+        var response = httpPost(path, Map.of("_csrf", formValue(oldForm, "_csrf"),
+                "expectedBranch", formValue(oldForm, "expectedBranch"), "expectedCursor", formValue(oldForm, "expectedCursor"),
+                "reviewBranch", "release/attempt", "reason", "이전 양식의 안전한 정정 사유", "confirmed", "true"));
+        assertThat(response.statusCode()).isEqualTo(409);
+        assertThat(response.headers().firstValue("Location")).isEmpty();
+        assertThat(response.body()).contains("브랜치 또는 진행 기준이 변경되었습니다", "현재 브랜치: <strong>release/current</strong>",
+                "기존 리뷰와 이슈는 그대로 유지", "정정 후에도 현재 승인·일시 중지 상태는 유지됩니다.");
+        String retry = formFor(response.body(), path);
+        assertThat(formValue(retry, "expectedBranch")).isEqualTo("release/current");
+        assertThat(formValue(retry, "expectedCursor")).isEqualTo("b".repeat(40));
+        assertThat(formValue(retry, "reviewBranch")).isEqualTo("release/attempt");
+        assertThat(formValue(retry, "reason")).isEqualTo("이전 양식의 안전한 정정 사유");
+        assertBranchErrorLinksAndFreshConfirmation(response.body(), retry);
+        assertThat(domainState()).isEqualTo(before);
+    }
+
+    @Test
+    void branchFormSubmittedAfterTheProjectResumesShowsCurrentManagementWithoutLinksToHiddenInputs() throws Exception {
+        long project = syntheticPausedProject();
+        String path = "/admin/projects/" + project + "/branch";
+        String oldForm = formFor(httpGet("/projects/" + project).body(), path);
+        jdbc.update("UPDATE project SET status='APPROVED' WHERE id=?", project);
+        var before = domainState();
+
+        var response = httpPost(path, Map.of("_csrf", formValue(oldForm, "_csrf"),
+                "expectedBranch", formValue(oldForm, "expectedBranch"), "expectedCursor", formValue(oldForm, "expectedCursor"),
+                "reviewBranch", "release/attempt", "reason", "재개 전에 열었던 브랜치 정정 양식", "confirmed", "true"));
+        assertThat(response.statusCode()).isEqualTo(409);
+        assertThat(response.headers().firstValue("Location")).isEmpty();
+        assertThat(response.body()).contains("실행 전 승인 대기·반려 프로젝트 또는 리뷰가 일시 중지된 프로젝트만 브랜치를 정정할 수 있습니다.",
+                        "리뷰 요청을 저장할 수 있어요", "리뷰 일시 중지")
+                .doesNotContain("id=\"branch-correction\"", "id=\"corrected-branch\"", "id=\"branch-correction-reason\"",
+                        "href=\"#corrected-branch\"", "href=\"#branch-correction-reason\"");
+        assertThat(formFor(response.body(), "/admin/projects/" + project + "/pause")).contains("_csrf");
+        assertThat(domainState()).isEqualTo(before);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"QUEUED", "RUNNING"})
+    void branchCorrectionWithAnActiveRequestExplainsTheCurrentRequestWithoutSavingTheAttempt(String state) throws Exception {
+        long project = syntheticPausedProject();
+        String path = "/admin/projects/" + project + "/branch";
+        String oldForm = formFor(httpGet("/projects/" + project).body(), path);
+        if (state.equals("RUNNING")) {
+            jdbc.update("UPDATE review_run SET status='RUNNING',finished_at=NULL WHERE project_id=?", project);
+            long run = jdbc.queryForObject("SELECT id FROM review_run WHERE project_id=?", Long.class, project);
+            jdbc.update("INSERT INTO review_request(project_id,request_id,claim_token,state,source,requested_by,requested_at,available_at,last_attempt_at,attempt_count,run_id) "
+                            + "VALUES(?,?,?,'RUNNING','MANUAL',?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,1,?)",
+                    project, UUID.randomUUID().toString(), UUID.randomUUID().toString(), administratorId, run);
+        } else {
+            jdbc.update("INSERT INTO review_request(project_id,request_id,state,source,requested_by,requested_at,available_at) "
+                            + "VALUES(?,?,'QUEUED','MANUAL',?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",
+                    project, UUID.randomUUID().toString(), administratorId);
+        }
+        var before = domainState();
+
+        var response = httpPost(path, Map.of("_csrf", formValue(oldForm, "_csrf"),
+                "expectedBranch", formValue(oldForm, "expectedBranch"), "expectedCursor", formValue(oldForm, "expectedCursor"),
+                "reviewBranch", "release/attempt", "reason", "활성 요청이 끝난 뒤 확인할 사유", "confirmed", "true"));
+        assertThat(response.statusCode()).isEqualTo(409);
+        assertThat(response.body()).contains("아직 처리 중이거나 대기 중인 리뷰 요청이 남아 있습니다", "data-request-state=\"" + state + "\"",
+                        "저장된 요청은 처리 재확인 시 프로젝트 상태에 따라 취소됩니다.")
+                .doesNotContain("브랜치 또는 진행 기준이 변경되었습니다");
+        String retry = formFor(response.body(), path);
+        assertThat(formValue(retry, "expectedBranch")).isEqualTo("mian");
+        assertThat(formValue(retry, "expectedCursor")).isEqualTo("a".repeat(40));
+        assertThat(formValue(retry, "reviewBranch")).isEqualTo("release/attempt");
+        assertThat(formValue(retry, "reason")).isEqualTo("활성 요청이 끝난 뒤 확인할 사유");
+        assertBranchErrorLinksAndFreshConfirmation(response.body(), retry);
+        assertThat(domainState()).isEqualTo(before);
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {400, 409})
+    void expectedRecoveryErrorUsesOnlyOwnedGuidanceAndReturnsToTheExactProject(int expectedStatus) throws Exception {
+        long project = syntheticPausedProject();
+        String path = "/admin/projects/" + project + "/review-progress/reset";
+        String initial = formFor(httpGet("/projects/" + project).body(), path);
+        String repository = "https://github.com/fixture/recovery-http";
+        String submittedRepository = expectedStatus == 400 ? repository + "-private-mismatch" : repository;
+        String submittedCursor = expectedStatus == 409 ? "c".repeat(40) : "a".repeat(40);
+        String privateReason = "private-recovery-reason-fixture";
+        var before = domainState();
+
+        var response = httpPost(path + "?returnUrl=" + encode("https://untrusted.example/private-return"),
+                Map.of("_csrf", formValue(initial, "_csrf"), "repositoryUrl", submittedRepository,
+                        "expectedCursor", submittedCursor, "reason", privateReason));
+        assertThat(response.statusCode()).isEqualTo(expectedStatus);
+        assertThat(response.headers().firstValue("Location")).isEmpty();
+        assertThat(response.headers().firstValue("Cache-Control").orElseThrow()).contains("no-store");
+        assertThat(response.body()).contains("리뷰 진행 기준을 복구하지 못했습니다", "role=\"alert\"", "복구 요청은 적용되지 않았습니다.",
+                        expectedStatus == 400 ? "프로젝트 주소와 일치하지 않습니다" : "리뷰 진행 기준이 변경되었거나 이미 초기화되었습니다")
+                .doesNotContain(submittedRepository, submittedCursor, privateReason, "untrusted.example", "private-return");
+        URI link = fixedRecoveryLink(response.body(), "프로젝트로 돌아가기", "/projects/" + project);
+        assertThat(domainState()).isEqualTo(before);
+        assertThat(httpGet(link.toString().substring(CONTEXT.length())).body()).contains("리뷰가 일시 중지되었어요", path);
+        assertThat(domainState()).isEqualTo(before);
+    }
+
+    @Test
+    void requestingReviewForAPausedProjectRendersTheRealCommonConflictAndFollowsItsFixedListLink() throws Exception {
+        long project = syntheticPausedProject();
+        String page = httpGet("/projects/" + project).body();
+        var before = domainState();
+
+        var response = httpPost("/projects/" + project + "/review?next=" + encode("https://untrusted.example/private-return"),
+                Map.of("_csrf", formValue(page, "_csrf"), "reason", "private-common-conflict-input"));
+        assertThat(response.statusCode()).isEqualTo(409);
+        assertThat(response.headers().firstValue("Location")).isEmpty();
+        assertThat(response.headers().firstValue("Cache-Control").orElseThrow()).contains("no-store");
+        assertThat(response.body()).contains("HTTP 409", "현재 상태에서는 처리할 수 없습니다", "항목의 상태가 바뀌었거나 다른 처리가 진행 중입니다.")
+                .doesNotContain("승인된 프로젝트만 리뷰할 수 있습니다", "private-common-conflict-input", "untrusted.example", "private-return");
+        URI link = fixedRecoveryLink(response.body(), "프로젝트 목록 열기", "/projects");
+        assertThat(domainState()).isEqualTo(before);
+        assertThat(httpGet(link.toString().substring(CONTEXT.length())).body()).contains("Recovery HTTP fixture");
+        assertThat(domainState()).isEqualTo(before);
+    }
+
+    @Test
+    void unexpectedRecoveryAuditWriteFailureRollsBackAndRendersOnlySafeCommonErrorWithAWorkingProjectListLink() throws Exception {
+        long project = syntheticPausedProject();
+        String path = "/admin/projects/" + project + "/review-progress/reset";
+        String projectPage = httpGet("/projects/" + project).body();
+        assertThat(projectPage).contains("id=\"review-worker-paused\"");
+        String initial = formFor(projectPage, path);
+        String privateReason = "private-audit-write-reason-fixture";
+        String constraint = "recovery_http_audit_failure";
+        jdbc.execute("ALTER TABLE audit_event ADD CONSTRAINT " + constraint
+                + " CHECK(action <> 'PROJECT_REVIEW_PROGRESS_RESET' OR target_id <> " + project + ")");
+        try {
+            var before = domainState();
+            var response = httpPost(path + "?next=" + encode("https://untrusted.example/private-return"),
+                    Map.of("_csrf", formValue(initial, "_csrf"), "repositoryUrl", "https://github.com/fixture/recovery-http",
+                            "expectedCursor", "a".repeat(40), "reason", privateReason));
+            assertThat(response.statusCode()).isEqualTo(500);
+            assertThat(response.headers().firstValue("Location")).isEmpty();
+            assertThat(response.headers().firstValue("Cache-Control").orElseThrow()).contains("no-store");
+            assertThat(response.body()).contains("HTTP 500", "요청을 처리하지 못했습니다", "일시적인 문제로 요청을 완료하지 못했습니다.")
+                    .doesNotContain("리뷰 진행 기준을 복구하지 못했습니다", privateReason, "untrusted.example", "private-return",
+                            "https://github.com/fixture/recovery-http", "a".repeat(40), constraint, constraint.toUpperCase(java.util.Locale.ROOT),
+                            "JdbcSQL", "DataIntegrityViolationException", "INSERT INTO audit_event", "PROJECT_REVIEW_PROGRESS_RESET",
+                            "id=\"review-worker-paused\"");
+            URI link = fixedRecoveryLink(response.body(), "프로젝트 목록 열기", "/projects");
+            assertThat(domainState()).isEqualTo(before);
+            assertThat(httpGet(link.toString().substring(CONTEXT.length())).body()).contains("Recovery HTTP fixture", "id=\"review-worker-paused\"");
+            assertThat(domainState()).isEqualTo(before);
+        } finally {
+            jdbc.execute("ALTER TABLE audit_event DROP CONSTRAINT " + constraint);
+        }
+    }
+
+    private static void assertBranchErrorLinksAndFreshConfirmation(String html, String form) {
+        var details = Pattern.compile("<details\\b[^>]*id=\"branch-correction\"[^>]*>").matcher(html);
+        assertThat(details.find()).isTrue();
+        assertThat(details.group()).contains("open");
+        var error = Pattern.compile("<section\\b[^>]*id=\"branch-correction-error\"[^>]*>(.*?)</section>", Pattern.DOTALL).matcher(html);
+        assertThat(error.find()).isTrue();
+        assertThat(error.group()).contains("role=\"alert\"", "브랜치를 정정하지 않았습니다.");
+        for (String id : List.of("corrected-branch", "branch-correction-reason")) {
+            assertThat(Pattern.compile("href=\"#" + id + "\"").matcher(error.group()).results().count()).isEqualTo(1);
+            for (String description : attribute(elementOpeningTag(form, id), "aria-describedby").split("\\s+")) {
+                assertThat(Pattern.compile("\\bid=\"" + Pattern.quote(description) + "\"").matcher(html).results().count()).isEqualTo(1);
+            }
+            assertThat(attribute(elementOpeningTag(form, id), "aria-describedby")).contains("branch-correction-error");
+        }
+        var confirmation = Pattern.compile("<input\\b[^>]*name=\"confirmed\"[^>]*>").matcher(form);
+        assertThat(confirmation.find()).isTrue();
+        assertThat(confirmation.group()).contains("required").doesNotContain("checked");
+    }
+
+    private static URI fixedRecoveryLink(String html, String label, String path) {
+        var links = Pattern.compile("<a\\b[^>]*href=\"([^\"]+)\"[^>]*>" + Pattern.quote(label) + "</a>")
+                .matcher(html).results().map(match -> URI.create(match.group(1).replace("&amp;", "&"))).toList();
+        assertThat(links).as(label).hasSize(1);
+        URI link = links.getFirst();
+        assertThat(link.isAbsolute()).isFalse();
+        assertThat(link.getRawAuthority()).isNull();
+        assertThat(link.getPath()).isEqualTo(CONTEXT + path);
+        assertThat(link.getRawQuery()).isNull();
+        assertThat(link.getRawFragment()).isNull();
+        return link;
+    }
+
+    private long syntheticPausedProject() {
+        jdbc.update("INSERT INTO project(name,repository_url,provider,repository_host,repository_path,owner_id,status,review_branch,last_reviewed_sha,approved_at) "
+                        + "VALUES('Recovery HTTP fixture','https://github.com/fixture/recovery-http','GITHUB','github.com','fixture/recovery-http',?,'PAUSED','mian',?,TIMESTAMP '2000-01-01 00:00:00')",
+                administratorId, "a".repeat(40));
+        long project = jdbc.queryForObject("SELECT id FROM project WHERE repository_path='fixture/recovery-http'", Long.class);
+        jdbc.update("INSERT INTO review_run(project_id,status,started_at,finished_at) VALUES(?,'FAILED',TIMESTAMP '2000-01-01 00:00:00',TIMESTAMP '2000-01-01 01:00:00')", project);
+        return project;
     }
 
     private static void assertInactiveMappingRecovery(String html, long selected, String email) {

@@ -7,6 +7,8 @@ import java.time.ZoneId;
 import java.time.ZoneOffset;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 class LoginAttemptLimiterTest {
     private final MutableClock clock = new MutableClock();
@@ -66,6 +68,57 @@ class LoginAttemptLimiterTest {
         assertThat(limiter.acquire("alice", "10.0.0.1").retryAfterSeconds()).isEqualTo(10);
         clock.advanceSeconds(10);
         assertThat(limiter.acquire("alice", "10.0.0.1").allowed()).isTrue();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"ACCOUNT", "ADDRESS", "CAPACITY"})
+    void fixtureClockMovesBackwardWithoutChangingStoredWindowOrExtendingRetryHint(String deniedBy) {
+        boolean accountLimited = deniedBy.equals("ACCOUNT");
+        boolean addressLimited = deniedBy.equals("ADDRESS");
+        boolean capacityLimited = deniedBy.equals("CAPACITY");
+        LoginAttemptLimiter limiter = database.login(accountLimited ? 5 : 100,
+                addressLimited ? 5 : 100, 900, capacityLimited ? 2 : 100);
+        Instant firstAttempt = clock.instant();
+        int initialAllowed = capacityLimited ? 1 : 5;
+        for (int i = 0; i < initialAllowed; i++) {
+            assertThat(limiter.acquire(accountLimited ? "shared-account" : "account-" + i,
+                    addressLimited ? "shared-address" : "address-" + i).allowed()).isTrue();
+        }
+        var buckets = database.jdbc.queryForList("SELECT * FROM auth_attempt_bucket ORDER BY scope,key_hash");
+        var policies = database.jdbc.queryForList("SELECT * FROM auth_attempt_policy ORDER BY scope");
+        assertThat(buckets).hasSize(capacityLimited ? 2 : 6);
+        assertThat(database.jdbc.queryForObject("SELECT SUM(attempt_count) FROM auth_attempt_bucket", Integer.class))
+                .isEqualTo(initialAllowed * 2);
+        Instant firstExpiry = database.jdbc.queryForObject("SELECT MIN(expires_at) FROM auth_attempt_bucket",
+                (result, row) -> result.getTimestamp(1).toInstant());
+        assertThat(firstExpiry).isEqualTo(firstAttempt.plusSeconds(900));
+
+        String deniedAccount = accountLimited ? "shared-account" : "new-account";
+        String deniedAddress = addressLimited ? "shared-address" : "new-address";
+        // Only the fixture supplier moves: production DB and operating-system clocks are untouched.
+        for (long[] step : new long[][] {{-2, 900}, {2, 900}, {899, 1}}) {
+            clock.advanceSeconds(step[0]);
+            var denied = limiter.acquire(deniedAccount, deniedAddress);
+            assertThat(denied.allowed()).isFalse();
+            assertThat(denied.retryAfterSeconds()).isEqualTo(step[1]);
+            assertThat(database.jdbc.queryForList("SELECT * FROM auth_attempt_bucket ORDER BY scope,key_hash")).isEqualTo(buckets);
+            assertThat(database.jdbc.queryForList("SELECT * FROM auth_attempt_policy ORDER BY scope")).isEqualTo(policies);
+        }
+
+        clock.advanceSeconds(1);
+        var admitted = limiter.acquire(deniedAccount, deniedAddress);
+        assertThat(clock.instant()).isEqualTo(firstAttempt.plusSeconds(900));
+        assertThat(admitted.allowed()).isTrue();
+        assertThat(admitted.retryAfterSeconds()).isZero();
+        assertThat(database.entries("LOGIN")).isEqualTo(2);
+        assertThat(database.jdbc.queryForObject("SELECT SUM(attempt_count) FROM auth_attempt_bucket", Integer.class)).isEqualTo(2);
+        Instant nextEarliestExpiry = database.jdbc.queryForObject("SELECT MIN(expires_at) FROM auth_attempt_bucket",
+                (result, row) -> result.getTimestamp(1).toInstant());
+        Instant nextLatestExpiry = database.jdbc.queryForObject("SELECT MAX(expires_at) FROM auth_attempt_bucket",
+                (result, row) -> result.getTimestamp(1).toInstant());
+        assertThat(nextEarliestExpiry).isEqualTo(firstAttempt.plusSeconds(1800));
+        assertThat(nextLatestExpiry).isEqualTo(firstAttempt.plusSeconds(1800));
+        assertThat(database.jdbc.queryForList("SELECT * FROM auth_attempt_policy ORDER BY scope")).isEqualTo(policies);
     }
 
     private static final class MutableClock extends Clock {
