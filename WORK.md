@@ -4,7 +4,7 @@
 - 이번 회차: 2026-10-16 10:59 KST 시작, 최대12:59 KST까지 약2시간 범위로 진행한다.
 - 기록 기준: `main` / 시작 `709234b`. 시작 작업 트리는 깨끗하고 로컬 origin/main 기준18개 커밋이 미푸시다. 기존 이력을 보존하며 직접 main 푸시/운영 배포 승인 없이 로컬 커밋만 진행한다.
 - 이번 완료 조건: 모델 선정 보류·현재PC 범위에서 A01로그인 제한429의390px 안내·키보드 양식복귀를 실제WAR·업무/인증제한 보존으로 확인한다. 가입/로그인429·503의HTML/보안/CSRF는 실제Jasper HTTP와 기존두WAR공유제한 도구로 검증하고 전체Java/필수PG·관련Python·소유자원 정리와 문서 인계를 수행한다.
-- 이번 단계: A01 로그인·가입 제한 안내를 `c84057e`로 커밋하고 후보 포장·양OS 46포트/소유 자원 정리를 통과했다. P01/P02의390px 신청·1280px 반려/승인/중지/재개15판정과 별도DB/HTTP7단계, 잠금 대기 후 관리자 재검사 보완·전체Java1334건을 통과했다. B단위 커밋·후보·정리 후 남은 시간에 R03 실패·수동 검토 범위를 읽기 전용 화면에서 확인한다. 모델 선정·실제AI호출은 보류한다.
+- 이번 단계: A01 제한 안내 `c84057e`, 프로젝트 잠금 후 관리자 재검사 `4a27dac`를 커밋했다. 전체Java1334건·P01/P02의15판정/7단계·후보/양OS48포트 정리를 통과했고, 같은WAR의 R03 읽기 전용14판정/2단계와 양OS50포트 정리를 통과했다. 남은 시간에 R01 실패·취소·대기와 I02 빈 상태 필터의390px 누락 조건을 확인한다. 모델 선정·실제AI호출은 보류한다.
 - 확정 요구사항: `docs/REQUIREMENTS.md`. 내부 이슈함 우선, 최초 전체 이력, Java25/Spring/Maven/JSP/PostgreSQL 유지.
 - 재개 시 이 문서와 실제 Git 상태를 대조하고 아래 다음 작업부터 진행한다. 모든 릴리스 항목 검증 전 완료라고 보고하지 않는다.
 
@@ -54,6 +54,12 @@
 
 ## 최신 실제 검증
 
+### 이번 회차 후속: 실패 실행과 검토 범위의 읽기 전용 화면
+
+- B와 같은 WAR `4087d142fdf847d35dca123d227dc290423e437212ad36ffaa54c2f33b53b690`·변경 없는 source234파일로 별도 UUID 스키마에서 USER1280px를 확인했다. 실패 실행의 오류/새 저장1건과 성공커밋 기록, MANUAL_ONLY의 AI본문미검토·이슈1건, EMPTY의 파일변경없음·이슈0, 과거METADATA_ONLY의 영향/별도신규이슈없음·0건을 구분했다. 수동/과거 범위 각각 Space/Enter 펼침과 Tab/역순의 보이는초점·본문1265/1265, 기준은사람확인완료가아님·worker/예약OFF, 원본href/rel/target 확인(외부이동없음)·같은프로젝트Enter복귀와리뷰기록재진입의14판정/JPEG3개 PASS다. `.local/session25c-ui-observation.json`이며 관리자·모바일·새페이지 이동을 이번 인수로 세지 않는다.
+- `.local/session25c-history-ui-harness.json`은198.511초/2단계/21항목 PASS다. 별도HTTP oracle3회는 같은세범위/이슈수·실패표를 확인했고, 업무12표·초기bootstrap감사1행·public14표·같은WAR/PG·Git/AI0회와 소유자원정리를 확인했다. METADATA_ONLY는 과거 저장이력으로 명시한 SQLfixture이며 새파이프라인의 생성 동작으로 주장하지 않는다. 범위summary의 초기DOM role매칭0은 조작없이 현재DOM text로 재지정했고 제품실패로 세지 않는다.
+- source234/추적Python·WAR·기존B후보의 양OS 바이트/체크섬 일치를 재확인했다. `.local/session25c-validation-summary.json` PASS는 B의 전체Java1334건과 같은회차 Python365건을 SHA로 재사용하며 새실행·재패키징을 주장하지 않는다. Linux50포트 연결거절·WAR/PG/PID/lock부재·서비스3개inactive/disabled·정확keeper종료, Windows `session25c-windows-cleanup.json`의50포트 리스너전후0·접속성공0·nonce브리지종료를 확인했다. 운영 설치·모델호출은 없다.
+
 ### 이번 회차 후속: 프로젝트 신청·관리 상태와 잠금 후 권한
 
 - A01 정리 이후 별도25b 범위로 진행한다. P01/P02의 지원 흐름은 USER 기본 URL 신청→PENDING, ADMIN 반려→승인→중지→재개다. worker/예약 중지에서는 자동 요청0이 정상이며, 존재하지 않는 resume endpoint나 반려 사유 UI를 추가 요구사항으로 추정하지 않는다.
@@ -62,6 +68,8 @@
 - 첫 프로젝트UI 도구는 최초 관리자 생성의 `ADMIN_BOOTSTRAPPED` 감사1건이 있는데0건을 기대해 초기fixture검사에서FAIL(8.683초)했다. 준비/완료체크포인트0·브라우저 미실행이며 기존public14표/소유WAR·schema/work/fixture·세션·PG/lock 정리7항목은PASS다. `.local/session25b-project-ui-harness.json`과 원helper를 보존하고, 감사1건을 삭제하지 않고 신규프로젝트 감사5건만 추가되는 별도25br 검증을 준비한다.
 - 별도25br 검증은 같은 검증WAR·새UUID 스키마의7단계/24항목을272.162초에 PASS했다. 초기bootstrap감사1건의 전체행을 보존하며 USER 기본URL 신청1회와 ADMIN 반려→승인→중지→재개4회의 허용 프로젝트 필드·정확 actor/action/detail/같은 저장시각 감사 각1건, 신규5건/최종6건을 대조했다. 최초 승인 시각·원래 프로젝트/리뷰/이슈/담당자·나머지10업무표·public14표·같은WAR/PG와 Git/AI0회·소유 자원 정리도 확인했다. worker/예약 OFF이므로 자동 요청0이며, 별도USER HTTP의 유효CSRF 관리자POST403 무변경은 브라우저 증거와 구분한다.
 - 독립 실제Cua15판정/JPEG4개 PASS: USER390px의 빈/형식오류 native차단·등록불가 호스트의 안전URL복원·userinfo주소 비움/재입력안내·오류링크Enter→필드와Tab/역순초점·선택값 빈URL신청/기본이름·브랜치/승인대기·관리자버튼없음; 같은브라우저 USER로그아웃→기존ADMIN로그인 후1280px 네상태전이의Tab/역순·Enter·성공안내/다음버튼·worker중지설명을 확인했다. 본문375/375·1265/1265,수동리뷰제출/비밀번호변경은없으며 탭/viewport를정리했다. `.local/session25b-ui-observation.json`과 `.local/session25br-project-ui-harness.json`을 연결한다. 일반적인URL 필드의 native차단을 서버POST400 검증으로 바꾸거나 승인/재개를 실제리뷰실행으로 세지 않는다.
+- staged6파일 전체 독립검토·공백/index비밀정보 검사와 검증한source234바이트대조 후 `4a27dace70c982b5b3eeb740bb3e50f723588a62`로 로컬커밋했다.317파일 코어 동기화SHA256은 `f6f96c3e9b1095c875197805d5343a645672702be9bd163dcd444d08b374d41e`다.28파일 후보2개의 내부/외부checksum·manifest·고정metadata·압축바이트가 같고 SHA256 `24c14c9563e604138308878bbcdfb2172f30207084cd60870213c81717527456`/38,097,746바이트다. Windows `.local/session25b-candidate`와 native두후보에 보존하며 releaseApproved=false·설치없음이다. 이 최종정리/R03문서는 후보 생성 뒤 기록이다.
+- `.local/session25b-validation-summary.json`·Windows `session25b-windows-cleanup.json` PASS: Linux48포트 연결거절·소유WAR/PG/PID/lock부재·서비스inactive/disabled·정확keeper종료, Windows48포트 리스너전후0·접속성공0·nonce브리지종료와 최초FAIL 보고서의SHA보존을 확인했다. 원격푸시·CI·운영배포는 없고 사용자Windows PG/Ollama는 제어하지 않았다.
 
 ### 이번 회차: 로그인·가입 제한 안내와 새 양식 복귀
 
