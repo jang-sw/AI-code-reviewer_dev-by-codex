@@ -83,7 +83,7 @@
 - [ ] 운영 모델 품질 합격 (Gemma 오탐·설명 미달, Llama8B 시간 초과·근거 미달)
 - [ ] 장시간/부하·API rate limit·프로세스/DB/네트워크 장애 복구 실증
 - [x] 운영 Maven 의존성 OSV·공급자 공지 확인, Tomcat 및 Jackson2/3 보안 패치 후 새 WAR76JAR/88좌표 재조회0건·전체Java1334/필수PG9묶음·두WAR 공유인증 통과 ([범위](DEPENDENCY-AUDIT.md)); 최초7advisory/14일치 원본과 플러그인 캐시 부재 실패는 보존
-- [ ] 실제 WAR와 Maven inventory 차이·추가 JAR의 승인/누락 거절을 재사용 가능한 배포 전 의존성 점검으로 정리 (이번88좌표는 고정 후보의 명시 검증)
+- [x] 재사용 WAR 의존성 검사·일반75JAR 전체 캐시 바이트/추가1JAR 명시 승인·제공 범위/목록만 있는12좌표 포함·실패 시 OSV 전 차단, 양OS Python각409·Windows PS21·실제 CI 명령과 결합88좌표 OSV0 ([범위](DEPENDENCY-AUDIT.md)); 원격 CI·공급망 서명·운영 전체 보안 승인은 별도
 - [ ] JDK/OS/DB/AI 서버·배포 이미지 보안 점검 및 잔여 위험 결정
 - [x] 필수 PostgreSQL 검증을 강제하는 CI 구성·정적 검증
 - [ ] 실제 원격 CI 실행

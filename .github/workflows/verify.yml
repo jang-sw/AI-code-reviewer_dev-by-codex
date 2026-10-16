@@ -70,7 +70,58 @@ jobs:
           TEST_DATABASE_URL: jdbc:postgresql://127.0.0.1:${{ job.services.postgres.ports['5432'] }}/reviewer_integration
           TEST_IDENTITY_DATABASE_URL: jdbc:postgresql://127.0.0.1:${{ job.services.postgres.ports['5432'] }}/identity_security
         run: bash scripts/verify-ci.sh
+      - name: Verify packaged dependency coverage
+        id: war_dependencies
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact="$GITHUB_WORKSPACE/source/target/ai-code-reviewer.war"
+          inventory="$GITHUB_WORKSPACE/source/target/dependency-list.txt"
+          report_directory="$GITHUB_WORKSPACE/.local"
+          report="$report_directory/war-dependencies-ci.json"
+          if [[ -L "$report_directory" || ( -e "$report_directory" && ! -d "$report_directory" ) ]]; then
+            printf '%s\n' 'Refusing an unsafe dependency report directory.' >&2
+            exit 1
+          fi
+          mkdir -p -- "$report_directory"
+          if [[ -L "$report_directory" || ! -d "$report_directory" ]]; then
+            printf '%s\n' 'Dependency report directory is unavailable.' >&2
+            exit 1
+          fi
+          if [[ -e "$inventory" || -L "$inventory" || -e "$report" || -L "$report" ]]; then
+            printf '%s\n' 'Refusing an existing dependency inventory or coverage report.' >&2
+            exit 1
+          fi
+          publish_report() {
+            if [[ -f "$report" && ! -L "$report" ]]; then
+              {
+                printf '%s\n' '### Packaged dependency coverage' '' '```json'
+                cat -- "$report"
+                printf '%s\n' '```'
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
+          }
+          trap publish_report EXIT
+          # Bind later checks to this job's tested bytes; this is not an independent release approval.
+          artifact_digest="$(sha256sum -- "$artifact")"
+          artifact_digest="${artifact_digest%% *}"
+          (
+            cd -- "$GITHUB_WORKSPACE/source"
+            ./mvnw -B -ntp org.apache.maven.plugins:maven-dependency-plugin:3.9.0:list \
+              "-DoutputFile=$inventory"
+          )
+          # Maven may resolve public dependencies above; the Python coverage gate performs no network requests.
+          python3 scripts/check-war-dependencies.py \
+            --war-file "$artifact" --expected-war-sha256 "$artifact_digest" \
+            --inventory-file "$inventory" --pom-file "$GITHUB_WORKSPACE/source/pom.xml" \
+            --approved-file "$GITHUB_WORKSPACE/scripts/public-maven-coordinates.txt" \
+            --supplemental-file "$GITHUB_WORKSPACE/scripts/packaged-maven-artifacts.json" \
+            --maven-repository "$HOME/.m2/repository" --report-file "$report"
+          printf 'war_sha256=%s\n' "$artifact_digest" >> "$GITHUB_OUTPUT"
       - name: Verify Linux deployment artifacts without installing services
+        env:
+          EXPECTED_WAR_SHA256: ${{ steps.war_dependencies.outputs.war_sha256 }}
         shell: bash
         run: |
           set -euo pipefail
@@ -81,10 +132,8 @@ jobs:
           bash -n deploy/linux/verify-artifact.sh
           python3 deploy/linux/test-verify-artifact.py
           artifact="${GITHUB_WORKSPACE}/source/target/ai-code-reviewer.war"
-          artifact_digest="$(sha256sum -- "$artifact")"
-          artifact_digest="${artifact_digest%% *}"
-          # Check the just-built WAR structure here; deployment uses an independently approved digest.
-          bash deploy/linux/verify-artifact.sh "$artifact" "$artifact_digest"
+          # Use the bytes already checked above; deployment still needs an independently approved digest.
+          bash deploy/linux/verify-artifact.sh "$artifact" "$EXPECTED_WAR_SHA256"
       - name: Verify packaged review recovery after a killed process
         env:
           TEST_DATABASE_URL: jdbc:postgresql://127.0.0.1:${{ job.services.postgres.ports['5432'] }}/reviewer_integration
@@ -134,18 +183,17 @@ jobs:
       - name: Verify repeatable local candidate packaging
         env:
           CANDIDATE_SOURCE_REVISION: ${{ github.sha }}
+          EXPECTED_WAR_SHA256: ${{ steps.war_dependencies.outputs.war_sha256 }}
         shell: bash
         run: |
           set -euo pipefail
           artifact="$GITHUB_WORKSPACE/source/target/ai-code-reviewer.war"
-          digest="$(sha256sum -- "$artifact")"
-          digest="${digest%% *}"
           first="$RUNNER_TEMP/reviewer-candidate-first"
           second="$RUNNER_TEMP/reviewer-candidate-second"
           # This verifies this job's bytes and repeatability; it does not approve or publish a release.
           for output in "$first" "$second"; do
             python3 scripts/package-candidate.py --war "$artifact" \
-              --expected-war-sha256 "$digest" --source-revision "$CANDIDATE_SOURCE_REVISION" \
+              --expected-war-sha256 "$EXPECTED_WAR_SHA256" --source-revision "$CANDIDATE_SOURCE_REVISION" \
               --output-dir "$output" --source-date-epoch 0
           done
           candidate="ai-reviewer-0.1.0-SNAPSHOT-candidate.tar.gz"

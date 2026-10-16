@@ -1,5 +1,26 @@
 # 의존성 취약점 점검
 
+## 배포할 WAR를 먼저 검사
+
+`scripts/check-war-dependencies.py`는 네트워크 없이 실제 WAR의 `WEB-INF/lib`·`WEB-INF/lib-provided` 전체를 Maven 목록과 대조한다. `check-dependencies.ps1`은 이 검사가 성공한 경우에만 OSV를 조회한다. WAR 없이 inventory만 검사하거나 이름만 맞는 JAR를 통과시키는 경로는 없다.
+
+- 검증한 빌드 기록에서 받은 기대 WAR SHA256이 필요하다. 현재 소스 POM과 WAR 안의 애플리케이션 POM은 바이트가 같아야 한다. WAR·inventory·POM·허용 목록·보충 정책의 해시를 보고서에 함께 남긴다. 이 연결은 소스 커밋의 서명이나 Maven 재빌드 재현성을 증명하지 않는다.
+- 일반 JAR는 정확한 버전·classifier의 로컬 Maven 캐시 파일과 바이트가 같아야 한다. 캐시가 없거나 다르면 실패한다. 내부 `pom.properties`가 있으면 예상 좌표 한 개와 정확히 일치해야 한다. 현재 WAR의 메타데이터 없는 일반48개도 캐시 바이트로 확인하며 파일명만으로 통과시키지 않는다.
+- 목록 밖 JAR는 `scripts/packaged-maven-artifacts.json`의 정확한 경로·크기·SHA256과 `public-maven-coordinates.txt`의 공개 좌표 승인을 모두 요구한다. 현재 보충 항목은 공식 체크섬을 확인한 Boot4.0.8 jarmode-tools 한 개다. 출처 URL은 해당 GAV의 공식 Maven Central POM과 같아야 하며 검사 중 URL을 열거나 자동으로 승인하지 않는다. 사용하지 않은 정책 항목은 OSV에 추가하지 않는다.
+- 중복/별칭 경로·중복 JAR 이름·모호한 좌표·중첩 하위경로·일반 파일·손상 ZIP·실제 압축 해제량 초과·POM의 DTD/ENTITY·UTF-16/NUL 입력은 거절한다. 제공 범위와 inventory에만 있는 starter도 조회 범위에 유지한다. classifier별 파일 대조와 OSV의 GAV 중복 제거는 구분한다.
+- Python 성공의 `COMPLETE`는 로컬 JAR 대응 검사가 끝났다는 뜻이다. 보안 일치0건은 별도 OSV 응답을 끝까지 처리한 결합 보고서에서만 판단한다. 로컬 검사 실패는 OSV 전 차단하고, 결합 종료 코드는 기존처럼0/2/1을 유지한다. 유효한 옵션 형식으로 실행한 검사 오류에는 비공개 좌표·입력 경로·원문 예외를 출력하지 않는다. 명령행 옵션 자체가 잘못되면 Python의 인자 안내가 해당 옵션 값을 표시할 수 있으므로 비밀을 명령행에 넣지 않는다.
+
+CI는 Java 검증 뒤 새 Maven 목록과 이 오프라인 검사를 실행하고, 같은 WAR 해시를 후속 배포물 검사와 후보 포장에 사용한다. 새 체크아웃의 보고서 디렉토리를 준비하고 기존 inventory/report 또는 링크를 거절한다. OSV 실시간 호출은 일반 CI에 추가하지 않았다. 원격 CI 실행은 별도 항목이다.
+
+## 2026-10-16 재사용 검사 실제 검증
+
+기존 Java 검증을 통과한 WAR `9e207c8b5d4a405b15648d16763c3d108143d0c24207fece8ecf647eeeabca5f`를 사용했다. 앱 소스234개와 POM은 해당 빌드 기록과 바이트가 같으며 이번에는 Java를 다시 빌드하지 않았다.
+
+- Python의 독립 반례44개와 PowerShell 오프라인21개를 통과했다. 전체Python은 Windows409개 중404통과/환경5skip, Linux409개 중399통과/환경10skip이며 실패/오류0이다. Linux 원본 로그와 입력 해시는 양OS `.local/session26-linux-python.{log,json}`에 보존했다. 반례는 캐시 누락/변조·추가 JAR 미승인·비공개 좌표·제공 범위·classifier·POM 불일치/ENTITY·위조 ZIP 해제량·출력 보존과 로컬 실패 시 mock transport0회를 포함한다.
+- Linux에서 실제 CI Bash 단계를 새 UUID 디렉토리와 없는 `.local`에서 실행했다. 새 Maven 목록87좌표와 WAR76JAR를 대조해 **일반75개 전부 캐시 바이트 일치+승인된 도구1개**, 조회 대상88좌표·목록에만 있는12좌표를 확인했다. 후속 단계의 WAR 해시 출력과 요약 JSON도 일치했다. 같은 명령의 재실행은 Maven 실행 전에 거절했고 최초 파일의 바이트/식별자/수정 시각을 보존했다. `.local/session26-ci-step.json` PASS/5.853초다. Maven의 공개 의존성 해석과 Python 검사의 네트워크 없음은 구분하며 원격 CI를 실행한 결과는 아니다.
+- Windows는 공개 Maven Central 캐시 준비와 별도 새 **오프라인** 목록 생성을 구분했다. 실제 결합 CLI가 다시75개 전체 캐시 바이트+도구1개를 확인한 뒤 **04:11:21–04:11:24 UTC OSV88좌표 COMPLETE/0advisory/종료0**을 반환했다. 원본은 `.local/security/osv-20261016T041121243Z-0a4b86a4d13940e7bca2607e15b7f661.json`, SHA256 `838e8203cd19562111f7d69c0a8eaf8952b0cb8c1a64d10b512ec86e3d28d6a0`이다. 새 목록 SHA256은 `da51034d85167857590ed48b8e499cff07b884b173a71738ebfb251d6cf173d9`이며 Linux와 좌표 집합은 같다.
+- 실제 CLI의 기대 해시 누락과 빈 캐시 두 실행은 각각 INCOMPLETE/종료1이었다. 패킷을 계측하지는 않았으며, 보고서의 패키지/조회 페이지 없음과 별도의 mock transport0 검증을 근거로 구분한다. 이전 OSV 원본6개는 해시가 그대로다. `.local/security/session26-windows-audit.json`에 전체17.36초 실행·도구/입력 해시·각 원본 보고서를 기록했다. 실제 모델/유료 호출과 서비스 설치는 없다.
+
 ## 2026-10-16 현재 후보 재조회와 Jackson 보안 패치
 
 03:34:11–03:34:14 UTC에 기존 검증 WAR의 공개88좌표를 OSV 공식 API로 다시 조회했다. **COMPLETE/FINDINGS, 고유 advisory7개·패키지별 일치14개, 종료 코드2**다. 9월25일의0건 결과를 현재 후보의 보안 통과로 재사용하지 않는다.
@@ -30,7 +51,7 @@
 
 **03:46:01–03:46:02 UTC 새88좌표 재조회는 COMPLETE·advisory0개·종료0**이다. `.local/security/osv-20261016T034601315Z.json` (SHA256 `5dad50501f5e81ef7f6d2b281ef74aff3b401b7d82ad9de011a17002ff5b00d8`), 원본87좌표 SHA256 `a69ce7f22a9f9f853951b6039b6fd9a52775cbeb57395676ed2a89c89359da3a`, 별도88좌표 SHA256 `7e59be758c808319c48b448d2f99646e1dfe251c58ab56675a8bcba501de7a9c`다. `.local/security/session25f-dependency-audit.json`에서 정확한 응답 개수·목록 해시·기존7개발견 원본 보존과 도구12검증을 대조했다. 이는 해당 시점의 OSV 조회 결과이며 후보 생성·운영 보안 전체 승인과 구분한다. 새 WAR의 양OS52포트·소유PG/WAR/PID/lock 부재도 별도로 확인했다. 브라우저 인수는 이전B WAR에서 수행한 명시 범위이며 새 패치 뒤 전체 화면 인수를 재실행하지 않았다.
 
-이번 도구 추가는 해당 후보의 명시 검증이다. 일반 `dependency:list`만으로 패키징 단계가 추가한 JAR까지 모두 검사했다고 주장할 수 없다. 정식 릴리스 전에는 실제 WAR의 추가/미대응 JAR를 거절하고, 공개 출처 승인 후 supplemental inventory에 포함하는 재사용 절차를 정리해야 한다. 빌드 플러그인·JDK/OS/DB/AI 서버·공급망 전체 검증은 이 결과의 범위가 아니다. 10월16일 확인한 [Apache Tomcat 보안 공지](https://tomcat.apache.org/security-11.html)의 최신 수정 절은11.0.26이었으며 이후 공지를 확인하지 못했다는 것이 새 취약점 부재의 보장은 아니다.
+위 초기 도구는 해당 후보에 맞춘 명시 검증이었다. 이후 일반 `dependency:list`가 누락한 추가 JAR를 별도 승인 정책과 함께 검사하는 재사용 절차를 구현했으며 아래 명령을 따른다. 빌드 플러그인·JDK/OS/DB/AI 서버·공급망 전체 검증은 이 결과의 범위가 아니다. 10월16일 확인한 [Apache Tomcat 보안 공지](https://tomcat.apache.org/security-11.html)의 최신 수정 절은11.0.26이었으며 이후 공지를 확인하지 못했다는 것이 새 취약점 부재의 보장은 아니다.
 
 ## 2026-09-25 갱신 후 결과
 
@@ -59,26 +80,46 @@ OSV만으로 최신 공지를 모두 찾지는 못했다. Apache는 2026-09-23�
 
 ## 방법과 재현
 
-PowerShell 7과 프로젝트 Maven wrapper를 사용한다. 프로젝트 루트에서 실행한다. inventory 생성은 의존성을 다운로드할 수 있으며 검사 스크립트 자체는 Maven을 실행하지 않는다.
+Python3.10 이상과 PowerShell7, 프로젝트 Maven wrapper를 사용한다. 프로젝트 루트에서 실행한다. inventory 생성은 의존성을 다운로드할 수 있으며 검사 스크립트 자체는 Maven을 실행하지 않는다. `APPROVED_64_HEX_WAR_DIGEST`는 독립적으로 확인한 빌드 기록의 값으로 바꾼다. 기존 파일을 재사용하지 않도록 매번 새 inventory 경로를 사용한다.
 
 ```powershell
+$reviewWar = Join-Path $PWD 'source/target/ai-code-reviewer.war'
+$reviewInventory = Join-Path $PWD ('source/target/dependency-' + [Guid]::NewGuid().ToString('N') + '.txt')
+if (Test-Path -LiteralPath $reviewInventory) { throw 'A fresh inventory path is required.' }
 Push-Location source
 try {
-    .\mvnw.cmd dependency:list '-DoutputFile=target/dependency-list.txt'
+    .\mvnw.cmd -B -ntp org.apache.maven.plugins:maven-dependency-plugin:3.9.0:list "-DoutputFile=$reviewInventory"
     if ($LASTEXITCODE -ne 0) { throw 'Dependency inventory generation failed.' }
 } finally { Pop-Location }
 pwsh -NoProfile -File scripts/test-dependency-scanner.ps1
-pwsh -NoProfile -File scripts/check-dependencies.ps1
+pwsh -NoProfile -File scripts/check-dependencies.ps1 `
+    -WarFile $reviewWar -ExpectedWarSha256 APPROVED_64_HEX_WAR_DIGEST `
+    -InventoryFile $reviewInventory
 $LASTEXITCODE
 ```
 
+- 기본 Maven 캐시는 현재 사용자 `.m2/repository`다. 다른 빌드 캐시를 사용했다면 `-MavenRepository`로 정확한 로컬 경로를 명시한다. Linux PowerShell에서는 `-PythonCommand python3`를 지정할 수 있다. Python을 찾지 못하거나 캐시가 불완전하면 조회를 시작하지 않는다.
 - Maven이 해석한 정확한 package/version을 사용한다. test 범위는 제외하고 compile/runtime/provided를 포함한다. module 접미사와 classifier가 있는 줄도 처리한다.
 - `scripts/public-maven-coordinates.txt`에 사람이 공개 출처를 확인한 정확한 package/version만 허용한다. 새 좌표나 버전은 전송 전에 중단한다. 목록 갱신 시 공개 Maven 배포물인지 확인하고, 사내 패키지·사설 버전을 추가하지 않는다. 원본 inventory 전체, 앱 소스, 저장소 주소, 자격증명은 전송하지 않는다.
 - 공식 [querybatch API](https://google.github.io/osv.dev/post-v1-querybatch/)를 최대 100개씩 호출하고, 각 결과의 `next_page_token`이 없어질 때까지 해당 패키지만 재조회한다. 발견한 ID의 [상세 advisory](https://google.github.io/osv.dev/get-v1-vulns/)도 모두 받는다.
 - 요청 실패·누락된 결과·잘못된 응답·반복 페이지 토큰·상세 조회 실패는 `INCOMPLETE`이다. 종료 코드는 0=조회 완료 및 일치 없음, 2=조회 완료 및 advisory 있음, 1=검사 미완료이다. advisory의 실제 적용 여부를 자동으로 판정하지 않는다.
-- 원본 응답과 패키지 목록은 Git 제외 경로 `.local/security/osv-*.json`에만 저장한다. 갱신 전 결과 파일은 `osv-20260925T143427222Z.json`, 이전 inventory SHA-256은 `9019b2acb8f59161a650f1c6ab7f41b445b00398f6f9a0517c230728b7732a5a`이다.
-- 오프라인 스크립트 검증 12개를 통과했다. 파싱, 공개 좌표 제한, 빈 결과, 페이지별 재조회, 토큰 반복, 네트워크 실패, 응답 개수/형식 오류, 상세 조회 실패와 부분 증거 보존을 확인했다.
+- 원본 응답과 패키지 목록은 Git 제외 경로 `.local/security/osv-<UTC>-<GUID>.json`에 독점 생성한다. 보고서 조상의 링크/junction과 기존 파일은 거절한다. 과거 보고서를 덮어쓰지 않으며 부분 응답도 보존한다. 갱신 전 결과 파일은 `osv-20260925T143427222Z.json`, 이전 inventory SHA256은 `9019b2acb8f59161a650f1c6ab7f41b445b00398f6f9a0517c230728b7732a5a`이다.
+- Python 로컬 반례44개와 PowerShell 오프라인21개(기존12개 포함)를 통과했다. 실제 OSV 조회와 모의 transport0 검증은 구분한다.
+
+로컬 대응 검사만 실행하려면 같은 기대 해시·새 inventory·빌드 캐시를 Python에 직접 전달한다. 다음 예의 경로는 검증 환경의 실제 값으로 바꾼다. 출력 파일은 아직 존재하지 않아야 하며 부모는 실제 디렉토리여야 한다.
+
+```sh
+python3 scripts/check-war-dependencies.py \
+  --war-file /absolute/build/ai-code-reviewer.war \
+  --expected-war-sha256 APPROVED_64_HEX_WAR_DIGEST \
+  --inventory-file /absolute/build/fresh-dependencies.txt \
+  --pom-file /absolute/checkout/source/pom.xml \
+  --approved-file /absolute/checkout/scripts/public-maven-coordinates.txt \
+  --supplemental-file /absolute/checkout/scripts/packaged-maven-artifacts.json \
+  --maven-repository /absolute/user/.m2/repository \
+  --report-file /absolute/results/new-war-coverage.json
+```
 
 ## 한계와 릴리스 조건
 
-이 검사는 특정 시점의 OSV 알려진 취약점과 Maven 해석 결과를 대조한다. 데이터베이스에 미등록된 취약점, 실제 실행 경로, 공급망 변조, 테스트/빌드 플러그인, JDK·OS·컨테이너 이미지·PostgreSQL·Ollama·LiteLLM 배포물은 별도 검증 대상이다. inventory는 매 검사 직전에 새로 생성해야 하며 오래된 파일의 검사 성공은 현재 빌드 검증이 아니다. 배포 직전 다시 검사하고 해당 구성에 관련된 공급자 보안 공지도 확인한다.
+이 검사는 특정 시점의 OSV 알려진 취약점과 Maven 해석 결과·WAR의 두 라이브러리 디렉토리를 대조한다. 데이터베이스에 미등록된 취약점, 실제 실행 경로, 서명/공급망 변조, 직접 포함된 제3자 class·외부 Class-Path·외부 서블릿 컨테이너·동적 라이브러리, 테스트/빌드 플러그인, JDK·OS·PostgreSQL·Ollama·LiteLLM 배포물은 별도 검증 대상이다. ZIP의 단일 실제 해제량과 파일 크기/개수는 제한하지만 ZIP 중앙 디렉토리를 읽는 라이브러리의 모든 메모리 할당에 절대 상한을 보장하지 않는다. inventory는 매 검사 직전에 새로 생성해야 하며 오래된 파일의 검사 성공은 현재 빌드 검증이 아니다. OSV는 요청별60초/페이지 횟수 제한을 사용하고 실행 환경의 전체 시간 제한도 함께 적용한다. 배포 직전 다시 검사하고 해당 구성에 관련된 공급자 보안 공지도 확인한다.

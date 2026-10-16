@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "artifacts": [
+    {
+      "coordinate": "org.springframework.boot:spring-boot-jarmode-tools:4.0.8",
+      "entry": "WEB-INF/lib/spring-boot-jarmode-tools-4.0.8.jar",
+      "size": 55149,
+      "sha256": "7b14818a48bb13e252d0267728eacf3a458b9aab3c63687ee4e292f305c5e026",
+      "provenance": "https://repo.maven.apache.org/maven2/org/springframework/boot/spring-boot-jarmode-tools/4.0.8/spring-boot-jarmode-tools-4.0.8.pom"
+    }
+  ]
+}
