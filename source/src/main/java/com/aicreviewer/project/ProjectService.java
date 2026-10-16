@@ -148,9 +148,10 @@ public class ProjectService {
 
     @Transactional
     public void transition(String username, long id, String action) {
-        UserAccount actor = users.requireAdmin(username);
+        users.requireAdmin(username);
         List<String> statuses = jdbc.query("SELECT status FROM project WHERE id = ? FOR UPDATE", (rs, row) -> rs.getString(1), id);
         if (statuses.isEmpty()) throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+        UserAccount actor = users.requireAdmin(username);
         String current = statuses.getFirst();
         String next = switch (action) {
             case "approve" -> "APPROVED";

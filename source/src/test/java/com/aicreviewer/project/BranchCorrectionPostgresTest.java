@@ -16,6 +16,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Duration;
@@ -240,6 +241,84 @@ class BranchCorrectionPostgresTest {
         assertThat(jdbc.queryForMap("SELECT * FROM app_user WHERE id=3")).isEqualTo(actor);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audit_event", Long.class)).isZero();
         try (var lease = locks().tryAcquire(projectId).orElseThrow()) { assertThat(lease).isNotNull(); }
+    }
+
+    @ParameterizedTest @ValueSource(booleans = {true, false})
+    void administratorRevokedDuringProjectStateRowLockWaitCannotResumeOrAudit(boolean disabled) throws Exception {
+        jdbc.update("UPDATE project SET approved_at=TIMESTAMPTZ '2000-01-01 00:00:00+00' WHERE id=?", projectId);
+        var project = jdbc.queryForMap("SELECT * FROM project WHERE id=?", projectId);
+        var history = history();
+        var owner = jdbc.queryForMap("SELECT * FROM app_user WHERE id=1");
+        var actor = new LinkedHashMap<>(jdbc.queryForMap("SELECT * FROM app_user WHERE id=3"));
+        actor.put(disabled ? "enabled" : "role", disabled ? false : "USER");
+        actor.put("security_version", ((Number) actor.get("security_version")).longValue() + 1);
+        var audits = jdbc.queryForList("SELECT * FROM audit_event ORDER BY id");
+        var audit = new AuditEventWriter(jdbc);
+        var transitions = new ProjectService(jdbc,
+                new UserAccountService(jdbc, new BCryptPasswordEncoder(4), audit), audit, "github.com");
+        // The direct service fixture must preserve the production @Transactional boundary.
+        var transactions = new TransactionTemplate(new DataSourceTransactionManager(source));
+        transactions.setTimeout(10);
+        try (var blocker = source.getConnection(); var workers = Executors.newSingleThreadExecutor()) {
+            blocker.setAutoCommit(false);
+            try {
+                int blockerPid;
+                try (var statement = blocker.createStatement(); var rows = statement.executeQuery("SELECT pg_backend_pid()")) {
+                    assertThat(rows.next()).isTrue();
+                    blockerPid = rows.getInt(1);
+                }
+                try (var statement = blocker.prepareStatement("SELECT id FROM project WHERE id=? FOR UPDATE")) {
+                    statement.setQueryTimeout(5);
+                    statement.setLong(1, projectId);
+                    try (var rows = statement.executeQuery()) { assertThat(rows.next()).isTrue(); }
+                }
+                var pending = workers.submit(() -> {
+                    try {
+                        transactions.executeWithoutResult(transaction -> transitions.transition("admin", projectId, "approve"));
+                        return 200; // Service outcome marker, not an HTTP response.
+                    } catch (ResponseStatusException denied) { return denied.getStatusCode().value(); }
+                });
+                awaitTransitionBlockedBy(blockerPid);
+                // A third physical connection commits revocation while the project lock is still held.
+                // Demotion is a direct fixture mutation; the product has no role-change action.
+                assertThat(jdbc.update(disabled
+                        ? "UPDATE app_user SET enabled=FALSE,security_version=security_version+1 WHERE id=3"
+                        : "UPDATE app_user SET role='USER',security_version=security_version+1 WHERE id=3")).isEqualTo(1);
+                assertThat(jdbc.queryForMap("SELECT * FROM app_user WHERE id=3")).isEqualTo(actor);
+                blocker.commit();
+                assertThat(pending.get(10, TimeUnit.SECONDS)).isEqualTo(disabled ? 401 : 403);
+            } finally { blocker.rollback(); workers.shutdownNow(); }
+        }
+        assertThat(jdbc.queryForMap("SELECT * FROM project WHERE id=?", projectId)).isEqualTo(project);
+        assertThat(history()).isEqualTo(history);
+        assertThat(jdbc.queryForMap("SELECT * FROM app_user WHERE id=1")).isEqualTo(owner);
+        assertThat(jdbc.queryForMap("SELECT * FROM app_user WHERE id=3")).isEqualTo(actor);
+        assertThat(jdbc.queryForList("SELECT * FROM audit_event ORDER BY id")).isEqualTo(audits);
+        // Transition does not acquire the worker advisory lease. Check that this fixture leaves none behind.
+        try (var lease = locks().tryAcquire(projectId).orElseThrow()) { assertThat(lease).isNotNull(); }
+        try (var reader = source.getConnection()) {
+            reader.setAutoCommit(false);
+            try {
+                try (var statement = reader.prepareStatement("SELECT id FROM project WHERE id=? FOR UPDATE")) {
+                    statement.setQueryTimeout(2);
+                    statement.setLong(1, projectId);
+                    try (var rows = statement.executeQuery()) { assertThat(rows.next()).isTrue(); }
+                }
+            } finally { reader.rollback(); }
+        }
+    }
+
+    private void awaitTransitionBlockedBy(int blockerPid) throws InterruptedException {
+        long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+        while (System.nanoTime() < deadline) {
+            Integer waiting = admin.queryForObject("SELECT COUNT(*) FROM pg_stat_activity WHERE datname=current_database() "
+                    + "AND application_name=? AND state='active' AND wait_event_type='Lock' "
+                    + "AND ?=ANY(pg_blocking_pids(pid)) AND query LIKE ?", Integer.class, schema, blockerPid,
+                    "SELECT status FROM project WHERE id = % FOR UPDATE");
+            if (Integer.valueOf(1).equals(waiting)) return;
+            Thread.sleep(20);
+        }
+        fail("The isolated project transition did not wait for its owned project-row blocker");
     }
 
     private void awaitLockedQuery(String prefix) throws InterruptedException {
