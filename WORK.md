@@ -4,7 +4,7 @@
 - 이번 회차: 2026-10-16 10:59 KST 시작, 최대12:59 KST까지 약2시간 범위로 진행한다.
 - 기록 기준: `main` / 시작 `709234b`. 시작 작업 트리는 깨끗하고 로컬 origin/main 기준18개 커밋이 미푸시다. 기존 이력을 보존하며 직접 main 푸시/운영 배포 승인 없이 로컬 커밋만 진행한다.
 - 이번 완료 조건: 모델 선정 보류·현재PC 범위에서 A01로그인 제한429의390px 안내·키보드 양식복귀를 실제WAR·업무/인증제한 보존으로 확인한다. 가입/로그인429·503의HTML/보안/CSRF는 실제Jasper HTTP와 기존두WAR공유제한 도구로 검증하고 전체Java/필수PG·관련Python·소유자원 정리와 문서 인계를 수행한다.
-- 이번 단계: A01 제한 안내 `c84057e`, 잠금 후 관리자 재검사 `4a27dac`, P01/P02·R03 인수 기록 `5b8fdf3`를 커밋했다. 전체Java1334건과 같은회차 양OS Python365건, 실제화면 A01/P01/P02/R03/R01/I02·상단메뉴/로그아웃의 명시범위를 통과했고 양OS52포트·소유자원을 정리했다. 남은 시간에는 기존 공개Maven 의존성의21일 전 OSV 조회를 갱신한다. 모델 선정·실제AI호출은 보류한다.
+- 이번 단계: A01 제한 안내 `c84057e`, 잠금 후 관리자 재검사 `4a27dac`, 인수 기록 `5b8fdf3`·`2c30e89`를 커밋했다. 화면의 명시범위를 통과한 뒤 Jackson7개 보안 공지를 발견해 두 BOM만2.21.7/3.1.7로 패치했다. 새전체Java1334/필수PG9묶음·두WAR 공유인증, 현재WAR76JAR/88공개좌표 재조회0건·양OS52포트 정리를 통과했다. 지금은 패치의 커밋·새후보 생성/최종 인계를 진행하며, 기존 후보/최초발견·캐시부재 실패 원본은 보존한다. 모델 선정·실제AI호출은 보류한다.
 - 확정 요구사항: `docs/REQUIREMENTS.md`. 내부 이슈함 우선, 최초 전체 이력, Java25/Spring/Maven/JSP/PostgreSQL 유지.
 - 재개 시 이 문서와 실제 Git 상태를 대조하고 아래 다음 작업부터 진행한다. 모든 릴리스 항목 검증 전 완료라고 보고하지 않는다.
 
@@ -53,6 +53,13 @@
 - Linux 부모 검증 도구는 non-root·PG17/Java25·PGDATA 마운트/링크/마커·PID/시작 시각·SQL 대조, clean verify/필수 PG gate·선택 백업/세 WAR 검증 연결과 소유권 인계를 제공한다. 백업은 새 UUID DB만 복원/제거하고 원본을 보존한다. 모의 회귀와 Linux 실제 신호 취소4건·전체 실행을 통과해 반영 가능한 상태다.
 
 ## 최신 실제 검증
+
+### 이번 회차 후속: 현재 WAR의 의존성 재조회와 보안 패치
+
+- 기존B WAR·검증 source234/POM과 묶은 새 Maven87좌표에, 공식 출처/체크섬을 확인한 패키징 도구1개를 명시 추가했다. 실제 JAR76개와 대조한88좌표 OSV 조회는03:34:11–03:34:14 UTC COMPLETE/FINDINGS, 고유7advisory/패키지별14일치·종료2였다. `.local/security/session25e-dependency-audit.json`과 원본 `osv-20261016T033411053Z.json`을 보존한다. 기존12개 오프라인 도구 검증은PASS다. 전체 점검17.609초이며 버전이 같은87좌표 inventory의 이전0건 결과를 재사용하지 않는다.
+- Jackson core/databind 양쪽2.21.5/3.1.5가 대상이다. 공식7공지와 BOM/core/databind6공개POM을 확인하고 Boot4.0.8을 유지한 채 BOM속성2개만2.21.7/3.1.7로 패치했다. 앱 직접특수경로미확인은 미영향승인이 아니다. 새source317/234 snapshot `7f3d1daef0d96fc9deef2788818e7f6b37386016f49dc39a4f3a82b01b2f4760`을양OS동기화했다. 새전체Java1334건 중1323통과/선택11skip·실패/오류0, 필수PG9묶음과 실제두WAR공유인증이289.279초에PASS다. WAR SHA256 `9e207c8b5d4a405b15648d16763c3d108143d0c24207fece8ecf647eeeabca5f`/42,081,083바이트, `.local/session25f-build2-verification.json`이다. 패치한source234는빌드snapshot과일치하며,추적Python은A01이후변경없어 같은회차 양OS365건 근거를재사용하고 새Python실행으로 세지 않는다.
+- 첫오프라인목록생성은native플러그인3.9.0캐시부재로FAIL했다. 빈inventory/원로그와 양OS `session25f-inventory-failure.json`을보존했다. 별도25fr에서명시온라인help90초상한으로공개플러그인을준비한뒤 새offline list60초상한을완료했고14.623초/87좌표·원본과정확4버전만변경을확인했다. 새76JAR와공식도구1좌표를묶은88좌표 재조회는03:46:01–03:46:02 UTC COMPLETE/0advisory/종료0이다. `.local/security/session25f-dependency-audit.json`·원본 `osv-20261016T034601315Z.json`과 도구12검증PASS이며E최초발견원본7파일SHA를보존했다. Windows캐시71개/새Jackson4내부속성/도구1공식SHA의근거차이를기록했다. 새모델호출은0이다.
+- `.local/session25f-cleanup-native.json`·`session25f-cleanup-windows.json` PASS: 새source234/현재WAR·필수PG/공유인증10항목, 부모소유PG/WAR/PID/lock부재·Linux52포트연결거절/Windows리스너전후0·성공연결0을확인했다. F는새keeper/브라우저를시작하지않았다. 이전화면인수의B WAR와새보안패치WAR를구분한다. 세부공급자근거·재현/한계는 `docs/DEPENDENCY-AUDIT.md`다.
 
 ### 이번 회차 후속: 모바일 요청 상태·빈 이슈·로그인과 상단 탐색
 

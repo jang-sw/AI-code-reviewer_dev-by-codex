@@ -82,7 +82,8 @@
 - [ ] 실제 OpenAI 계정/모델 인증·응답 호환·비용·품질 검증 (유료 호출 미실행)
 - [ ] 운영 모델 품질 합격 (Gemma 오탐·설명 미달, Llama8B 시간 초과·근거 미달)
 - [ ] 장시간/부하·API rate limit·프로세스/DB/네트워크 장애 복구 실증
-- [x] 운영 Maven 의존성 OSV·공급자 공지 확인, Tomcat 수정 후 재검사
+- [x] 운영 Maven 의존성 OSV·공급자 공지 확인, Tomcat 및 Jackson2/3 보안 패치 후 새 WAR76JAR/88좌표 재조회0건·전체Java1334/필수PG9묶음·두WAR 공유인증 통과 ([범위](DEPENDENCY-AUDIT.md)); 최초7advisory/14일치 원본과 플러그인 캐시 부재 실패는 보존
+- [ ] 실제 WAR와 Maven inventory 차이·추가 JAR의 승인/누락 거절을 재사용 가능한 배포 전 의존성 점검으로 정리 (이번88좌표는 고정 후보의 명시 검증)
 - [ ] JDK/OS/DB/AI 서버·배포 이미지 보안 점검 및 잔여 위험 결정
 - [x] 필수 PostgreSQL 검증을 강제하는 CI 구성·정적 검증
 - [ ] 실제 원격 CI 실행
