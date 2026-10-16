@@ -1,15 +1,15 @@
 <%@ page pageEncoding="UTF-8" %>
 <%@ include file="fragments/header.jspf" %>
 <section class="page-heading">
-  <p class="eyebrow">나의 작업 공간</p>
+  <p class="eyebrow"><c:choose><c:when test="${adminIssueScope}">관리자 작업 공간</c:when><c:otherwise>나의 작업 공간</c:otherwise></c:choose></p>
   <h1>오늘 확인할 코드 리뷰</h1>
-  <p>프로젝트의 새 변경과 나에게 배정된 수정 권고를 한곳에서 확인하세요.</p>
-  <div class="actions"><a class="button" href="<c:url value='/issues'/>">내 미처리 이슈 확인</a><a class="button button-secondary" href="<c:url value='/projects#register'/>">프로젝트 등록</a></div>
+  <p><c:choose><c:when test="${adminIssueScope}">전체 프로젝트의 새 변경과 담당자별 수정 권고를 한곳에서 확인하세요.</c:when><c:otherwise>프로젝트의 새 변경과 나에게 배정된 수정 권고를 한곳에서 확인하세요.</c:otherwise></c:choose></p>
+  <div class="actions"><a class="button" href="<c:url value='/issues'/>"><c:choose><c:when test="${adminIssueScope}">전체 미처리 이슈 확인</c:when><c:otherwise>내 미처리 이슈 확인</c:otherwise></c:choose></a><a class="button button-secondary" href="<c:url value='/projects#register'/>">프로젝트 등록</a></div>
 </section>
 <section class="stats-grid" aria-label="리뷰 통계">
   <article class="stat-card"><span>등록 프로젝트</span><strong><c:out value="${stats.projectCount}"/></strong></article>
   <article class="stat-card"><a href="<c:url value='/projects?status=PENDING'/>">승인 대기 프로젝트</a><strong><c:out value="${stats.pendingCount}"/></strong></article>
-  <article class="stat-card"><a href="<c:url value='/issues'/>">미처리 이슈</a><strong><c:out value="${stats.openIssueCount}"/></strong></article>
+  <article class="stat-card"><a href="<c:url value='/issues'/>"><c:choose><c:when test="${adminIssueScope}">전체 미처리 이슈</c:when><c:otherwise>미처리 이슈</c:otherwise></c:choose></a><strong><c:out value="${stats.openIssueCount}"/></strong></article>
   <article class="stat-card"><span>확인이 필요한 리뷰</span><strong><c:out value="${stats.failedRunCount}"/></strong></article>
 </section>
 <sec:authorize access="hasRole('ADMIN')"><aside class="notice admin-callout"><div><strong>관리자 승인함</strong><p>새 가입과 프로젝트 신청을 확인하고 승인해 주세요.</p></div><div class="actions"><a class="button button-secondary" href="<c:url value='/admin/users'/>">가입 신청 확인</a><a class="button button-secondary" href="<c:url value='/projects?status=PENDING'/>">프로젝트 신청 확인</a></div></aside></sec:authorize>
@@ -29,5 +29,5 @@
     </c:otherwise>
   </c:choose>
 </section>
-<aside class="panel"><h2>이렇게 시작하세요</h2><ol class="journey-steps"><li><strong>저장소 등록</strong><span>Git 주소를 붙여넣어 프로젝트를 신청합니다.</span></li><li><strong>관리자 승인</strong><span><c:choose><c:when test="${scheduledReviewEnabled}">승인 후 예약 일정에 따라 리뷰를 시작합니다.</c:when><c:otherwise>승인 후 프로젝트에서 ‘지금 리뷰하기’를 누르세요. 현재 자동 리뷰는 꺼져 있습니다.</c:otherwise></c:choose></span></li><li><strong>이슈 확인</strong><span>나에게 배정된 권고의 근거를 읽고 처리합니다.</span></li></ol><p class="muted">처음에는 과거 커밋부터 순서대로 검토하므로 이력에 따라 시간이 걸릴 수 있습니다.</p></aside>
+<aside class="panel"><h2>이렇게 시작하세요</h2><ol class="journey-steps"><li><strong>저장소 등록</strong><span>Git 주소를 붙여넣어 프로젝트를 신청합니다.</span></li><li><strong>관리자 승인</strong><span><c:choose><c:when test="${scheduledReviewEnabled}">승인 후 예약 일정에 따라 리뷰를 시작합니다.</c:when><c:otherwise>승인 후 프로젝트에서 ‘지금 리뷰하기’를 누르세요. 현재 자동 리뷰는 꺼져 있습니다.</c:otherwise></c:choose></span></li><li><strong>이슈 확인</strong><span><c:choose><c:when test="${adminIssueScope}">담당자에게 배정된 권고의 근거와 처리 상태를 확인합니다.</c:when><c:otherwise>나에게 배정된 권고의 근거를 읽고 처리합니다.</c:otherwise></c:choose></span></li></ol><p class="muted">처음에는 과거 커밋부터 순서대로 검토하므로 이력에 따라 시간이 걸릴 수 있습니다.</p></aside>
 <%@ include file="fragments/footer.jspf" %>

@@ -2,6 +2,7 @@
 <%@ taglib prefix="c" uri="jakarta.tags.core" %>
 <%@ taglib prefix="sec" uri="http://www.springframework.org/security/tags" %>
 <%@ taglib prefix="ui" tagdir="/WEB-INF/tags" %>
+<sec:authorize access="hasRole('ADMIN')" var="adminIssueScope"/>
 <!doctype html>
 <html lang="ko">
 <head>
@@ -19,7 +20,7 @@
     <nav aria-label="주 메뉴" class="main-nav">
       <a href="<c:url value='/'/>" ${activeSection == 'home' ? 'aria-current="page"' : ''}>홈</a>
       <a href="<c:url value='/projects'/>" ${activeSection == 'projects' ? 'aria-current="page"' : ''}>프로젝트</a>
-      <a href="<c:url value='/issues'/>" ${activeSection == 'issues' ? 'aria-current="page"' : ''}>내 이슈</a>
+      <a href="<c:url value='/issues'/>" ${activeSection == 'issues' ? 'aria-current="page"' : ''}><c:choose><c:when test="${adminIssueScope}">전체 이슈</c:when><c:otherwise>내 이슈</c:otherwise></c:choose></a>
       <sec:authorize access="hasRole('ADMIN')"><details class="admin-nav"><summary>관리자 메뉴</summary><div class="admin-menu"><a href="<c:url value='/admin/users'/>">가입 승인</a><a href="<c:url value='/admin/users?status='/>">사용자 관리</a><a href="<c:url value='/projects?status=PENDING'/>">프로젝트 승인</a><a href="<c:url value='/admin/git-authors'/>">Git 작성자 매핑</a><a href="<c:url value='/admin/operations'/>">운영 상태</a><a href="<c:url value='/admin/monitoring'/>">서버 상태</a><a href="<c:url value='/admin/audit'/>">감사 기록</a></div></details></sec:authorize>
       <a href="<c:url value='/account/password'/>" ${activeSection == 'account' ? 'aria-current="page"' : ''}>비밀번호 변경</a>
     </nav>
