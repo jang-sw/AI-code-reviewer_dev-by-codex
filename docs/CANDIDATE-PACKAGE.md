@@ -4,6 +4,10 @@
 
 2026-10-16 보안 재조회에서 기존 Jackson2.21.5/3.1.5 후보에 advisory7개가 반환되었다. 아래 과거 후보 생성·체크섬 성공을 현재 보안 통과로 재사용하지 않는다. Jackson2.21.7/3.1.7 패치와 새 WAR의 검증·조회 결과는 [의존성 점검](DEPENDENCY-AUDIT.md)을 따르며, 이전 후보는 그대로 보존한다.
 
+같은 날 패치 소스 `f4392ae0fa954f6473e73870fa4547e7ad71a023`와 검증 WAR `9e207c8b5d4a405b15648d16763c3d108143d0c24207fece8ecf647eeeabca5f`를 새28파일 후보2개로 포장했다. 아카이브 SHA256 `7afccc6796a09f92246c97dda6f0d90514bb24a5656ff9f1f6acbcf47837bc1c`/38,121,133바이트다. 동일 입력의 압축바이트·내부/외부 전체체크섬·manifest·고정메타데이터·원본WAR를 확인했다. 전체Java1334건(1323통과/선택11skip)·필수PG9묶음·실제두WAR 공유인증·새88좌표OSV0건을 통과했다. Linux `.local/session25f-candidate-{first,second}`에 보존하며 설치·릴리스 승인·새모델 호출은 없다. 소스revision은운영자제공이며독립출처증명이아니다. 이결과문단은후보생성뒤작성되어해당후보에는포함되지않는다.
+
+새후보는 Windows `.local/session25f-candidate`에도 기존출력을덮어쓰지않고복사했으며외부체크섬과Windows `Get-FileHash`가일치했다. `.local/session25f-validation-summary.json`은앞선검증원본의SHA·새WAR·후보28파일을읽기재대조한기록이며추가테스트/스캔/설치실행이아니다.
+
 ## 생성
 
 Python3.10 이상을 사용한다. 저장소 루트에서 실제 DB 테스트와 WAR 검증을 마친 뒤 실행한다. `--war`와 `--output-dir`은 절대경로이며, 출력 디렉터리의 부모는 존재하고 출력 디렉터리 자체는 아직 없어야 한다. 기존 출력은 덮어쓰지 않는다.
