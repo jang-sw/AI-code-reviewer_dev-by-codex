@@ -36,6 +36,13 @@ VerificationError, require = HELPERS.VerificationError, HELPERS.require
 WORKSPACE = Path(__file__).absolute().parent.parent
 CLEANUP = ('ownedWarsStopped', 'ownedProxyStopped', 'ownedObserverStopped', 'ownedDatabaseSessionsGone',
            'ownedSchemaRemoved', 'ownedWorkRemoved', 'originalTestTablesPreserved')
+PER_COMMIT_BEHAVIOR = ('sameLiveWarRecovered', 'databaseProcessUnchanged', 'committedBeforeClientFailure',
+                       'savedRowsReusedWithoutAi', 'twoIssuesAndSafeCheckpoint')
+FINAL_BEHAVIOR = ('finalCompletionGateSelected', 'finalCompletionCommittedBeforeClientFailure',
+                  'terminalSuccessUnchangedAfterClientFailure', 'completedRequestNotRetried',
+                  'sameLiveWarRemainedTerminal', 'databaseProcessUnchanged', 'committedBeforeClientFailure',
+                  'savedRowsPreservedWithoutExtraAi', 'twoIssuesAndSafeCheckpoint', 'requestActorAndReceptionPreserved')
+TERMINAL_OBSERVATION_SECONDS = 12
 
 
 class OwnedObserver:
@@ -88,7 +95,34 @@ class OwnedObserver:
         raise VerificationError('The owned observer did not confirm its command before the deadline')
 
     def acquire(self, project):
+        return self._acquire_row(project, 'project', 'id')
+
+    def acquire_final_completion_gate(self, project):
+        require(self.process is None and type(project) is int and project > 0,
+                'Invalid owned completion gate request')
+        # Only the owned schema is changed. The deferred trigger runs during the
+        # final COMMIT, after its request/run/checkpoint writes, never during an
+        # individual result or progress transaction. No product SQL is modified.
+        schema = self.schema
+        self.database.sql(f"""CREATE TABLE {schema}.commit_ack_final_gate (project_id BIGINT PRIMARY KEY CHECK (project_id > 0));
+          INSERT INTO {schema}.commit_ack_final_gate(project_id) VALUES ({project});
+          CREATE FUNCTION {schema}.commit_ack_wait_final() RETURNS trigger LANGUAGE plpgsql AS $ack$
+          BEGIN
+            PERFORM 1 FROM {schema}.commit_ack_final_gate WHERE project_id=NEW.project_id FOR UPDATE;
+            IF NOT FOUND THEN RAISE EXCEPTION 'Owned completion gate row missing'; END IF;
+            RETURN NEW;
+          END;
+          $ack$;
+          CREATE CONSTRAINT TRIGGER commit_ack_final_completion AFTER UPDATE ON {schema}.review_request
+            DEFERRABLE INITIALLY DEFERRED FOR EACH ROW
+            WHEN (OLD.state='RUNNING' AND NEW.state='SUCCEEDED' AND NEW.project_id={project})
+            EXECUTE FUNCTION {schema}.commit_ack_wait_final();""")
+        return self._acquire_row(project, 'commit_ack_final_gate', 'project_id')
+
+    def _acquire_row(self, project, table, column):
         require(self.process is None and type(project) is int and project > 0, 'Invalid owned observer lock request')
+        require((table, column) in (('project', 'id'), ('commit_ack_final_gate', 'project_id')),
+                'Invalid owned observer gate identity')
         environment = dict(self.database.environment)
         environment['PGAPPNAME'] = self.schema + '-observer'
         environment['PGOPTIONS'] += ' -c idle_in_transaction_session_timeout=10000'
@@ -102,7 +136,7 @@ class OwnedObserver:
         self.reader.start()
         deadline = time.monotonic() + 3
         self._send("BEGIN;\nSELECT 'ACK_PID_' || pg_backend_pid() || '_" + self.token + "';\n"
-                   "SELECT 'ACK_LOCKED_" + self.token + "' FROM " + self.schema + '.project WHERE id=' + str(project) + ' FOR UPDATE;\n')
+                   "SELECT 'ACK_LOCKED_" + self.token + "' FROM " + self.schema + '.' + table + ' WHERE ' + column + '=' + str(project) + ' FOR UPDATE;\n')
         line = self._next(deadline)
         match = re.fullmatch(r'ACK_PID_([0-9]{1,10})_' + self.token, line)
         require(match is not None and 0 < int(match.group(1)) <= 2147483647, 'The owned observer did not return its process identity')
@@ -208,6 +242,76 @@ def assert_saved_rows(saved):
             'The committed result and assignment audit rows are incomplete')
 
 
+def assert_final_completion(current, initial):
+    require(current['request'] == (initial['request'] | {'state': 'SUCCEEDED'})
+            and type(current['request']['attempts']) is int and current['request']['attempts'] == 1
+            and current['ownership'] == initial['ownership']
+            and current['commits'] == [HELPERS.SHA_A, HELPERS.SHA_B] and current['issues'] == 2
+            and current['assignees'] == [initial['request']['actor']] * 2 and current['cursor'] == HELPERS.SHA_B
+            and current['runs'] == [{'state': 'SUCCEEDED', 'commits': 2}]
+            and current['progress']['runId'] == initial['progress']['runId']
+            and current['progress']['stage'] == 'FINALIZING' and current['progress']['saved'] == 2
+            and current['progress']['lastSavedAt'] is not None,
+            'The final committed request, run, checkpoint or ownership is incomplete or changed')
+
+
+def stored_final_rows(database, schema, project):
+    require(HELPERS.SCHEMA_PATTERN.fullmatch(schema) is not None and type(project) is int and project > 0,
+            'Invalid durable completion identity')
+    # Complete rows, including the terminal metadata and audits, stay private in
+    # memory. Equality later detects even a changed timestamp or acknowledgement.
+    return json.loads(database.sql(f"""SELECT json_build_object(
+      'project',(SELECT row_to_json(p) FROM {schema}.project p WHERE id={project}),
+      'request',(SELECT row_to_json(q) FROM {schema}.review_request q WHERE project_id={project}),
+      'runs',(SELECT json_agg(row_to_json(r) ORDER BY id) FROM {schema}.review_run r WHERE project_id={project}),
+      'commits',(SELECT json_agg(row_to_json(c) ORDER BY id) FROM {schema}.reviewed_commit c WHERE project_id={project}),
+      'issues',(SELECT json_agg(row_to_json(i) ORDER BY id) FROM {schema}.review_issue i WHERE project_id={project}),
+      'audits',(SELECT json_agg(row_to_json(a) ORDER BY id) FROM {schema}.audit_event a)
+    );"""))
+
+
+def assert_final_rows(saved, initial):
+    require(isinstance(saved, dict) and isinstance(saved.get('project'), dict) and isinstance(saved.get('request'), dict)
+            and all(isinstance(saved.get(key), list) and all(isinstance(row, dict) for row in saved[key])
+                    for key in ('runs', 'commits', 'issues', 'audits'))
+            and len(saved['runs']) == 1 and len(saved['commits']) == len(saved['issues']) == 2,
+            'The terminal completion rows are missing or malformed')
+    project, request, run = saved['project'], saved['request'], saved['runs'][0]
+    project_id, run_id = project.get('id'), initial['ownership']['run']
+    require(type(project_id) is int and project_id > 0 and request.get('project_id') == project_id
+            and request.get('request_id') == initial['request']['requestId']
+            and request.get('requested_by') == initial['request']['actor']
+            and request.get('source') == initial['request']['source']
+            and request.get('requested_at') == initial['ownership']['requestedAt']
+            and request.get('claim_token') == initial['ownership']['claim'] and request.get('run_id') == run_id
+            and request.get('state') == 'SUCCEEDED' and request.get('result_code') == 'BATCH_COMPLETED'
+            and type(request.get('attempt_count')) is int and request['attempt_count'] == 1
+            and request.get('finished_at') is not None and project.get('last_reviewed_sha') == HELPERS.SHA_B
+            and run.get('id') == run_id and run.get('project_id') == project_id
+            and run.get('status') == 'SUCCEEDED' and run.get('progress_stage') == 'FINALIZING'
+            and type(run.get('reviewed_commits')) is int and run['reviewed_commits'] == 2
+            and run.get('last_saved_at') is not None and run.get('finished_at') == request['finished_at']
+            and run.get('error_message') is None,
+            'The terminal completion metadata, reception, checkpoint or run did not commit together')
+    commits, issues, audits = saved['commits'], saved['issues'], saved['audits']
+    commit_ids = [row.get('id') for row in commits]
+    require(all(type(value) is int and value > 0 for value in commit_ids) and len(set(commit_ids)) == 2
+            and [row.get('commit_sha') for row in commits] == [HELPERS.SHA_A, HELPERS.SHA_B]
+            and all(row.get('project_id') == project_id for row in commits)
+            and all(row.get('project_id') == project_id and row.get('assignee_id') == initial['request']['actor'] for row in issues)
+            and sorted(row.get('reviewed_commit_id', -1) for row in issues) == sorted(commit_ids),
+            'The final completion did not retain its two assigned commit results')
+    successful = [row for row in audits if row.get('action') == 'REVIEW_SUCCEEDED']
+    started = [row for row in audits if row.get('action') == 'REVIEW_STARTED']
+    assigned = [row for row in audits if row.get('action') == 'ISSUES_ASSIGNED']
+    require(len(successful) == len(started) == 1
+            and all(row.get('target_type') == 'REVIEW_RUN' and row.get('target_id') == run_id for row in successful + started)
+            and len(assigned) == 2 and all(row.get('target_type') == 'REVIEWED_COMMIT' for row in assigned)
+            and sorted(row.get('target_id', -1) for row in assigned) == sorted(commit_ids)
+            and not any(row.get('action') == 'REVIEW_FAILED' for row in audits),
+            'The final success and assignment audits are missing, repeated or replaced by failure')
+
+
 def exercise(war, database, schema, fixture, fixture_url, proxy, observer, args, report, deadline):
     war.start(True)
     browser = HELPERS.Browser(war.base)
@@ -282,6 +386,93 @@ def exercise(war, database, schema, fixture, fixture_url, proxy, observer, args,
     report['requestCounts'], report['attempts'] = counts, 2
 
 
+def exercise_final_completion(war, database, schema, fixture, fixture_url, proxy, observer, args, report, deadline):
+    war.start(True)
+    browser = HELPERS.Browser(war.base)
+    browser.login(war.username, war.password)
+    project = RATE.register(browser, war, fixture_url, 'restart')
+    RATE.post_review(browser, project)
+    HELPERS.bounded_wait(fixture.first_b_entered.is_set, deadline, 'The unfinished AI result was not reached', war.process)
+    initial = NETWORK.snapshot(database, schema, project)
+    require(initial['request']['state'] == 'RUNNING' and initial['request']['attempts'] == 1
+            and initial['request']['source'] == 'MANUAL' and initial['request']['actor'] is not None
+            and initial['progress']['stage'] == 'REVIEWING' and initial['progress']['saved'] == 1
+            and initial['progress']['lastSavedAt'] is not None,
+            'The initial review did not preserve exactly commit A')
+    NETWORK.assert_preserved(initial, initial)
+    server = NETWORK.server_identity(database)
+    observer.acquire_final_completion_gate(project)
+    lock_started = time.monotonic()
+    fixture.release_first_b.set()
+    target = None
+    while time.monotonic() < min(deadline, lock_started + 2.5):
+        target = blocking_backend(database, schema, observer.pid)
+        if target is not None:
+            break
+        time.sleep(0.05)
+    require(target is not None, 'The final COMMIT did not wait on its owned deferred completion gate')
+    waiting = NETWORK.snapshot(database, schema, project)
+    require(waiting['progress']['stage'] == 'FINALIZING', 'The completion gate intercepted an earlier review transaction')
+    # The final transaction is not committed yet. The independent connection
+    # sees the saved B result and FINALIZING progress, with the old open request.
+    assert_committed(waiting | {'progress': waiting['progress'] | {'stage': 'REVIEWING'}}, initial)
+    proxy.arm_backend(target)
+    observer.release()
+    require(time.monotonic() - lock_started < 5, 'Arming and releasing the controlled completion exceeded five seconds')
+    report['checks']['finalCompletionGateSelected'] = True
+    started = time.monotonic()
+    HELPERS.bounded_wait(lambda: acknowledgement_dropped(proxy), min(deadline, started + 10),
+                         'The final COMMIT and idle acknowledgements were not dropped', war.process)
+    assert_final_completion(NETWORK.snapshot(database, schema, project), initial)
+    saved = stored_final_rows(database, schema, project)
+    assert_final_rows(saved, initial)
+    require(not NETWORK.RECOVERY.worker_failed(war.logs / 'war-start-1.log', project),
+            'The client failure preceded the independent terminal-state observation')
+    report['checks'].update({'committedBeforeClientFailure': True, 'finalCompletionCommittedBeforeClientFailure': True})
+    counts = fixture.observed()
+    require(all(counts.get(kind + '_' + file + '.java') == 1 for kind in ('ai', 'detail', 'diff') for file in ('A', 'B'))
+            and not fixture.second_b_entered.is_set() and not fixture.errors,
+            'The final completion did not follow exactly two synthetic commit reviews')
+    while True:
+        require(time.monotonic() < min(deadline, started + 25) and war.process.poll() is None,
+                'The final acknowledgement failure did not reach its bounded worker outcome')
+        assert_final_completion(NETWORK.snapshot(database, schema, project), initial)
+        require(stored_final_rows(database, schema, project) == saved,
+                'Terminal rows changed while the final acknowledgement timed out')
+        metrics = proxy.metrics()
+        require(metrics.get('failed') is False, 'The acknowledgement proxy failed')
+        if metrics.get('targetClientClosed') is True and NETWORK.RECOVERY.worker_failed(war.logs / 'war-start-1.log', project):
+            break
+        time.sleep(0.15)
+    report['workerFailureAfterSeconds'] = round(time.monotonic() - started, 3)
+    proxy.heal()
+    observed = time.monotonic()
+    samples = 0
+    # Observe for more than two 5-second dispatcher intervals. This is bounded
+    # live observation, not instrumentation of scheduler execution or an SLA.
+    while time.monotonic() - observed < TERMINAL_OBSERVATION_SECONDS:
+        require(time.monotonic() < deadline and war.process.poll() is None,
+                'The live terminal observation did not finish within its budget')
+        assert_final_completion(NETWORK.snapshot(database, schema, project), initial)
+        require(stored_final_rows(database, schema, project) == saved and fixture.observed() == counts
+                and not fixture.second_b_entered.is_set() and not fixture.errors,
+                'The successful request was retried or its terminal rows changed after acknowledgement loss')
+        require(proxy.metrics().get('failed') is False, 'The healed acknowledgement proxy failed')
+        samples += 1
+        time.sleep(0.2)
+    require(samples >= 2 and time.monotonic() < deadline, 'The terminal observation did not provide repeated bounded samples')
+    assert_final_completion(NETWORK.snapshot(database, schema, project), initial)
+    require(stored_final_rows(database, schema, project) == saved and fixture.observed() == counts,
+            'The terminal result changed at the end of the observation')
+    require(war.starts == 1 and war.process.poll() is None and NETWORK.server_identity(database) == server,
+            'The WAR or database restarted during final acknowledgement verification')
+    NETWORK.probe(war.base, 'readiness', 200, 'UP')
+    report['checks'].update(dict.fromkeys(FINAL_BEHAVIOR, True))
+    report['requestCounts'], report['attempts'] = counts, 1
+    report['terminalObservationSeconds'] = round(time.monotonic() - observed, 3)
+    report['terminalObservationSamples'] = samples
+
+
 def arguments(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('war', 'java', 'psql', 'report'):
@@ -289,6 +480,7 @@ def arguments(argv=None):
     parser.add_argument('--port', type=int, required=True)
     parser.add_argument('--timeout-seconds', type=int, default=180)
     parser.add_argument('--startup-timeout-seconds', type=int, default=45)
+    parser.add_argument('--phase', choices=('per-commit', 'final-completion'), default='per-commit')
     args = parser.parse_args(argv)
     for name in ('war', 'java', 'psql'):
         value = LINUX.checked_path(getattr(args, name)) if name == 'war' else getattr(args, name).absolute()
@@ -308,6 +500,8 @@ def arguments(argv=None):
 
 
 def run(args, report):
+    phase = getattr(args, 'phase', 'per-commit')
+    require(phase in ('per-commit', 'final-completion'), 'Invalid acknowledgement verification phase')
     started = time.monotonic()
     deadline = started + args.timeout_seconds
     schema = 'restart_test_' + uuid.uuid4().hex
@@ -341,7 +535,8 @@ def run(args, report):
                                       user=database.user, password=database.password, sql=database.sql)
         fixture_url = fixture.start()
         war = HELPERS.OwnedWar(args, routed, schema, fixture_url, work, logs, deadline)
-        exercise(war, database, schema, fixture, fixture_url, proxy, observer, args, report, deadline)
+        scenario = exercise_final_completion if phase == 'final-completion' else exercise
+        scenario(war, database, schema, fixture, fixture_url, proxy, observer, args, report, deadline)
     except BaseException as error:
         failure = error
     finally:
@@ -416,7 +611,7 @@ def run(args, report):
 
 def main(argv=None):
     args, previous, installed = None, None, False
-    report = {'result': 'FAIL', 'checks': {}, 'externalServicesUsed': False, 'paidAiUsed': False,
+    report = {'result': 'FAIL', 'phase': 'per-commit', 'checks': {}, 'externalServicesUsed': False, 'paidAiUsed': False,
               'scope': 'One live WAR; one durable per-commit transaction with its wire COMMIT acknowledgement dropped',
               'limits': {'queryTimeoutSeconds': 5, 'socketTimeoutSeconds': 10, 'connectTimeoutSeconds': 5},
               'limitations': ['Synthetic Git/AI only; no operational recovery SLA',
@@ -426,13 +621,28 @@ def main(argv=None):
         raise KeyboardInterrupt()
     try:
         args = arguments(argv)
+        phase = getattr(args, 'phase', 'per-commit')
+        report['phase'] = phase
+        if phase == 'final-completion':
+            report['scope'] = 'One live WAR; its durable terminal completion with the wire COMMIT acknowledgement dropped'
+            report['limitations'] = ['Synthetic Git/AI only; no operational recovery SLA',
+                'Does not drop claim or per-commit COMMIT acknowledgements in this phase',
+                'No retry observed for at least twelve seconds after healing; scheduler execution is not instrumented',
+                'Stale-caller rejection is covered by separate Java tests, not invoked by this wire drill']
         previous = signal.getsignal(signal.SIGTERM)
         signal.signal(signal.SIGTERM, cancel)
         installed = True
         run(args, report)
+        behavior = FINAL_BEHAVIOR if phase == 'final-completion' else PER_COMMIT_BEHAVIOR
+        require(report.get('phase') == phase and phase in ('per-commit', 'final-completion'),
+                'The acknowledgement phase does not match its evidence')
+        if phase == 'final-completion':
+            require(type(report.get('attempts')) is int and report['attempts'] == 1
+                    and type(report.get('terminalObservationSeconds')) in (int, float)
+                    and TERMINAL_OBSERVATION_SECONDS <= report['terminalObservationSeconds'] < args.timeout_seconds,
+                    'Final acknowledgement evidence requires one attempt and a bounded terminal observation')
         require(report['cleanupFailed'] is False and all(report['checks'].get(key) is True for key in CLEANUP)
-                and all(report['checks'].get(key) is True for key in ('sameLiveWarRecovered', 'databaseProcessUnchanged',
-                    'committedBeforeClientFailure', 'savedRowsReusedWithoutAi', 'twoIssuesAndSafeCheckpoint'))
+                and all(report['checks'].get(key) is True for key in behavior)
                 and type(report.get('proxy', {}).get('commitAcknowledgementsDropped')) is int
                 and report['proxy']['commitAcknowledgementsDropped'] == 1
                 and report.get('proxy', {}).get('readyForQueryIdleDropped') is True
@@ -458,7 +668,9 @@ def main(argv=None):
         except (OSError, LINUX.SafetyError):
             print('FAIL: fresh acknowledgement report could not be written', file=sys.stderr)
             return 1
-    print(report['result'] + ': bounded committed-review acknowledgement recovery; private details withheld')
+    description = ('final-completion acknowledgement verification' if report['phase'] == 'final-completion'
+                   else 'committed-review acknowledgement recovery')
+    print(report['result'] + ': bounded ' + description + '; private details withheld')
     return code
 
 

@@ -19,6 +19,10 @@ SPEC.loader.exec_module(MODULE)
 SCHEMA = 'restart_test_' + 'a' * 32
 BEHAVIOR = ('sameLiveWarRecovered', 'databaseProcessUnchanged', 'committedBeforeClientFailure',
             'savedRowsReusedWithoutAi', 'twoIssuesAndSafeCheckpoint')
+FINAL_BEHAVIOR = ('finalCompletionGateSelected', 'finalCompletionCommittedBeforeClientFailure',
+                  'terminalSuccessUnchangedAfterClientFailure', 'completedRequestNotRetried',
+                  'sameLiveWarRemainedTerminal', 'databaseProcessUnchanged', 'committedBeforeClientFailure',
+                  'savedRowsPreservedWithoutExtraAi', 'twoIssuesAndSafeCheckpoint', 'requestActorAndReceptionPreserved')
 
 
 class CommitAckDrillTest(unittest.TestCase):
@@ -89,6 +93,147 @@ class CommitAckDrillTest(unittest.TestCase):
                             [{'action': 'ISSUES_ASSIGNED'}] * 3):
             with self.subTest(assignments=assignments), self.assertRaises(MODULE.VerificationError):
                 MODULE.assert_saved_rows(valid | {'assignments': assignments})
+
+    @classmethod
+    def terminal(cls):
+        result = cls.committed()
+        result['request']['state'] = 'SUCCEEDED'
+        result['cursor'] = MODULE.HELPERS.SHA_B
+        result['runs'] = [{'state': 'SUCCEEDED', 'commits': 2}]
+        result['progress']['stage'] = 'FINALIZING'
+        return result
+
+    def test_final_completion_requires_terminal_state_without_new_claim_or_retry(self):
+        initial, terminal = self.initial(), self.terminal()
+        MODULE.assert_final_completion(terminal, initial)
+        mutations = [('request', 'requestId', 'replacement-request'), ('request', 'actor', 8),
+            ('request', 'source', 'SCHEDULED'), ('request', 'state', 'RUNNING'), ('request', 'attempts', 2),
+            ('ownership', 'requestedAt', 'later'), ('ownership', 'claim', 'replacement-claim'), ('ownership', 'run', 12),
+            ('root', 'commits', [MODULE.HELPERS.SHA_A]), ('root', 'issues', 1), ('root', 'assignees', [7, 8]),
+            ('root', 'cursor', None), ('root', 'runs', [{'state': 'FAILED', 'commits': 2}, {'state': 'SUCCEEDED', 'commits': 0}]),
+            ('progress', 'stage', 'REVIEWING'), ('progress', 'saved', 0), ('progress', 'runId', 12),
+            ('progress', 'lastSavedAt', None)]
+        for location, key, value in mutations:
+            changed = copy.deepcopy(terminal)
+            (changed if location == 'root' else changed[location])[key] = value
+            with self.subTest(location=location, key=key), self.assertRaises(MODULE.VerificationError):
+                MODULE.assert_final_completion(changed, initial)
+
+    def test_cli_defaults_to_per_commit_and_accepts_only_the_two_explicit_phases(self):
+        with patch.object(MODULE.LINUX, 'unused_port'):
+            self.assertEqual('per-commit', MODULE.arguments(self.argv()).phase)
+            for phase in ('per-commit', 'final-completion'):
+                self.assertEqual(phase, MODULE.arguments(self.argv(phase=phase)).phase)
+        for phase in ('final', 'claim', '', 'private-invalid-phase'):
+            with self.subTest(phase=phase), patch.object(MODULE.LINUX, 'unused_port') as port, \
+                    redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                MODULE.arguments(self.argv(phase=phase))
+            port.assert_not_called()
+
+    def test_final_gate_rejects_invalid_project_identifiers_before_sql_or_process_start(self):
+        database = Mock()
+        observer = MODULE.OwnedObserver(database, SCHEMA)
+        with patch.object(MODULE.subprocess, 'Popen') as spawn:
+            for value in (True, 0, -1, '1;DROP', None):
+                with self.subTest(project=value), self.assertRaises(MODULE.VerificationError):
+                    observer.acquire_final_completion_gate(value)
+            database.sql.assert_not_called()
+            spawn.assert_not_called()
+
+    def test_final_gate_waits_only_for_the_owned_request_terminal_commit(self):
+        database = Mock()
+        observer = MODULE.OwnedObserver(database, SCHEMA)
+        with patch.object(observer, '_acquire_row', return_value=123) as acquire, \
+                patch.object(MODULE.subprocess, 'Popen') as spawn:
+            self.assertEqual(123, observer.acquire_final_completion_gate(7))
+        database.sql.assert_called_once()
+        query = ' '.join(database.sql.call_args.args[0].split())
+        self.assertIn('CREATE TABLE ' + SCHEMA + '.commit_ack_final_gate', query)
+        self.assertIn('AFTER UPDATE ON ' + SCHEMA + '.review_request', query)
+        self.assertIn('DEFERRABLE INITIALLY DEFERRED FOR EACH ROW', query)
+        self.assertIn("WHEN (OLD.state='RUNNING' AND NEW.state='SUCCEEDED' AND NEW.project_id=7)", query)
+        self.assertIn('WHERE project_id=NEW.project_id FOR UPDATE', query)
+        self.assertIn('IF NOT FOUND THEN RAISE EXCEPTION', query)
+        self.assertNotIn('public.', query)
+        acquire.assert_called_once_with(7, 'commit_ack_final_gate', 'project_id')
+        spawn.assert_not_called()
+        database.reset_mock()
+        observer.process = Mock()
+        with self.assertRaises(MODULE.VerificationError):
+            observer.acquire_final_completion_gate(7)
+        database.sql.assert_not_called()
+
+    @classmethod
+    def terminal_rows(cls):
+        return {'project': {'id': 1, 'last_reviewed_sha': MODULE.HELPERS.SHA_B},
+            'request': {'project_id': 1, 'request_id': 'same-request', 'requested_by': 7, 'source': 'MANUAL',
+                'state': 'SUCCEEDED', 'attempt_count': 1, 'requested_at': 'before', 'claim_token': 'same-claim',
+                'run_id': 11, 'finished_at': 'completed-at', 'result_code': 'BATCH_COMPLETED'},
+            'runs': [{'id': 11, 'project_id': 1, 'status': 'SUCCEEDED', 'reviewed_commits': 2,
+                'progress_stage': 'FINALIZING', 'last_saved_at': 'saved-B', 'finished_at': 'completed-at', 'error_message': None}],
+            'commits': [{'id': 21, 'project_id': 1, 'commit_sha': MODULE.HELPERS.SHA_A},
+                        {'id': 22, 'project_id': 1, 'commit_sha': MODULE.HELPERS.SHA_B}],
+            'issues': [{'id': 41, 'project_id': 1, 'reviewed_commit_id': 21, 'assignee_id': 7},
+                       {'id': 42, 'project_id': 1, 'reviewed_commit_id': 22, 'assignee_id': 7}],
+            'audits': [{'id': 31, 'action': 'REVIEW_STARTED', 'target_type': 'REVIEW_RUN', 'target_id': 11},
+                       {'id': 32, 'action': 'ISSUES_ASSIGNED', 'target_type': 'REVIEWED_COMMIT', 'target_id': 21},
+                       {'id': 33, 'action': 'ISSUES_ASSIGNED', 'target_type': 'REVIEWED_COMMIT', 'target_id': 22},
+                       {'id': 34, 'action': 'REVIEW_SUCCEEDED', 'target_type': 'REVIEW_RUN', 'target_id': 11}]}
+
+    def test_final_raw_row_proof_requires_one_completion_and_exact_durable_relationships(self):
+        initial, rows = self.initial(), self.terminal_rows()
+        MODULE.assert_final_rows(rows, initial)
+        mutations = [('project', 'last_reviewed_sha', None), ('request', 'state', 'RUNNING'),
+            ('request', 'attempt_count', 2), ('request', 'result_code', 'REVIEW_FAILED'),
+            ('request', 'request_id', 'different-request'), ('request', 'requested_by', 8), ('request', 'source', 'SCHEDULED'),
+            ('request', 'requested_at', 'later'), ('request', 'claim_token', 'new-claim'), ('request', 'run_id', 12),
+            ('request', 'finished_at', None), ('request', 'project_id', 2),
+            ('runs', 'status', 'FAILED'), ('runs', 'reviewed_commits', 0), ('runs', 'progress_stage', 'REVIEWING'),
+            ('runs', 'last_saved_at', None), ('runs', 'finished_at', 'different-time'), ('runs', 'error_message', 'unexpected'),
+            ('runs', 'project_id', 2), ('runs', 'id', 12),
+            ('commits', 'project_id', 2), ('commits', 'commit_sha', 'c' * 40),
+            ('issues', 'project_id', 2), ('issues', 'assignee_id', 8), ('issues', 'reviewed_commit_id', 999)]
+        for section, key, value in mutations:
+            changed = copy.deepcopy(rows)
+            target = changed[section][0] if isinstance(changed[section], list) else changed[section]
+            target[key] = value
+            with self.subTest(section=section, key=key), self.assertRaises(MODULE.VerificationError):
+                MODULE.assert_final_rows(changed, initial)
+
+    def test_final_row_proof_rejects_duplicated_missing_or_wrong_completion_audits_and_rows(self):
+        rows, initial = self.terminal_rows(), self.initial()
+        changes = []
+        for section in ('runs', 'commits', 'issues'):
+            for replacement in ([], rows[section] + [dict(rows[section][0])]):
+                changed = copy.deepcopy(rows)
+                changed[section] = replacement
+                changes.append(changed)
+        for key, value in (('target_id', 12), ('target_type', 'PROJECT'), ('action', 'REVIEW_FAILED')):
+            changed = copy.deepcopy(rows)
+            changed['audits'][-1][key] = value
+            changes.append(changed)
+        for audits in (rows['audits'][:-1], rows['audits'] + [dict(rows['audits'][-1])],
+                       rows['audits'] + [{'id': 35, 'action': 'REVIEW_FAILED', 'target_type': 'REVIEW_RUN', 'target_id': 11}],
+                       rows['audits'] + [dict(rows['audits'][0])], rows['audits'] + [dict(rows['audits'][1])]):
+            changed = copy.deepcopy(rows)
+            changed['audits'] = audits
+            changes.append(changed)
+        for index, changed in enumerate(changes):
+            with self.subTest(case=index), self.assertRaises(MODULE.VerificationError):
+                MODULE.assert_final_rows(changed, initial)
+
+    def test_final_row_reader_uses_only_the_fixed_owned_schema_and_project(self):
+        database = Mock(sql=Mock(return_value=json.dumps(self.terminal_rows())))
+        self.assertEqual(self.terminal_rows(), MODULE.stored_final_rows(database, SCHEMA, 1))
+        query = database.sql.call_args.args[0]
+        for table in ('project', 'review_request', 'review_run', 'reviewed_commit', 'review_issue', 'audit_event'):
+            self.assertIn(SCHEMA + '.' + table, query)
+        self.assertNotIn('app_user', query)
+        for schema, project in (('public', 1), (SCHEMA, True), (SCHEMA, 0), (SCHEMA, -1), (SCHEMA, '1;DROP')):
+            database.reset_mock()
+            with self.subTest(schema=schema, project=project), self.assertRaises(MODULE.VerificationError):
+                MODULE.stored_final_rows(database, schema, project)
+            database.sql.assert_not_called()
 
     def test_cli_is_bounded_fresh_local_and_explicitly_plain_protocol(self):
         variants = ({'port': 1023}, {'port': 65536}, {'timeout_seconds': 89}, {'timeout_seconds': 601},
@@ -280,6 +425,23 @@ class CommitAckDrillTest(unittest.TestCase):
             fixture.war_factory.assert_not_called()
             self.assertTrue(fixture.report['checks']['ownedSchemaRemoved'])
 
+    def test_explicit_final_phase_dispatch_does_not_run_the_per_commit_scenario(self):
+        args = types.SimpleNamespace(**vars(self.args), phase='final-completion')
+        with self.run_fixture() as fixture, patch.object(MODULE, 'exercise_final_completion') as final:
+            MODULE.run(args, fixture.report)
+            final.assert_called_once()
+            fixture.exercise.assert_not_called()
+            self.assertTrue(all(fixture.report['checks'][name] is True for name in MODULE.CLEANUP))
+
+    def test_final_gate_interruption_preserves_failure_and_releases_all_owned_resources(self):
+        args = types.SimpleNamespace(**vars(self.args), phase='final-completion')
+        with self.run_fixture() as fixture, patch.object(MODULE, 'exercise_final_completion', side_effect=KeyboardInterrupt()):
+            with self.assertRaises(KeyboardInterrupt):
+                MODULE.run(args, fixture.report)
+            self.assertEqual(['observer', 'war'], fixture.events)
+            self.assertEqual(1, len(fixture.dropped))
+            self.assertTrue(all(fixture.report['checks'][name] is True for name in MODULE.CLEANUP))
+
     def test_owned_war_plain_protocol_is_explicit_and_inherited_configuration_is_not_used(self):
         database = types.SimpleNamespace(url='jdbc:postgresql://127.0.0.1:55440/reviewer_integration',
             user='reviewer_test', password='synthetic-private', sql=Mock(return_value='1'))
@@ -346,6 +508,46 @@ class CommitAckDrillTest(unittest.TestCase):
             self.assertEqual(MODULE.main([]), 1)
         self.assertEqual(self.args.report.read_text(encoding='utf-8'), 'retain concurrent evidence')
         self.assertNotIn('PASS:', output.getvalue())
+
+    def test_final_main_requires_terminal_specific_proof_one_attempt_and_bounded_observation(self):
+        args = types.SimpleNamespace(**vars(self.args), phase='final-completion')
+        cases = ('success', *FINAL_BEHAVIOR, *MODULE.CLEANUP, 'attempt-two', 'attempt-bool',
+                 'short-observation', 'text-observation', 'bool-observation', 'truthy-ack', 'cleanup-failed',
+                 'missing-idle-ack', 'client-open', 'private-error')
+        for mode in cases:
+            def scenario(_args, report):
+                if mode == 'private-error':
+                    raise RuntimeError('private synthetic SQL password must never print')
+                report['cleanupFailed'] = False
+                report['checks'].update(dict.fromkeys((*MODULE.CLEANUP, *FINAL_BEHAVIOR), True))
+                report['attempts'] = 1
+                report['terminalObservationSeconds'] = 12
+                report['proxy'] = {'commitAcknowledgementsDropped': 1, 'readyForQueryIdleDropped': True, 'targetClientClosed': True}
+                if mode in report['checks']:
+                    report['checks'][mode] = False
+                elif mode == 'attempt-two': report['attempts'] = 2
+                elif mode == 'attempt-bool': report['attempts'] = True
+                elif mode == 'short-observation': report['terminalObservationSeconds'] = 11.99
+                elif mode == 'text-observation': report['terminalObservationSeconds'] = '12'
+                elif mode == 'bool-observation': report['terminalObservationSeconds'] = True
+                elif mode == 'truthy-ack': report['proxy']['commitAcknowledgementsDropped'] = True
+                elif mode == 'cleanup-failed': report['cleanupFailed'] = True
+                elif mode == 'missing-idle-ack': report['proxy']['readyForQueryIdleDropped'] = False
+                elif mode == 'client-open': report['proxy']['targetClientClosed'] = False
+            output = io.StringIO()
+            with self.subTest(mode=mode), patch.object(MODULE, 'arguments', return_value=args), \
+                    patch.object(MODULE, 'run', side_effect=scenario), patch.object(MODULE.signal, 'getsignal'), \
+                    patch.object(MODULE.signal, 'signal'), redirect_stdout(output), redirect_stderr(output):
+                code = MODULE.main([])
+            report = json.loads(args.report.read_text(encoding='utf-8'))
+            self.assertEqual(0 if mode == 'success' else 1, code)
+            self.assertEqual('PASS' if mode == 'success' else 'FAIL', report['result'])
+            self.assertEqual('final-completion', report['phase'])
+            self.assertNotIn('private synthetic SQL password must never print', str(report) + output.getvalue())
+            if mode == 'success':
+                self.assertNotIn('savedRowsReusedWithoutAi', report['checks'])
+                self.assertNotIn('sameLiveWarRecovered', report['checks'])
+            args.report.unlink()
 
 
 if __name__ == '__main__':
