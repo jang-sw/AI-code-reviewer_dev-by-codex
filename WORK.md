@@ -3,8 +3,9 @@
 - 작업: 실사용 AI 소스코드 리뷰 시스템. **개발 중, 릴리스 완료 아님.**
 - 이번 회차: 2026-10-16 14:07 KST 시작, 최대16:07 KST까지 약2시간 범위로 진행한다.
 - 기록 기준: `main` / 시작 `ca57be3`. 시작 작업 트리는 깨끗하고 로컬 origin/main 기준26개 커밋이 미푸시다. 기존 이력을 보존하며 직접 main 푸시/운영 배포 승인 없이 로컬 커밋만 진행한다.
-- 이번 완료 조건: ADMIN의 전체 이슈 안내·관련 회귀·새 WAR·프로젝트 검색/페이지 이동/선택 입력과 본문 정역순 실제 브라우저 확인을 마쳤다. 남은 시간에는 기존 커밋 저장 wire 시험을 유지하며 최종 완료 COMMIT 응답 유실을 별도 명시 모드로 검증한다. 제품·프록시·기본 부모 옵션은 바꾸지 않고, 정확한 최종 backend·독립 DB의 성공/커서/감사 영속성·중복 실행 부재·소유 자원 정리와 실패 원본 보존을 요구한다.
-- 이번 단계: 역할별 안내·새WAR/Java1338·실제UI34·양OS의존성·후보28파일을 `d60b820`/문서 `1a7b1cf`로 로컬 커밋했다. 최종 완료 전용 모드·집중26개/전체Python 양OS419개와 실제완료ACK유실·성공보존, 기본per-commit 실제회귀/소유자원정리를 통과했다. 광범위UID실행파일조회2회는권한오류로FAIL보존했고, 별도 소유자원/명령후보 범위의 양OS57포트·프로세스·서비스 점검은PASS다. 같은WAR/source235·기존근거를보존하며검증도구커밋·후속후보/문서인계를마무리한다. A02/A03사용자직접인계와모델선정·실제AI호출보류를유지하며릴리스완료는아니다.
+- 이번 완료 조건: ADMIN의 전체 이슈 안내·새WAR/관련 회귀·프로젝트 검색/페이지 이동/선택 입력·본문 정역순 브라우저 인수를 마쳤다. 기존 커밋 저장 시험을 유지하며 최종 완료 COMMIT 응답 유실의 성공/커서/감사 보존·중복 실행 부재와 소유 자원 정리·실패 원본 보존도 확인했다.
+- 이번 단계: 역할별 안내 `d60b820`, 문서 `1a7b1cf`, 최종 완료 검증 도구/반례/문서 `a55dc3b`를 로컬 커밋했다. 전체Java1338·실제UI34·양OS Python419·완료/커밋저장 ACK유실 두 실제시험·제한된 소유자원 범위의 양OS57포트/프로세스/서비스 점검을 통과했다. 같은WAR/source235를 유지한 새28파일 후보2개의 재현 포장과 Linux 실제후보/번들검증스크립트도PASS다. 광범위UID조회2FAIL·그외최초실패와 검사범위의 한계를 보존했다. A02/A03의 사용자 직접 인계·모델 선정/실제AI호출 보류를 유지하며 릴리스 완료는 아니다.
+- 최종 소스 인계 대조: `.local/session27b-handoff-source.{tar,json}`와 양OS `.local/session27b-handoff-sync.json`을 재개 시 확인한다. 실제 동기화 결과·321파일/source235 바이트/권한·고정 양수mtime1700000000은 해당 보고서를 기준으로 대조한다.
 - 확정 요구사항: `docs/REQUIREMENTS.md`. 내부 이슈함 우선, 최초 전체 이력, Java25/Spring/Maven/JSP/PostgreSQL 유지.
 - 재개 시 이 문서와 실제 Git 상태를 대조하고 아래 다음 작업부터 진행한다. 모든 릴리스 항목 검증 전 완료라고 보고하지 않는다.
 
@@ -63,6 +64,7 @@
 - 공유 잠금헬퍼변경의기본동작을확인하려고같은새도구를기존부모 `runner.drill('review-commit-ack', ...)`로실제재실행했다. `.local/session27b-default-ack-verification.json` SHA `c44a115c1f3fca18f3609e4adede1d07af0a959b11c0670aeb54431b186c15b8`는63.840초/자식44.341초 PASS다. 기본per-commit·부모기존strictvalidator·attempt2·13항목과ACK18바이트/1회·worker실패10.109초·A/B각호출1회·기존행/담당자/시각/이슈2/안전커서·public14·소유자원/PGlock정리를확인했다. 자식원본SHA `bcfa3941b4d332e87631d31adde8ab55ff53813447bd7cc2a96e408cc9d7eef6`는양OS동일하며앞선final근거3개도양OS보존했다. 새포트추가없이기존18102를사용했고Linux57포트전후폐쇄도확인했다.
 - 후속광범위UID프로세스읽기점검은원코드동일2회모두 `/proc/{pid}/exe` PermissionError로중단됐다. 원helper `0c2e4e…`와각원도구traceback 위치·양OS `session27b-readback-{first,second}-failure.json`을보존하며PASS로바꾸지않는다. 별도일반UID조사에서조회불가2개의cmdline은읽혔고WAR/cluster인자·postgres/java명령과불일치했으나실행파일정체는미확인이다. 권한상승/장벽우회는없다. 새27c는소유기록과읽기가능한일치명령후보만명시적으로검사하며후보의권한오류는계속FAIL한다. 비매칭명령은제외수/한계만기록하고전체프로세스완전검사를주장하지않는다. 이분류의합성17+잘못된메타4입력도통과했다.
 - 별도 `.local/session27c-final-{native,windows}.json`은실제PASS다. 동일UID에서비매칭명령5개는실행파일검사범위밖으로기록했고일치후보0개·알려진소유PID/starttick 종료/재사용구분·PG PID/lock부재와native57포트전후ECONNREFUSED,3서비스inactive/disabled를확인했다. Windows도실제57포트리스너전후0/접속성공0·기존bridge부재·native보고서복사SHA/동일source235/WAR를대조했다. 새점검의범위와기존광범위점검2FAIL을구분하며프로세스/서비스제어·새stop·추가모델호출은0이다. final/default 자식과부모의실제정리·public14보존근거는그대로다.
+- 검증 도구/문서를 `a55dc3b2f54230a074f601990753c810ee7a6de3`로 커밋한 뒤 Windows `.local/session27b-candidate-{first,second}`에새28파일후보2개를생성했다. 같은WAR41da…·앱235·새Python입력283개·Java/UI/의존성원본·최종ACK·기존후보보존을대조하고,전체압축바이트/내부외부체크섬/manifest/고정metadata/현재번들문서가일치했다. 아카이브SHA `5bb3a5dabcafe7e68bf2add17589c19b1b4ae3dd81e6860f619367a724d91584`/38,127,667바이트, `.local/session27b-candidate-result.json` SHA `978bf9df0482c52d1a06773d95cba7c278411451d4c8f3fe7fd1277ef065770c`다. Linux도두실제후보28파일/체크섬·동일nativeWAR·현재Windows번들문서를대조하고후보안의정확한`verify-artifact.sh`를메모리에서실행해종료0을확인했다(`.local/session27b-linux-candidate-check.json`,양OS동일). native문서는그단계에서대조하지않았으며이후최종동기화보고서와구분한다. 추출/앱/DB/네트워크/설치/실제모델0,sourceRevision는운영자제공기록·releaseApproved=false다. 기존079038…후보/이전Linux보고서와새시험원본을보존한다.
 
 ### 회차27: 역할별 이슈 안내와 검증 환경 복구
 
