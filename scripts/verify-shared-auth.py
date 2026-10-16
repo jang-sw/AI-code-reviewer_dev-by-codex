@@ -7,6 +7,8 @@ Expiry and an unavailable bucket table are deliberately injected through owned S
 """
 import argparse
 import hashlib
+from html import unescape
+from html.parser import HTMLParser
 import importlib.util
 import json
 import os
@@ -39,8 +41,64 @@ WORKSPACE = Path(__file__).absolute().parent.parent
 ADDRESS_KEY = 'ip:' + hashlib.sha256(b'127.0.0.1').hexdigest()
 BUCKET = 'auth_attempt_bucket'
 FAULT_BUCKET = 'auth_bucket_unavailable'
-UNAVAILABLE = {'/login': '지금은 로그인을 처리할 수 없습니다. 잠시 후 다시 시도해 주세요.',
-               '/signup': '지금은 가입 요청을 처리할 수 없습니다. 잠시 후 다시 시도해 주세요.'}
+UNAVAILABLE = {'/login': '지금은 로그인을 처리할 수 없습니다', '/signup': '지금은 가입 요청을 처리할 수 없습니다'}
+THROTTLED = {'/login': '로그인 시도가 잠시 제한되었습니다', '/signup': '가입 요청이 잠시 제한되었습니다'}
+RECOVERY_LABEL = {'/login': '로그인 양식 다시 열기', '/signup': '회원가입 양식 다시 열기'}
+UNAVAILABLE_MESSAGE = '요청을 처리하지 않았습니다. 잠시 후 다시 시도해 주세요. 문제가 계속되면 관리자에게 문의해 주세요.'
+CSP = {"default-src": "'self'", "style-src": "'self'", "script-src": "'self'",
+       "img-src": "'self' data:", "object-src": "'none'", "base-uri": "'self'",
+       "form-action": "'self'", "frame-ancestors": "'none'"}
+
+
+class DenialPage(HTMLParser):
+    """Parse the rendered denial contract, without accepting active or reposting content."""
+    VOID = frozenset(('area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr'))
+    FORBIDDEN = frozenset(('form', 'input', 'button', 'textarea', 'select', 'script', 'style', 'iframe',
+                           'object', 'embed', 'base', 'svg', 'math', 'audio', 'video', 'source', 'img'))
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.nodes, self.stack = [], []
+
+    def handle_starttag(self, tag, attrs):
+        require(len(self.nodes) < 4096 and tag not in self.FORBIDDEN,
+                'Authentication denial contains active content or a submission control')
+        keys = [key for key, _ in attrs]
+        require(len(keys) == len(set(keys)) and not any(key.startswith('on') or key == 'style' for key in keys),
+                'Authentication denial contains ambiguous or executable attributes')
+        attributes = dict(attrs)
+        require(tag != 'meta' or 'http-equiv' not in attributes,
+                'Authentication denial must not refresh or redirect automatically')
+        node = {'tag': tag, 'attrs': attributes, 'parent': self.stack[-1] if self.stack else None, 'text': []}
+        self.nodes.append(node)
+        if tag not in self.VOID:
+            self.stack.append(node)
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+        if tag not in self.VOID:
+            self.handle_endtag(tag)
+
+    def handle_endtag(self, tag):
+        require(bool(self.stack) and self.stack[-1]['tag'] == tag,
+                'Authentication denial contains unbalanced HTML')
+        self.stack.pop()
+
+    def handle_data(self, data):
+        for node in self.stack:
+            node['text'].append(data)
+
+    @staticmethod
+    def text(node):
+        return ''.join(node['text']).strip()
+
+    @staticmethod
+    def inside(node, parent):
+        while node['parent'] is not None:
+            node = node['parent']
+            if node is parent:
+                return True
+        return False
 
 
 def account_key(value):
@@ -92,7 +150,7 @@ def login(war, username, password, deadline, expected=200, success=False):
             require(target.path == urllib.parse.urlsplit(war.base).path + '/login' and target.query == 'error',
                     'An allowed failed login did not reach its normal failure redirect')
     else:
-        denial('/login', headers, body, expected, username, password)
+        denial('/login', headers, body, expected, username, password, war.base)
 
 
 def signup(war, username, password, deadline, expected=200):
@@ -104,19 +162,68 @@ def signup(war, username, password, deadline, expected=200):
         require(target.path == urllib.parse.urlsplit(war.base).path + '/signup' and target.query == 'submitted',
                 'An allowed signup did not reach its submitted redirect')
     else:
-        denial('/signup', headers, body, expected, username, password)
+        denial('/signup', headers, body, expected, username, password, war.base)
 
 
-def denial(path, headers, body, status, username, password):
-    require('no-store' in headers.get('Cache-Control', '').lower()
-            and re.fullmatch(r'[1-9][0-9]*', headers.get('Retry-After', '')) is not None,
+def denial(path, headers, body, status, username, password, base):
+    require(path in RECOVERY_LABEL and status in (429, 503), 'Unexpected authentication denial contract')
+    context = urllib.parse.urlsplit(base).path
+    require(context == '' or (context.startswith('/') and HELPERS.SCHEMA_PATTERN.fullmatch(context[1:]) is not None),
+            'Unexpected owned authentication context')
+    require('no-store' in [part.strip().lower() for part in headers.get('Cache-Control', '').split(',')]
+            and re.fullmatch(r'[1-9][0-9]{0,2}', headers.get('Retry-After', '')) is not None,
             'Authentication denial omitted bounded retry or no-store headers')
-    require(username not in body and password not in body
-            and not any(value in body.lower() for value in ('auth_attempt_', 'select ', 'sqlstate', 'jdbc:')),
+    retry = int(headers['Retry-After'])
+    require(1 <= retry <= 900 and (status != 503 or retry == 30),
+            'Authentication denial returned an out-of-policy retry hint')
+    policy = [directive.strip().split(None, 1) for directive in headers.get('Content-Security-Policy', '').split(';')
+              if directive.strip()]
+    require(re.fullmatch(r'text/html\s*;\s*charset=utf-8', headers.get('Content-Type', ''), re.IGNORECASE) is not None
+            and all(len(directive) == 2 for directive in policy)
+            and len(policy) == len(CSP) and dict(policy) == CSP
+            and headers.get('X-Content-Type-Options') == 'nosniff' and headers.get('X-Frame-Options') == 'DENY',
+            'Authentication denial omitted HTML encoding or its security headers')
+    page = DenialPage()
+    page.feed(body)
+    page.close()
+    require(not page.stack, 'Authentication denial contains incomplete HTML')
+    decoded = unescape(body)
+    text = ' '.join(page.text(node) for node in page.nodes)
+    require(all(value not in candidate for value in (username, password) if value
+                for candidate in (body, decoded, text))
+            and not any(value in (decoded + text).lower()
+                        for value in ('auth_attempt_', 'select ', 'sqlstate', 'jdbc:', 'exception')),
             'Authentication failure exposed fixture input or database internals')
-    if status == 503:
-        require(headers.get('Retry-After') == '30' and body == UNAVAILABLE[path],
-                'Unavailable storage did not return the fixed fail-closed response')
+    mains = [node for node in page.nodes if node['tag'] == 'main' and node['attrs'].get('id') == 'main']
+    require(len(mains) == 1, 'Authentication denial omitted its unique accessible main region')
+    main = mains[0]
+    content = [node for node in page.nodes if page.inside(node, main)]
+    heading = [page.text(node) for node in content if node['tag'] == 'h1']
+    statuses = [page.text(node) for node in content if node['tag'] == 'p'
+                and 'eyebrow' in node['attrs'].get('class', '').split()]
+    messages = [page.text(node) for node in content if node['tag'] == 'p'
+                and 'muted' in node['attrs'].get('class', '').split()]
+    expected_message = UNAVAILABLE_MESSAGE if status == 503 else (
+        '요청이 너무 많습니다. ' + str(retry) + '초 후 다시 시도해 주세요. '
+        '양식을 다시 열어도 제한은 초기화되지 않으며, 다른 제한 상태에 따라 더 기다릴 수 있습니다.')
+    require(heading == [(UNAVAILABLE if status == 503 else THROTTLED)[path]]
+            and statuses == ['HTTP ' + str(status)] and messages == [expected_message],
+            'Authentication denial omitted its exact fixed status, title or guidance')
+    actions = [node for node in content if node['tag'] == 'div' and 'actions' in node['attrs'].get('class', '').split()]
+    require(len(actions) == 1, 'Authentication denial omitted its unique recovery actions')
+    recovery = [node for node in page.nodes if node['tag'] == 'a' and page.inside(node, actions[0])]
+    expected_links = [(context + path, RECOVERY_LABEL[path])]
+    if path == '/signup':
+        expected_links.append((context + '/login', '로그인 화면 열기'))
+    require([(node['attrs'].get('href'), page.text(node)) for node in recovery] == expected_links
+            and 'button' in recovery[0]['attrs'].get('class', '').split(),
+            'Authentication denial omitted its exact fixed recovery links')
+    allowed = {'#main', context + '/', context + '/login', context + '/signup'}
+    require(all(node['attrs'].get('href') in allowed and 'target' not in node['attrs'] and 'download' not in node['attrs']
+                for node in page.nodes if node['tag'] == 'a')
+            and all(node['attrs'].get('href') == context + '/css/app.css'
+                    and node['attrs'].get('rel') == 'stylesheet' for node in page.nodes if node['tag'] == 'link'),
+            'Authentication denial contains navigation outside its fixed context')
 
 
 def schema_identity(database, schema):

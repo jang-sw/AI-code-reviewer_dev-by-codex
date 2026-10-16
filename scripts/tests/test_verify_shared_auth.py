@@ -1,6 +1,7 @@
 """Shared-auth drill safety boundaries; no PostgreSQL, WAR, socket or child starts."""
 from contextlib import ExitStack, redirect_stderr, redirect_stdout
 import importlib.util
+from html import escape
 import io
 import json
 import os
@@ -21,6 +22,31 @@ SCHEMA = 'restart_test_' + 'a' * 32
 IDENTITY = {'oid': 42, 'owner': 'reviewer_test', 'marker': 'shared-auth-' + 'b' * 32}
 ENV = {'TEST_DATABASE_URL': 'jdbc:postgresql://127.0.0.1:55439/reviewer_integration',
        'TEST_DATABASE_USERNAME': 'reviewer_test', 'TEST_DATABASE_PASSWORD': ''}
+BASE = 'http://127.0.0.1:18094/' + SCHEMA
+
+
+def denial_fixture(path, status, retry='30', context='/' + SCHEMA):
+    """Rendered public error-page shape, with independently fixed user-facing contract."""
+    headers = {'Retry-After': retry, 'Cache-Control': 'no-store', 'Content-Type': 'text/html;charset=UTF-8',
+               'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY',
+               'Content-Security-Policy': "default-src 'self'; style-src 'self'; script-src 'self'; "
+                   "img-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"}
+    title = ({'/login': '지금은 로그인을 처리할 수 없습니다', '/signup': '지금은 가입 요청을 처리할 수 없습니다'}
+             if status == 503 else {'/login': '로그인 시도가 잠시 제한되었습니다', '/signup': '가입 요청이 잠시 제한되었습니다'})[path]
+    message = ('요청을 처리하지 않았습니다. 잠시 후 다시 시도해 주세요. 문제가 계속되면 관리자에게 문의해 주세요.'
+               if status == 503 else '요청이 너무 많습니다. ' + retry + '초 후 다시 시도해 주세요. '
+               '양식을 다시 열어도 제한은 초기화되지 않으며, 다른 제한 상태에 따라 더 기다릴 수 있습니다.')
+    label = {'/login': '로그인 양식 다시 열기', '/signup': '회원가입 양식 다시 열기'}[path]
+    secondary = '' if path == '/login' else '<a href="' + context + '/login">로그인 화면 열기</a>'
+    body = ('<!doctype html><html lang="ko"><head><meta charset="UTF-8">'
+            '<link rel="stylesheet" href="' + context + '/css/app.css"></head><body>'
+            '<a href="#main">본문으로 건너뛰기</a><header><a href="' + context + '/">Code Reviewer</a>'
+            '<nav><a href="' + context + '/login">로그인</a><a href="' + context + '/signup">회원가입</a></nav></header>'
+            '<main id="main"><section><p class="eyebrow">HTTP ' + str(status) + '</p><h1>' + escape(title) + '</h1>'
+            '<p class="muted">' + escape(message) + '</p><div class="actions"><a class="button" href="'
+            + context + path + '">' + escape(label) + '</a>' + secondary + '</div></section></main>'
+            '<footer>AI 리뷰는 수정 권고입니다.</footer></body></html>')
+    return headers, body
 
 
 class OwnedDatabaseFixture:
@@ -208,19 +234,97 @@ class SharedAuthDrillSafetyTest(unittest.TestCase):
             MODULE.restore_bucket(database, SCHEMA, IDENTITY, '71')
         database.sql.assert_called_once_with(f'ALTER TABLE {SCHEMA}.{MODULE.FAULT_BUCKET} RENAME TO {MODULE.BUCKET};')
 
-    def test_503_requires_fixed_body_retry_and_no_store_and_rejects_private_disclosure(self):
-        valid_headers = {'Retry-After': '30', 'Cache-Control': 'no-store'}
+    def test_both_denials_require_exact_rendered_contract_and_current_context_recovery(self):
+        for context in ('', '/' + SCHEMA):
+            for path in ('/login', '/signup'):
+                for status in (429, 503):
+                    for retry in (('1', '30', '900') if status == 429 else ('30',)):
+                        headers, body = denial_fixture(path, status, retry, context)
+                        with self.subTest(context=context, path=path, status=status, retry=retry):
+                            MODULE.denial(path, headers, body, status, 'private-user', 'private-password',
+                                          'http://127.0.0.1:18094' + context)
+
+    def test_denials_require_bounded_retry_no_store_html_and_unweakened_security_headers(self):
+        changes = ({'Retry-After': None}, {'Retry-After': '0'}, {'Retry-After': '-1'}, {'Retry-After': '901'},
+                   {'Retry-After': '1000'}, {'Retry-After': '1.5'}, {'Retry-After': '030'}, {'Retry-After': '30\r\nInjected: x'},
+                   {'Cache-Control': None}, {'Cache-Control': 'private-no-store'}, {'Content-Type': 'text/plain;charset=UTF-8'},
+                   {'Content-Type': 'text/html;charset=ISO-8859-1'}, {'X-Frame-Options': None}, {'X-Frame-Options': 'SAMEORIGIN'},
+                   {'X-Content-Type-Options': None}, {'X-Content-Type-Options': 'sniff'}, {'Content-Security-Policy': None},
+                   {'Content-Security-Policy': "default-src 'self'"},
+                   {'Content-Security-Policy': denial_fixture('/login', 503)[0]['Content-Security-Policy'] + "; script-src 'none'"},
+                   {'Content-Security-Policy': denial_fixture('/login', 503)[0]['Content-Security-Policy'].replace("script-src 'self'", "script-src 'self' 'unsafe-inline'")})
         for path in ('/login', '/signup'):
-            MODULE.denial(path, valid_headers, MODULE.UNAVAILABLE[path], 503, 'private-user', 'private-password')
-            for headers, body in (({'Retry-After': '30'}, MODULE.UNAVAILABLE[path]),
-                                  ({'Retry-After': '0', 'Cache-Control': 'no-store'}, MODULE.UNAVAILABLE[path]),
-                                  ({'Retry-After': '31', 'Cache-Control': 'no-store'}, MODULE.UNAVAILABLE[path]),
-                                  (valid_headers, 'private-user'), (valid_headers, 'private-password'),
-                                  (valid_headers, 'SELECT * FROM auth_attempt_bucket'),
-                                  (valid_headers, 'SQLState 42P01 jdbc:postgresql://private'),
-                                  (valid_headers, 'unexpected error body')):
-                with self.subTest(path=path, headers=headers, body=body), self.assertRaises(MODULE.VerificationError):
-                    MODULE.denial(path, headers, body, 503, 'private-user', 'private-password')
+            for status in (429, 503):
+                for change in changes + (({'Retry-After': '31'},) if status == 503 else ()):
+                    headers, body = denial_fixture(path, status)
+                    for key, value in change.items():
+                        if value is None:
+                            headers.pop(key)
+                        else:
+                            headers[key] = value
+                    with self.subTest(path=path, status=status, change=change), self.assertRaises(MODULE.VerificationError):
+                        MODULE.denial(path, headers, body, status, 'private-user', 'private-password', BASE)
+
+    def test_denials_reject_wrong_title_status_message_primary_link_or_label_and_plain_text(self):
+        for path in ('/login', '/signup'):
+            for status in (429, 503):
+                headers, body = denial_fixture(path, status)
+                other = '/signup' if path == '/login' else '/login'
+                title = (MODULE.UNAVAILABLE if status == 503 else MODULE.THROTTLED)[path]
+                label = MODULE.RECOVERY_LABEL[path]
+                changed_bodies = (MODULE.UNAVAILABLE[path], 'unexpected error body',
+                    body.replace(title, 'Unexpected failure'), body.replace('HTTP ' + str(status), 'HTTP 500'),
+                    body.replace('요청을 처리하지 않았습니다' if status == 503 else '요청이 너무 많습니다', '처리 완료'),
+                    body.replace(label, '다른 화면 열기'), body.replace('class="button" href="/' + SCHEMA + path,
+                        'class="button" href="/' + SCHEMA + other),
+                    body.replace('class="button" href="/' + SCHEMA + path,
+                        'class="button" href="/foreign-context' + path),
+                    body.replace('class="button" href="/' + SCHEMA + path,
+                        'class="button" href="' + path),
+                    body.replace('id="main"', 'id="missing-main"'),
+                    body.replace('<h1>', '<h1>extra heading</h1><h1>'),
+                    body.replace('class="actions"', 'class="not-actions"'),
+                    body.replace('<div class="actions">', '<div class="actions"></div><div class="actions">'),
+                    body.replace('class="button"', 'class="ordinary-link"'),
+                    body.replace('</html>', ''))
+                for changed in changed_bodies:
+                    with self.subTest(path=path, status=status, changed=changed), self.assertRaises(MODULE.VerificationError):
+                        MODULE.denial(path, headers, changed, status, 'private-user', 'private-password', BASE)
+                if status == 429:
+                    with self.assertRaises(MODULE.VerificationError):
+                        MODULE.denial(path, headers, body.replace('30초', '31초'), status,
+                                      'private-user', 'private-password', BASE)
+
+    def test_denials_reject_repost_script_refresh_redirect_targets_and_private_output(self):
+        injections = ('<form method="post" action="/login"></form>', '<input name="password" value="">',
+                      '<button>다시 제출</button>', '<script>location.reload()</script>', '<iframe src="/login"></iframe>',
+                      '<meta http-equiv="refresh" content="0;url=/login">', '<base href="https://outside.invalid/">',
+                      '<p onclick="location.reload()">자동 재시도</p>', '<svg onload="alert(1)"></svg>',
+                      '<img src="https://outside.invalid/tracker">', '<a href="https://outside.invalid/login">이동</a>',
+                      '<a href="//outside.invalid/login">이동</a>', '<a href="/' + SCHEMA + '/login?password=redacted">이동</a>',
+                      '<a href="/' + SCHEMA + '/login#secret">이동</a>', '<a href="/' + SCHEMA + '/login" target="_blank">이동</a>',
+                      '<a href="/' + SCHEMA + '/login" download>이동</a>', '<p>private-user</p>', '<p>private-password</p>',
+                      '<p>&#112;rivate-user</p>', '<p>private-<strong>password</strong></p>',
+                      '<p>SELECT * FROM auth_attempt_bucket</p>', '<p>SQLState 42P01 jdbc:postgresql://private</p>',
+                      '<p>SQLException: hidden</p>', '<p>&#83;ELECT private</p>')
+        for path in ('/login', '/signup'):
+            for status in (429, 503):
+                headers, body = denial_fixture(path, status)
+                for injected in injections:
+                    with self.subTest(path=path, status=status, injected=injected), self.assertRaises(MODULE.VerificationError):
+                        MODULE.denial(path, headers, body.replace('</section>', injected + '</section>'), status,
+                                      'private-user', 'private-password', BASE)
+                duplicate = body.replace('class="button"', 'class="button" href="https://outside.invalid"')
+                with self.assertRaises(MODULE.VerificationError):
+                    MODULE.denial(path, headers, duplicate, status, 'private-user', 'private-password', BASE)
+
+    def test_denials_reject_unsupported_status_route_and_context(self):
+        headers, body = denial_fixture('/login', 503)
+        for path, status, base in (('/projects', 503, BASE), ('/login', 500, BASE),
+                                   ('/login', 503, BASE + '/foreign'), ('/login', 503, BASE + '//'),
+                                   ('/login', 503, 'http://127.0.0.1:18094/foreign')):
+            with self.subTest(path=path, status=status, base=base), self.assertRaises(MODULE.VerificationError):
+                MODULE.denial(path, headers, body, status, 'private-user', 'private-password', base)
 
     def test_form_requires_cookie_before_posting_and_preserves_csrf_token(self):
         page = '<input type="hidden" name="_csrf" value="synthetic-token">'

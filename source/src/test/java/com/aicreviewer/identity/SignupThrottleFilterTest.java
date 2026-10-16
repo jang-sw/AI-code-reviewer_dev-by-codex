@@ -30,7 +30,10 @@ class SignupThrottleFilterTest {
         assertThat(calls).hasValue(1);
         assertThat(response.getStatus()).isEqualTo(429);
         assertThat(response.getHeader("Retry-After")).isNotBlank();
-        assertThat(response.getContentAsString()).doesNotContain("first", "different", "1.2.3.4");
+        assertThat(response.getHeader("Cache-Control")).isEqualTo("no-store");
+        assertThat(response.getForwardedUrl()).isEqualTo("/WEB-INF/jsp/request-error.jsp");
+        assertThat(String.valueOf(second.getAttribute("errorMessage"))).contains("초 후")
+                .doesNotContain("first", "different", "1.2.3.4");
     }
 
     @Test
@@ -39,12 +42,17 @@ class SignupThrottleFilterTest {
         database.jdbc.execute("ALTER TABLE auth_attempt_bucket RENAME TO unavailable_fixture_bucket");
         var calls = new AtomicInteger();
         var response = new MockHttpServletResponse();
-        filter.doFilter(request("POST", "/sign%75p", "synthetic-private-applicant"), response, (a, b) -> calls.incrementAndGet());
+        var request = request("POST", "/sign%75p", "synthetic-private-applicant");
+        filter.doFilter(request, response, (a, b) -> calls.incrementAndGet());
         assertThat(calls).hasValue(0);
         assertThat(response.getStatus()).isEqualTo(503);
         assertThat(response.getHeader("Retry-After")).isEqualTo("30");
         assertThat(response.getHeader("Cache-Control")).isEqualTo("no-store");
-        assertThat(response.getContentAsString()).contains("잠시 후").doesNotContain("synthetic-private", "auth_attempt", "SELECT", "127.0.0.1");
+        assertThat(response.getForwardedUrl()).isEqualTo("/WEB-INF/jsp/request-error.jsp");
+        assertThat(request.getAttribute("recoveryPath")).isEqualTo("/signup");
+        assertThat(request.getAttribute("statusCode")).isEqualTo(503);
+        assertThat(String.valueOf(request.getAttribute("errorMessage"))).contains("잠시 후")
+                .doesNotContain("synthetic-private", "auth_attempt", "SELECT", "127.0.0.1");
     }
 
     @Test

@@ -28,6 +28,8 @@ class LoginThrottleFilterTest {
         assertThat(authenticationCalls).hasValue(1);
         assertThat(blockedResponse.getStatus()).isEqualTo(429);
         assertThat(blockedResponse.getHeader("Retry-After")).isNotBlank();
+        assertThat(blockedResponse.getHeader("Cache-Control")).isEqualTo("no-store");
+        assertThat(blockedResponse.getForwardedUrl()).isEqualTo("/WEB-INF/jsp/request-error.jsp");
     }
 
     @ParameterizedTest
@@ -49,12 +51,17 @@ class LoginThrottleFilterTest {
         database.jdbc.execute("ALTER TABLE auth_attempt_bucket RENAME TO unavailable_fixture_bucket");
         var calls = new AtomicInteger();
         var response = new MockHttpServletResponse();
-        filter.doFilter(request("/log%69n", "synthetic-private-username"), response, (a, b) -> calls.incrementAndGet());
+        var request = request("/log%69n", "synthetic-private-username");
+        filter.doFilter(request, response, (a, b) -> calls.incrementAndGet());
         assertThat(calls).hasValue(0);
         assertThat(response.getStatus()).isEqualTo(503);
         assertThat(response.getHeader("Retry-After")).isEqualTo("30");
         assertThat(response.getHeader("Cache-Control")).isEqualTo("no-store");
-        assertThat(response.getContentAsString()).contains("잠시 후").doesNotContain("synthetic-private", "auth_attempt", "SELECT", "127.0.0.1");
+        assertThat(response.getForwardedUrl()).isEqualTo("/WEB-INF/jsp/request-error.jsp");
+        assertThat(request.getAttribute("recoveryPath")).isEqualTo("/login");
+        assertThat(request.getAttribute("statusCode")).isEqualTo(503);
+        assertThat(String.valueOf(request.getAttribute("errorMessage"))).contains("잠시 후")
+                .doesNotContain("synthetic-private", "auth_attempt", "SELECT", "127.0.0.1");
     }
 
     @Test
