@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Drop one real PostgreSQL COMMIT acknowledgement after review results are durable.
+"""Drop one real PostgreSQL COMMIT acknowledgement at a durable review boundary.
 
 Only an owned WAR, loopback proxy, psql observer and UUID schema are created.
 The database stays live. Git/AI are synthetic; no network rules or DB processes change.
@@ -42,6 +42,10 @@ FINAL_BEHAVIOR = ('finalCompletionGateSelected', 'finalCompletionCommittedBefore
                   'terminalSuccessUnchangedAfterClientFailure', 'completedRequestNotRetried',
                   'sameLiveWarRemainedTerminal', 'databaseProcessUnchanged', 'committedBeforeClientFailure',
                   'savedRowsPreservedWithoutExtraAi', 'twoIssuesAndSafeCheckpoint', 'requestActorAndReceptionPreserved')
+CLAIM_BEHAVIOR = ('claimGateSelected', 'claimCommittedBeforeClientFailure', 'claimHadNoExternalWork',
+                  'claimedRowsUnchangedDuringClientFailure', 'sameLiveWarRecovered', 'databaseProcessUnchanged',
+                  'newClaimForSameRequest', 'twoIssuesAndSafeCheckpoint', 'requestActorAndReceptionPreserved',
+                  'singleReviewAfterClaimRecovery')
 TERMINAL_OBSERVATION_SECONDS = 12
 
 
@@ -119,9 +123,31 @@ class OwnedObserver:
             EXECUTE FUNCTION {schema}.commit_ack_wait_final();""")
         return self._acquire_row(project, 'commit_ack_final_gate', 'project_id')
 
+    def acquire_claim_gate(self, project):
+        require(self.process is None and type(project) is int and project > 0,
+                'Invalid owned claim gate request')
+        schema = self.schema
+        # Install before enqueueing. Only the first claim's terminal COMMIT
+        # waits here; queue reception and subsequent replacement claims pass.
+        self.database.sql(f"""CREATE TABLE {schema}.commit_ack_claim_gate (project_id BIGINT PRIMARY KEY CHECK (project_id > 0));
+          INSERT INTO {schema}.commit_ack_claim_gate(project_id) VALUES ({project});
+          CREATE FUNCTION {schema}.commit_ack_wait_claim() RETURNS trigger LANGUAGE plpgsql AS $ack$
+          BEGIN
+            PERFORM 1 FROM {schema}.commit_ack_claim_gate WHERE project_id=NEW.project_id FOR UPDATE;
+            IF NOT FOUND THEN RAISE EXCEPTION 'Owned claim gate row missing'; END IF;
+            RETURN NEW;
+          END;
+          $ack$;
+          CREATE CONSTRAINT TRIGGER commit_ack_first_claim AFTER UPDATE ON {schema}.review_request
+            DEFERRABLE INITIALLY DEFERRED FOR EACH ROW
+            WHEN (OLD.state='QUEUED' AND NEW.state='RUNNING' AND NEW.attempt_count=1 AND NEW.project_id={project})
+            EXECUTE FUNCTION {schema}.commit_ack_wait_claim();""")
+        return self._acquire_row(project, 'commit_ack_claim_gate', 'project_id')
+
     def _acquire_row(self, project, table, column):
         require(self.process is None and type(project) is int and project > 0, 'Invalid owned observer lock request')
-        require((table, column) in (('project', 'id'), ('commit_ack_final_gate', 'project_id')),
+        require((table, column) in (('project', 'id'), ('commit_ack_final_gate', 'project_id'),
+                                   ('commit_ack_claim_gate', 'project_id')),
                 'Invalid owned observer gate identity')
         environment = dict(self.database.environment)
         environment['PGAPPNAME'] = self.schema + '-observer'
@@ -312,6 +338,137 @@ def assert_final_rows(saved, initial):
             'The final success and assignment audits are missing, repeated or replaced by failure')
 
 
+def stored_claim_rows(database, schema, project):
+    # Reuse the same private full-row reader. Empty json_agg results are null;
+    # no source rows, tokens, request identities or audit text enter the report.
+    return stored_final_rows(database, schema, project)
+
+
+def assert_claim_committed(current, queued):
+    ownership, progress = current['ownership'], current['progress']
+    require(queued['request']['state'] == 'QUEUED' and queued['request']['attempts'] == 0
+            and queued['ownership']['claim'] is None and queued['ownership']['run'] is None
+            and current['request'] == (queued['request'] | {'state': 'RUNNING', 'attempts': 1})
+            and type(current['request']['attempts']) is int
+            and ownership['requestedAt'] == queued['ownership']['requestedAt']
+            and isinstance(ownership['claim'], str) and 0 < len(ownership['claim']) <= 36
+            and type(ownership['run']) is int and ownership['run'] > 0
+            and current['commits'] == [] and type(current['issues']) is int and current['issues'] == 0
+            and current['assignees'] == [] and current['cursor'] is None
+            and current['runs'] == [{'state': 'RUNNING', 'commits': 0}]
+            and type(current['runs'][0]['commits']) is int
+            and isinstance(progress, dict) and progress['runId'] == ownership['run']
+            and progress['stage'] == 'PREPARING' and type(progress['saved']) is int and progress['saved'] == 0
+            and progress['recordedAt'] is not None and progress['lastSavedAt'] is None,
+            'The committed first claim lost its reception, ownership or untouched preparing state')
+
+
+def assert_claim_rows(saved, queued):
+    require(isinstance(saved, dict) and isinstance(saved.get('project'), dict) and isinstance(saved.get('request'), dict)
+            and isinstance(saved.get('runs'), list) and len(saved['runs']) == 1 and isinstance(saved['runs'][0], dict)
+            and saved.get('commits') is None and saved.get('issues') is None
+            and isinstance(saved.get('audits'), list) and all(isinstance(row, dict) for row in saved['audits']),
+            'The durable first-claim rows are missing or already contain review results')
+    project, request, run, audits = saved['project'], saved['request'], saved['runs'][0], saved['audits']
+    project_id, run_id = project.get('id'), run.get('id')
+    require(type(project_id) is int and project_id > 0 and type(run_id) is int and run_id > 0
+            and request.get('project_id') == run.get('project_id') == project_id
+            and request.get('request_id') == queued['request']['requestId']
+            and request.get('requested_by') == queued['request']['actor']
+            and request.get('source') == queued['request']['source']
+            and request.get('requested_at') == queued['ownership']['requestedAt']
+            and request.get('state') == 'RUNNING' and type(request.get('attempt_count')) is int and request['attempt_count'] == 1
+            and isinstance(request.get('claim_token'), str) and 0 < len(request['claim_token']) <= 36
+            and request.get('run_id') == run_id and request.get('finished_at') is None and request.get('result_code') is None
+            and request.get('available_at') is not None and request.get('last_attempt_at') is not None
+            and run.get('started_at') == run.get('progress_updated_at') == request['last_attempt_at']
+            and run.get('status') == 'RUNNING' and run.get('progress_stage') == 'PREPARING'
+            and type(run.get('reviewed_commits')) is int and run['reviewed_commits'] == 0
+            and run.get('last_saved_at') is None and run.get('finished_at') is None and run.get('error_message') is None
+            and project.get('last_reviewed_sha') is None,
+            'The first claim, preparing run and reception metadata did not commit together')
+    requested = [row for row in audits if row.get('action') == 'REVIEW_REQUESTED']
+    started = [row for row in audits if row.get('action') == 'REVIEW_STARTED']
+    require(len(requested) == len(started) == 1
+            and requested[0].get('target_type') == 'PROJECT' and requested[0].get('target_id') == project_id
+            and requested[0].get('actor_id') == queued['request']['actor']
+            and requested[0].get('created_at') == request['requested_at']
+            and started[0].get('target_type') == 'REVIEW_RUN' and started[0].get('target_id') == run_id
+            and started[0].get('actor_id') == queued['request']['actor']
+            and started[0].get('created_at') == run['started_at']
+            and not any(row.get('action') in ('ISSUES_ASSIGNED', 'REVIEW_SUCCEEDED', 'REVIEW_FAILED') for row in audits),
+            'The first-claim audit records are missing, repeated or already acknowledge review work')
+
+
+def assert_claim_recovered(current, claimed):
+    require(current['request'] == (claimed['request'] | {'state': 'SUCCEEDED', 'attempts': 2})
+            and type(current['request']['attempts']) is int
+            and current['ownership']['requestedAt'] == claimed['ownership']['requestedAt']
+            and isinstance(current['ownership']['claim'], str) and 0 < len(current['ownership']['claim']) <= 36
+            and current['ownership']['claim'] != claimed['ownership']['claim']
+            and type(current['ownership']['run']) is int and current['ownership']['run'] > claimed['ownership']['run']
+            and current['commits'] == [HELPERS.SHA_A, HELPERS.SHA_B] and current['issues'] == 2
+            and current['assignees'] == [claimed['request']['actor']] * 2 and current['cursor'] == HELPERS.SHA_B
+            and current['runs'] == [{'state': 'FAILED', 'commits': 0}, {'state': 'SUCCEEDED', 'commits': 2}]
+            and current['progress']['runId'] == current['ownership']['run']
+            and current['progress']['stage'] == 'FINALIZING' and current['progress']['saved'] == 2
+            and current['progress']['recordedAt'] is not None and current['progress']['lastSavedAt'] is not None,
+            'Claim acknowledgement recovery lost the original request, replacement ownership or completed results')
+
+
+def assert_claim_recovery_rows(saved, first, queued):
+    assert_claim_rows(first, queued)
+    require(isinstance(saved, dict) and isinstance(saved.get('project'), dict) and isinstance(saved.get('request'), dict)
+            and all(isinstance(saved.get(key), list) and all(isinstance(row, dict) for row in saved[key])
+                    for key in ('runs', 'commits', 'issues', 'audits'))
+            and len(saved['runs']) == len(saved['commits']) == len(saved['issues']) == 2,
+            'The recovered claim rows are missing or repeated')
+    project, request, old_run, run = saved['project'], saved['request'], *saved['runs']
+    original_request, original_run = first['request'], first['runs'][0]
+    project_id, run_id = project.get('id'), run.get('id')
+    transitioned = {'state', 'claim_token', 'run_id', 'last_attempt_at', 'available_at', 'attempt_count', 'finished_at', 'result_code'}
+    require({key: value for key, value in project.items() if key not in ('last_reviewed_sha', 'updated_at')}
+            == {key: value for key, value in first['project'].items() if key not in ('last_reviewed_sha', 'updated_at')}
+            and project.get('last_reviewed_sha') == HELPERS.SHA_B
+            and {key: value for key, value in request.items() if key not in transitioned}
+            == {key: value for key, value in original_request.items() if key not in transitioned}
+            and request.get('state') == 'SUCCEEDED' and type(request.get('attempt_count')) is int and request['attempt_count'] == 2
+            and isinstance(request.get('claim_token'), str) and 0 < len(request['claim_token']) <= 36
+            and request['claim_token'] != original_request['claim_token']
+            and type(run_id) is int and run_id > original_run['id'] and request.get('run_id') == run_id
+            and request.get('finished_at') is not None and request.get('result_code') == 'BATCH_COMPLETED'
+            and request.get('last_attempt_at') == run.get('started_at') and request['last_attempt_at'] is not None
+            and run.get('project_id') == project_id and run.get('status') == 'SUCCEEDED'
+            and run.get('progress_stage') == 'FINALIZING' and type(run.get('reviewed_commits')) is int and run['reviewed_commits'] == 2
+            and run.get('last_saved_at') is not None and run.get('progress_updated_at') is not None
+            and run.get('finished_at') == request['finished_at'] and run.get('error_message') is None
+            and isinstance(old_run.get('error_message'), str) and 0 < len(old_run['error_message']) <= 1000
+            and old_run.get('finished_at') == run['started_at']
+            and old_run == (original_run | {'status': 'FAILED', 'finished_at': old_run['finished_at'], 'error_message': old_run['error_message']}),
+            'The replacement claim changed reception, prior run history or the terminal checkpoint')
+    commits, issues, audits = saved['commits'], saved['issues'], saved['audits']
+    commit_ids = [row.get('id') for row in commits]
+    require(all(type(value) is int and value > 0 for value in commit_ids) and len(set(commit_ids)) == 2
+            and [row.get('commit_sha') for row in commits] == [HELPERS.SHA_A, HELPERS.SHA_B]
+            and all(row.get('project_id') == project_id for row in commits)
+            and all(row.get('project_id') == project_id and row.get('assignee_id') == queued['request']['actor'] for row in issues)
+            and sorted(row.get('reviewed_commit_id', -1) for row in issues) == sorted(commit_ids)
+            and all(row in audits for row in first['audits']),
+            'Claim recovery duplicated assigned results or lost existing audit rows')
+    requested = [row for row in audits if row.get('action') == 'REVIEW_REQUESTED']
+    started = [row for row in audits if row.get('action') == 'REVIEW_STARTED']
+    assigned = [row for row in audits if row.get('action') == 'ISSUES_ASSIGNED']
+    succeeded = [row for row in audits if row.get('action') == 'REVIEW_SUCCEEDED']
+    require(len(requested) == len(succeeded) == 1 and len(started) == len(assigned) == 2
+            and all(row.get('target_type') == 'REVIEW_RUN' and row.get('actor_id') == queued['request']['actor'] for row in started)
+            and sorted(row.get('target_id', -1) for row in started) == [original_run['id'], run_id]
+            and all(row.get('target_type') == 'REVIEWED_COMMIT' for row in assigned)
+            and sorted(row.get('target_id', -1) for row in assigned) == sorted(commit_ids)
+            and succeeded[0].get('target_type') == 'REVIEW_RUN' and succeeded[0].get('target_id') == run_id
+            and not any(row.get('action') == 'REVIEW_FAILED' for row in audits),
+            'Claim recovery repeated reception, assignment or completion audit records')
+
+
 def exercise(war, database, schema, fixture, fixture_url, proxy, observer, args, report, deadline):
     war.start(True)
     browser = HELPERS.Browser(war.base)
@@ -384,6 +541,93 @@ def exercise(war, database, schema, fixture, fixture_url, proxy, observer, args,
                             'savedRowsReusedWithoutAi': True, 'twoIssuesAndSafeCheckpoint': True,
                             'requestActorAndReceptionPreserved': True})
     report['requestCounts'], report['attempts'] = counts, 2
+
+
+def exercise_claim(war, database, schema, fixture, fixture_url, proxy, observer, args, report, deadline):
+    war.start(True)
+    browser = HELPERS.Browser(war.base)
+    browser.login(war.username, war.password)
+    project = RATE.register(browser, war, fixture_url, 'restart')
+    server = NETWORK.server_identity(database)
+    observer.acquire_claim_gate(project)
+    lock_started = time.monotonic()
+    RATE.post_review(browser, project)
+    target = None
+    # The existing dispatcher polls every five seconds. Keep this first-claim
+    # coordination inside the observer's unchanged ten-second idle budget.
+    while time.monotonic() < min(deadline, lock_started + 7):
+        target = blocking_backend(database, schema, observer.pid)
+        if target is not None:
+            break
+        time.sleep(0.05)
+    require(target is not None, 'The first claim COMMIT did not wait on its owned deferred gate')
+    queued = NETWORK.snapshot(database, schema, project)
+    require(queued['request']['state'] == 'QUEUED' and type(queued['request']['attempts']) is int
+            and queued['request']['attempts'] == 0 and queued['request']['source'] == 'MANUAL'
+            and type(queued['request']['actor']) is int and queued['request']['actor'] > 0
+            and queued['ownership']['requestedAt'] is not None and queued['ownership']['claim'] is None
+            and queued['ownership']['run'] is None and queued['commits'] == [] and queued['issues'] == 0
+            and queued['assignees'] == [] and queued['cursor'] is None and queued['runs'] == [] and queued['progress'] is None
+            and fixture.observed() == {} and not fixture.errors,
+            'The claim gate intercepted a transaction after claim acknowledgement or external work')
+    proxy.arm_backend(target)
+    observer.release()
+    require(time.monotonic() - lock_started < 9, 'Arming and releasing the first-claim gate exceeded nine seconds')
+    report['checks']['claimGateSelected'] = True
+    started = time.monotonic()
+    HELPERS.bounded_wait(lambda: acknowledgement_dropped(proxy), min(deadline, started + 10),
+                         'The first-claim COMMIT and idle acknowledgements were not dropped', war.process)
+    claimed = NETWORK.snapshot(database, schema, project)
+    assert_claim_committed(claimed, queued)
+    saved = stored_claim_rows(database, schema, project)
+    assert_claim_rows(saved, queued)
+    require(saved['request']['claim_token'] == claimed['ownership']['claim']
+            and saved['request']['run_id'] == claimed['ownership']['run'],
+            'The first-claim row and progress observations have different ownership')
+    require(fixture.observed() == {} and not fixture.errors
+            and not NETWORK.RECOVERY.worker_failed(war.logs / 'war-start-1.log', project),
+            'The client failure or external work preceded the independent durable-claim observation')
+    report['checks'].update({'claimCommittedBeforeClientFailure': True, 'claimHadNoExternalWork': True})
+    report['claimExternalRequestCount'] = 0
+    while True:
+        require(time.monotonic() < min(deadline, started + 25) and war.process.poll() is None,
+                'The first-claim acknowledgement failure did not reach its bounded worker outcome')
+        current = NETWORK.snapshot(database, schema, project)
+        assert_claim_committed(current, queued)
+        require(current == claimed and stored_claim_rows(database, schema, project) == saved
+                and fixture.observed() == {} and not fixture.errors,
+                'The durable first claim changed or performed external work while the client timed out')
+        metrics = proxy.metrics()
+        require(metrics.get('failed') is False, 'The acknowledgement proxy failed')
+        if metrics.get('targetClientClosed') is True and NETWORK.RECOVERY.worker_failed(war.logs / 'war-start-1.log', project):
+            break
+        time.sleep(0.15)
+    report['workerFailureAfterSeconds'] = round(time.monotonic() - started, 3)
+    report['checks']['claimedRowsUnchangedDuringClientFailure'] = True
+    proxy.heal()
+    # Recovery should review both previously untouched commits once. The base
+    # fixture normally holds B for interruption drills, which is not needed here.
+    fixture.release_first_b.set()
+    HELPERS.bounded_wait(lambda: NETWORK.snapshot(database, schema, project)['request']['state'] == 'SUCCEEDED',
+                         deadline, 'The same WAR did not recover its unacknowledged first claim', war.process)
+    final = NETWORK.snapshot(database, schema, project)
+    assert_claim_recovered(final, claimed)
+    recovered = stored_claim_rows(database, schema, project)
+    assert_claim_recovery_rows(recovered, saved, queued)
+    require(recovered['request']['claim_token'] == final['ownership']['claim']
+            and recovered['request']['run_id'] == final['ownership']['run'],
+            'The recovered row and progress observations have different ownership')
+    counts = fixture.observed()
+    require(all(type(counts.get(kind + '_' + file + '.java')) is int and counts[kind + '_' + file + '.java'] == 1
+                for kind in ('ai', 'detail', 'diff') for file in ('A', 'B'))
+            and fixture.first_b_entered.is_set() and not fixture.second_b_entered.is_set() and not fixture.errors,
+            'Claim acknowledgement recovery fetched or reviewed a commit more than once')
+    require(war.starts == 1 and war.process.poll() is None and NETWORK.server_identity(database) == server,
+            'The WAR or database restarted during first-claim acknowledgement recovery')
+    NETWORK.probe(war.base, 'readiness', 200, 'UP')
+    report['checks'].update(dict.fromkeys(CLAIM_BEHAVIOR, True))
+    report['requestCounts'], report['attempts'] = counts, 2
+    report['claimRecoveryAfterSeconds'] = round(time.monotonic() - started, 3)
 
 
 def exercise_final_completion(war, database, schema, fixture, fixture_url, proxy, observer, args, report, deadline):
@@ -480,7 +724,7 @@ def arguments(argv=None):
     parser.add_argument('--port', type=int, required=True)
     parser.add_argument('--timeout-seconds', type=int, default=180)
     parser.add_argument('--startup-timeout-seconds', type=int, default=45)
-    parser.add_argument('--phase', choices=('per-commit', 'final-completion'), default='per-commit')
+    parser.add_argument('--phase', choices=('per-commit', 'final-completion', 'claim'), default='per-commit')
     args = parser.parse_args(argv)
     for name in ('war', 'java', 'psql'):
         value = LINUX.checked_path(getattr(args, name)) if name == 'war' else getattr(args, name).absolute()
@@ -501,7 +745,7 @@ def arguments(argv=None):
 
 def run(args, report):
     phase = getattr(args, 'phase', 'per-commit')
-    require(phase in ('per-commit', 'final-completion'), 'Invalid acknowledgement verification phase')
+    require(phase in ('per-commit', 'final-completion', 'claim'), 'Invalid acknowledgement verification phase')
     started = time.monotonic()
     deadline = started + args.timeout_seconds
     schema = 'restart_test_' + uuid.uuid4().hex
@@ -535,7 +779,7 @@ def run(args, report):
                                       user=database.user, password=database.password, sql=database.sql)
         fixture_url = fixture.start()
         war = HELPERS.OwnedWar(args, routed, schema, fixture_url, work, logs, deadline)
-        scenario = exercise_final_completion if phase == 'final-completion' else exercise
+        scenario = {'per-commit': exercise, 'final-completion': exercise_final_completion, 'claim': exercise_claim}[phase]
         scenario(war, database, schema, fixture, fixture_url, proxy, observer, args, report, deadline)
     except BaseException as error:
         failure = error
@@ -629,18 +873,28 @@ def main(argv=None):
                 'Does not drop claim or per-commit COMMIT acknowledgements in this phase',
                 'No retry observed for at least twelve seconds after healing; scheduler execution is not instrumented',
                 'Stale-caller rejection is covered by separate Java tests, not invoked by this wire drill']
+        elif phase == 'claim':
+            report['scope'] = 'One live WAR; its durable first claim with the wire COMMIT acknowledgement dropped before external work'
+            report['limitations'] = ['Synthetic Git/AI only; no operational recovery SLA',
+                'Does not drop per-commit or final-success COMMIT acknowledgements in this phase',
+                'The replacement claim follows the real dispatcher and recovery backoff; no SQL clock changes',
+                'Stale-caller rejection is covered by separate Java tests, not invoked by this wire drill']
         previous = signal.getsignal(signal.SIGTERM)
         signal.signal(signal.SIGTERM, cancel)
         installed = True
         run(args, report)
-        behavior = FINAL_BEHAVIOR if phase == 'final-completion' else PER_COMMIT_BEHAVIOR
-        require(report.get('phase') == phase and phase in ('per-commit', 'final-completion'),
+        behavior = {'per-commit': PER_COMMIT_BEHAVIOR, 'final-completion': FINAL_BEHAVIOR, 'claim': CLAIM_BEHAVIOR}[phase]
+        require(report.get('phase') == phase and phase in ('per-commit', 'final-completion', 'claim'),
                 'The acknowledgement phase does not match its evidence')
         if phase == 'final-completion':
             require(type(report.get('attempts')) is int and report['attempts'] == 1
                     and type(report.get('terminalObservationSeconds')) in (int, float)
                     and TERMINAL_OBSERVATION_SECONDS <= report['terminalObservationSeconds'] < args.timeout_seconds,
                     'Final acknowledgement evidence requires one attempt and a bounded terminal observation')
+        elif phase == 'claim':
+            require(type(report.get('attempts')) is int and report['attempts'] == 2
+                    and type(report.get('claimExternalRequestCount')) is int and report['claimExternalRequestCount'] == 0,
+                    'Claim acknowledgement evidence requires a replacement attempt and no external work before failure')
         require(report['cleanupFailed'] is False and all(report['checks'].get(key) is True for key in CLEANUP)
                 and all(report['checks'].get(key) is True for key in behavior)
                 and type(report.get('proxy', {}).get('commitAcknowledgementsDropped')) is int
@@ -668,8 +922,9 @@ def main(argv=None):
         except (OSError, LINUX.SafetyError):
             print('FAIL: fresh acknowledgement report could not be written', file=sys.stderr)
             return 1
-    description = ('final-completion acknowledgement verification' if report['phase'] == 'final-completion'
-                   else 'committed-review acknowledgement recovery')
+    description = {'per-commit': 'committed-review acknowledgement recovery',
+                   'final-completion': 'final-completion acknowledgement verification',
+                   'claim': 'first-claim acknowledgement recovery'}[report['phase']]
     print(report['result'] + ': bounded ' + description + '; private details withheld')
     return code
 

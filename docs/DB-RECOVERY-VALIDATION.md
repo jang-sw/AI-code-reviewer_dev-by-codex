@@ -126,9 +126,9 @@ python3 scripts/verify-review-commit-ack.py \
 
 새 UUID schema의 전용 gate 한 행과 `RUNNING→SUCCEEDED` 갱신에만 반응하는 지연 constraint trigger를 사용한다. 관측자가 gate를 잠그면 B 저장과 FINALIZING 기록은 통과하고 최종 완료 COMMIT만 대기한다. 대기 backend를 확인하고 arm/release한 뒤, 클라이언트 오류가 나기 전에 독립 연결에서 동일 요청/claim/run의 SUCCEEDED·attempt1·BATCH_COMPLETED·완료 시각, 커서B·성공 실행1개/저장2개·성공 감사1개와 배정 감사2개를 확인해야 한다. 이 gate와 trigger는 시험용 스키마에만 존재하며 제품 migration·SQL·프록시 프로토콜은 변경하지 않는다.
 
-실제 응답 폐기1회·대상 연결 EOF·작업자 DB 실패를 확인한 뒤 heal한다. 이후12초 관측에서도 요청·프로젝트·실행·리뷰·이슈·감사의 전체 행이 같아야 한다. 새 요청을 제출하거나 재시도 시각을 앞당기지 않고, 동일 WAR/DB·attempt1·A/B 상세/diff/합성AI 각1회·최종 준비200을 요구한다. 원본 행은 메모리 비교에만 사용하며 보고서에 저장하지 않는다. 이 유한 관측은 이후 모든 시각의 무재시도나 외부 유료 AI의 정확히 한 번 과금을 보장하지 않는다. claim 발급의 wire 응답 유실은 여전히 별도다.
+실제 응답 폐기1회·대상 연결 EOF·작업자 DB 실패를 확인한 뒤 heal한다. 이후12초 관측에서도 요청·프로젝트·실행·리뷰·이슈·감사의 전체 행이 같아야 한다. 새 요청을 제출하거나 재시도 시각을 앞당기지 않고, 동일 WAR/DB·attempt1·A/B 상세/diff/합성AI 각1회·최종 준비200을 요구한다. 원본 행은 메모리 비교에만 사용하며 보고서에 저장하지 않는다. 이 유한 관측은 이후 모든 시각의 무재시도나 외부 유료 AI의 정확히 한 번 과금을 보장하지 않는다. claim 발급은 아래의 별도 모드로 검증한다.
 
-프록시는 단일 selector·최대32연결·방향별64KiB pending buffer, startup8KiB·backend 프레임 length1MiB·CommandComplete 본문128바이트 상한과 짧은 제어 프레임만 보류하는 점진 파서를 사용한다. frontend 일반 메시지는 해석하지 않고 기존64KiB queue로 전달한다. 관측자 명령·프로세스 종료도 유한 대기를 적용하고, cancel secret은 전달용 바이트를 제외한 식별 정보·로그·보고서에 저장하지 않는다. 먼저 관측자 트랜잭션/프로세스를 종료하고 WAR/프록시를 중지한 뒤 양쪽 ApplicationName의 DB세션0·schema OID/owner/marker를 확인해 직접 만든 schema만 제거한다. 원본14테이블·DB PID/시작시각·작업 디렉터리까지 확인돼야 PASS다. 프로세스·세션·schema 소유권을 확인할 수 없으면 해당 schema/work 삭제를 거부하고 모든 정리 실패를 FAIL로 기록한다. 모드별 필수 성공 근거와 claim wire 미검증 범위를 보고서에서 구분한다. 실제 운영 다중 서버·TLS·장기 단절·외부 AI 과금의 정확히 한 번 실행은 별도로 남는다.
+프록시는 단일 selector·최대32연결·방향별64KiB pending buffer, startup8KiB·backend 프레임 length1MiB·CommandComplete 본문128바이트 상한과 짧은 제어 프레임만 보류하는 점진 파서를 사용한다. frontend 일반 메시지는 해석하지 않고 기존64KiB queue로 전달한다. 관측자 명령·프로세스 종료도 유한 대기를 적용하고, cancel secret은 전달용 바이트를 제외한 식별 정보·로그·보고서에 저장하지 않는다. 먼저 관측자 트랜잭션/프로세스를 종료하고 WAR/프록시를 중지한 뒤 양쪽 ApplicationName의 DB세션0·schema OID/owner/marker를 확인해 직접 만든 schema만 제거한다. 원본14테이블·DB PID/시작시각·작업 디렉터리까지 확인돼야 PASS다. 프로세스·세션·schema 소유권을 확인할 수 없으면 해당 schema/work 삭제를 거부하고 모든 정리 실패를 FAIL로 기록한다. 세 모드의 필수 성공 근거와 미검증 범위를 보고서에서 구분한다. 실제 운영 다중 서버·TLS·장기 단절·외부 AI 과금의 정확히 한 번 실행은 별도로 남는다.
 
 2026-10-15 WSL에서 최종 Java1252건(1241통과/11선택skip)·필수PG9묶음, Python342건(Windows337통과/5skip·Linux332통과/10skip)과 실제 ACK 시험44.099초 PASS를 확인했다. 프록시는 COMMIT/idle 응답18바이트를 폐기했다. 작업자 실패는10.194초 후 관측했고, 그 전에 독립 DB에서 A/B 저장2건을 확인했다. 같은 WAR 시작1회/동일DB·요청의 attempt2에서 상세/diff/AI는 A/B 각1회, 기존 행·시각·배정 감사와 이슈2건·진행 기준B·FAILED(2)/SUCCEEDED(0)가 유지됐다. proxy accepted4/peakActive3/connectionErrors0이며 관측자·WAR·프록시·세션/schema/work·부모PG 정리와 원본14테이블 보존을 확인했다. 근거는 Git 제외 `.local/session18-ack-trial3.json`이다.
 
@@ -137,3 +137,21 @@ python3 scripts/verify-review-commit-ack.py \
 2026-10-16 WSL에서는 새 검증WAR `41da585d80382dba9f08cda51efd5e1da21987129b5860fed97f30bacb822c4f`로 최종 완료 전용 모드를 실제 실행했다. 부모55.865초/자식35.836초 PASS, COMMIT/idle18바이트 폐기1회·작업자 실패10.167초를 확인했다. 오류 전에 독립 DB에서 성공 요청/실행·attempt1·커서B·이슈2건·성공 감사1개/배정 감사2개를 확인했고, heal 후12.205초/53회에도 전체 행과 A/B 상세/diff/합성AI 각1회가 유지됐다. WAR시작1회/동일DB·proxy연결오류0·필수17항목과 원본14표·소유자원/부모PG 정리를 통과했다. `.local/session27b-ack-verification.json`과 양OS동일 child SHA `4a6275a97a0b2fae1cdae033bd8b36de430c2c3850e8afbb5fd62a3f891fa276`이 근거다. 앞의 과거 기본모드·Java 회귀와 새실행을 구분하며 실제 모델은 호출하지 않았다.
 
 같은 새 도구의 기본 모드도 기존 부모 `--review-commit-ack` 검증기로 다시 실행했다. 부모63.840초/자식44.341초 PASS, worker실패10.109초·ACK18바이트/1회·attempt2·A/B 상세/diff/합성AI 각1회·기존 행과 이슈2건/커서B·부모의기존필수근거/원본14표·소유자원정리를 확인했다. `.local/session27b-default-ack-verification.json`과 raw child SHA `bcfa3941b4d332e87631d31adde8ab55ff53813447bd7cc2a96e408cc9d7eef6`이 근거이며 새 최종 완료 시험을 기존 기본 모드의 통과로 대신하지 않는다. 집중26건과 전체Python419건은Windows414통과/환경5skip·Linux409통과/환경10skip, 실패/오류0이다. 앱235파일과WAR를유지했으므로이후속에서새Java빌드로세지않는다.
+
+## claim 발급 응답 유실
+
+`--phase claim`은 리뷰 결과가 생기기 전, 실행 소유권을 DB에 저장한 COMMIT 응답만 폐기한다. 기본 `per-commit`과 `final-completion`의 검증 조건은 유지한다. 프로젝트 등록·승인 후 접수 전에 소유 UUID schema에 gate 한 행과 첫 `QUEUED→RUNNING/attempt1`에만 반응하는 지연 trigger를 만든다. 관측자가 gate를 잠그고 실제 대기 backend를 확인해 arm/release한다. 5초 dispatcher를 고려해 대기 최대7초·arm/release9초 미만이며 관측자 idle 제한10초는 유지한다. SQL 문자열·트랜잭션 순번으로 주입 위치를 추측하지 않는다.
+
+```bash
+python3 scripts/verify-review-commit-ack.py \
+  --phase claim \
+  --war /absolute/path/ai-code-reviewer.war \
+  --java /absolute/path/java --psql /absolute/path/psql \
+  --port 18135 --report /absolute/checkout/.local/claim-ack-new.json
+```
+
+오류 전에 독립 DB 연결에서 원 요청/접수시각·claim/run의 영속화, RUNNING/attempt1·PREPARING/저장0·커밋/이슈0·커서null·접수/시작 감사 각1개를 확인한다. Git 이력·상세·diff·AI를 합친 합성 fixture 호출은0이어야 한다. 실제 클라이언트 EOF와 작업자 실패까지 전체 행/감사와 무호출 상태가 같아야 한다.
+
+heal 후 SQL 시각 변경 없이 원 요청이 새claim/run·attempt2로 복구돼야 한다. 이전 실행은 FAILED(0), 새 실행은 SUCCEEDED(2)·커서B·이슈2개이며 A/B 상세/diff/합성AI는 각각1회다. 원 접수 정보·이전 실행의 시작/진행 정보·기존 감사는 보존하고, 중단된 실행의 상태/완료시각/고정 오류 안내 변경은 정상 전이로 검사한다. 이전 실행을 FAILED로 정리하는 SQL은 REVIEW_FAILED 감사를 추가하지 않는다. 성공 감사1개·배정2개·시작2개·접수1개를 별도로 요구한다. 원행·토큰·감사 원문은 보고서에 저장하지 않는다.
+
+2026-11-04 KST, 같은 검증WAR41da…·앱235파일과 현재 WSL Java25.0.4.1/PG17.11에서 부모64.517초/자식45.777초 PASS였다. COMMIT/idle18바이트 폐기1회, worker실패10.139초와 주입 후33.251초의 성공 복구·attempt2·전용10행동/정리7항목·원본public14 보존을 확인했다. WAR 시작1회/동일DB·proxy오류0·사전호출0·복구 후각호출1회와 소유PG/lock까지 정리했다. 근거는 `.local/session28-claim-verification.json` SHA `f6a23b6ece1f9ba5d35fcfc8532a9601c55c807d8b98b3428734d536802d8268`, 양OS동일 child SHA `f0bb14c6426f0def444a2d8ca3ef6c4d70ca6fdc6e74d179f377270322d2d6ef`다. 집중36건과 전체Python438건(Windows433통과/환경5제외·Linux428통과/환경10제외)이 통과했으며 제품/프록시/부모·Java빌드는 변경/재실행하지 않았다. 실제 모델은 호출하지 않았고 과거 두 모드의 실제 결과를 오늘 재실행한 것으로 세지 않는다.

@@ -54,7 +54,7 @@
 - [x] V11→V12 데이터 보존, 독립 PG 연결의 동시 접수/이전 토큰/늦은 결과/DB 실패 원자성·조회 경계18건, 실제 WAR 강제 종료 후 요청·진척·이슈 재개 ([범위](QUEUE-VALIDATION.md))
 - [x] 로컬 격리 PostgreSQL 중지·재시작, 같은 WAR에서 동일 요청 복구·저장 결과 재사용·이슈 중복 방지·진행 카드·생존/준비 probe 회복 ([범위](DB-RECOVERY-VALIDATION.md)); 장기 단절·운영 복구 시간 보장은 별개
 - [x] 살아 있는PG의 앱 연결만65초 양방향 차단, 실제 JDBC/Hikari 실패·같은WAR/요청 새claim 재개·A재사용/B재시도·이슈중복방지·생존/준비·소유자원정리 ([범위](DB-RECOVERY-VALIDATION.md)); kernel packet loss·장기단절/SLA는 별도
-- [x] 실제COMMIT 후호출자오류의claim/커밋별저장/최종성공3회귀, 특정커밋저장의wire COMMIT응답유실후동일WAR복구·저장행/AI/이슈중복방지·관측자잠금중취소정리. 별도최종완료wire유실에서이미저장된성공/attempt1/커서B/완료감사와heal후12초전체행·호출수보존·원본14표/소유자원정리 ([범위](DB-RECOVERY-VALIDATION.md)); claim wire차단·운영TLS/장기SLA·외부과금정확히한번은별도
+- [x] 실제COMMIT 후호출자오류의claim/커밋별저장/최종성공3회귀와각각별도wire COMMIT응답유실시험. claim은사전Git/AI0·PREPARING0영속화후원요청attempt2/새claim복구·한번씩검토, 커밋저장은기존행/AI재사용, 최종완료는성공/attempt1/커서/감사와heal후12초행보존·소유자원/public14정리 ([범위](DB-RECOVERY-VALIDATION.md)); 운영TLS/장기SLA·외부과금정확히한번은별도
 - [x] V10 기존 리뷰/이슈 보존 migration, 수동 확인 저장·처리·다음 커밋 진행의 실제 PostgreSQL/HTTP 검증
 - [x] 실제 Tomcat HTTP/JSP 로그인·CSRF·소유권·비동기 수동 리뷰 저장
 - [x] MVC 미처리 SQL 오류의 입력값/예외 원문 비출력과 기존 HTTP·보안 상태 유지 회귀 (필터/JSP/debug 로그 전역 정화는 아님)

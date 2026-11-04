@@ -23,6 +23,10 @@ FINAL_BEHAVIOR = ('finalCompletionGateSelected', 'finalCompletionCommittedBefore
                   'terminalSuccessUnchangedAfterClientFailure', 'completedRequestNotRetried',
                   'sameLiveWarRemainedTerminal', 'databaseProcessUnchanged', 'committedBeforeClientFailure',
                   'savedRowsPreservedWithoutExtraAi', 'twoIssuesAndSafeCheckpoint', 'requestActorAndReceptionPreserved')
+CLAIM_BEHAVIOR = ('claimGateSelected', 'claimCommittedBeforeClientFailure', 'claimHadNoExternalWork',
+                  'claimedRowsUnchangedDuringClientFailure', 'sameLiveWarRecovered', 'databaseProcessUnchanged',
+                  'newClaimForSameRequest', 'twoIssuesAndSafeCheckpoint', 'requestActorAndReceptionPreserved',
+                  'singleReviewAfterClaimRecovery')
 
 
 class CommitAckDrillTest(unittest.TestCase):
@@ -119,12 +123,12 @@ class CommitAckDrillTest(unittest.TestCase):
             with self.subTest(location=location, key=key), self.assertRaises(MODULE.VerificationError):
                 MODULE.assert_final_completion(changed, initial)
 
-    def test_cli_defaults_to_per_commit_and_accepts_only_the_two_explicit_phases(self):
+    def test_cli_defaults_to_per_commit_and_accepts_only_the_supported_explicit_phases(self):
         with patch.object(MODULE.LINUX, 'unused_port'):
             self.assertEqual('per-commit', MODULE.arguments(self.argv()).phase)
-            for phase in ('per-commit', 'final-completion'):
+            for phase in ('per-commit', 'final-completion', 'claim'):
                 self.assertEqual(phase, MODULE.arguments(self.argv(phase=phase)).phase)
-        for phase in ('final', 'claim', '', 'private-invalid-phase'):
+        for phase in ('final', 'claim-start', '', 'private-invalid-phase'):
             with self.subTest(phase=phase), patch.object(MODULE.LINUX, 'unused_port') as port, \
                     redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 MODULE.arguments(self.argv(phase=phase))
@@ -233,6 +237,225 @@ class CommitAckDrillTest(unittest.TestCase):
             database.reset_mock()
             with self.subTest(schema=schema, project=project), self.assertRaises(MODULE.VerificationError):
                 MODULE.stored_final_rows(database, schema, project)
+            database.sql.assert_not_called()
+
+    @staticmethod
+    def queued():
+        return {'request': {'requestId': 'same-request', 'actor': 7, 'source': 'MANUAL', 'state': 'QUEUED', 'attempts': 0},
+                'ownership': {'requestedAt': 'before', 'claim': None, 'run': None},
+                'commits': [], 'issues': 0, 'assignees': [], 'cursor': None, 'runs': [], 'progress': None}
+
+    @classmethod
+    def claimed(cls):
+        result = cls.queued()
+        result['request'].update(state='RUNNING', attempts=1)
+        result['ownership'].update(claim='first-claim', run=11)
+        result['runs'] = [{'state': 'RUNNING', 'commits': 0}]
+        result['progress'] = {'runId': 11, 'stage': 'PREPARING', 'saved': 0, 'recordedAt': 'claim-at', 'lastSavedAt': None}
+        return result
+
+    @classmethod
+    def claim_recovered(cls):
+        result = cls.terminal()
+        result['request']['attempts'] = 2
+        result['ownership'].update(claim='next-claim', run=12)
+        result['runs'] = [{'state': 'FAILED', 'commits': 0}, {'state': 'SUCCEEDED', 'commits': 2}]
+        result['progress'].update(runId=12, recordedAt='final-progress-at')
+        return result
+
+    @staticmethod
+    def claim_rows():
+        return {'project': {'id': 1, 'last_reviewed_sha': None},
+            'request': {'project_id': 1, 'request_id': 'same-request', 'requested_by': 7, 'source': 'MANUAL',
+                'state': 'RUNNING', 'attempt_count': 1, 'requested_at': 'before', 'claim_token': 'first-claim',
+                'run_id': 11, 'available_at': 'retry-at', 'last_attempt_at': 'claim-at', 'finished_at': None, 'result_code': None},
+            'runs': [{'id': 11, 'project_id': 1, 'status': 'RUNNING', 'reviewed_commits': 0, 'started_at': 'claim-at',
+                'progress_stage': 'PREPARING', 'progress_updated_at': 'claim-at', 'last_saved_at': None,
+                'finished_at': None, 'error_message': None}],
+            'commits': None, 'issues': None,
+            'audits': [{'id': 31, 'action': 'REVIEW_REQUESTED', 'target_type': 'PROJECT', 'target_id': 1,
+                        'actor_id': 7, 'created_at': 'before'},
+                       {'id': 32, 'action': 'REVIEW_STARTED', 'target_type': 'REVIEW_RUN', 'target_id': 11,
+                        'actor_id': 7, 'created_at': 'claim-at'}]}
+
+    @classmethod
+    def claim_recovered_rows(cls):
+        result = cls.claim_rows()
+        result['project']['last_reviewed_sha'] = MODULE.HELPERS.SHA_B
+        result['request'].update(state='SUCCEEDED', attempt_count=2, claim_token='next-claim', run_id=12,
+                                 available_at='next-retry-at', last_attempt_at='new-claim-at',
+                                 finished_at='completed-at', result_code='BATCH_COMPLETED')
+        result['runs'][0].update(status='FAILED', finished_at='new-claim-at', error_message='Synthetic interrupted run')
+        result['runs'].append({'id': 12, 'project_id': 1, 'status': 'SUCCEEDED', 'reviewed_commits': 2,
+            'started_at': 'new-claim-at', 'progress_stage': 'FINALIZING', 'progress_updated_at': 'saved-B',
+            'last_saved_at': 'saved-B', 'finished_at': 'completed-at', 'error_message': None})
+        result['commits'] = [{'id': 21, 'project_id': 1, 'commit_sha': MODULE.HELPERS.SHA_A},
+                             {'id': 22, 'project_id': 1, 'commit_sha': MODULE.HELPERS.SHA_B}]
+        result['issues'] = [{'id': 41, 'project_id': 1, 'reviewed_commit_id': 21, 'assignee_id': 7},
+                            {'id': 42, 'project_id': 1, 'reviewed_commit_id': 22, 'assignee_id': 7}]
+        result['audits'].extend([
+            {'id': 33, 'action': 'REVIEW_STARTED', 'target_type': 'REVIEW_RUN', 'target_id': 12,
+             'actor_id': 7, 'created_at': 'new-claim-at'},
+            {'id': 34, 'action': 'ISSUES_ASSIGNED', 'target_type': 'REVIEWED_COMMIT', 'target_id': 21,
+             'actor_id': None, 'created_at': 'saved-A'},
+            {'id': 35, 'action': 'ISSUES_ASSIGNED', 'target_type': 'REVIEWED_COMMIT', 'target_id': 22,
+             'actor_id': None, 'created_at': 'saved-B'},
+            {'id': 36, 'action': 'REVIEW_SUCCEEDED', 'target_type': 'REVIEW_RUN', 'target_id': 12,
+             'actor_id': None, 'created_at': 'completed-at'}])
+        return result
+
+    def test_claim_gate_is_owned_and_selects_only_the_first_queued_to_running_commit(self):
+        database = Mock()
+        observer = MODULE.OwnedObserver(database, SCHEMA)
+        with patch.object(observer, '_acquire_row', return_value=123) as acquire, \
+                patch.object(MODULE.subprocess, 'Popen') as spawn:
+            for value in (True, 0, -1, '1;DROP', None):
+                with self.subTest(project=value), self.assertRaises(MODULE.VerificationError):
+                    observer.acquire_claim_gate(value)
+            database.sql.assert_not_called()
+            self.assertEqual(123, observer.acquire_claim_gate(7))
+        query = ' '.join(database.sql.call_args.args[0].split())
+        self.assertIn('AFTER UPDATE ON ' + SCHEMA + '.review_request', query)
+        self.assertIn('DEFERRABLE INITIALLY DEFERRED FOR EACH ROW', query)
+        for condition in ("OLD.state='QUEUED'", "NEW.state='RUNNING'", 'NEW.attempt_count=1', 'NEW.project_id=7'):
+            self.assertIn(condition, query)
+        self.assertIn('FOR UPDATE', query)
+        self.assertIn('IF NOT FOUND THEN RAISE EXCEPTION', query)
+        self.assertNotIn('public.', query)
+        self.assertEqual(7, acquire.call_args.args[0])
+        spawn.assert_not_called()
+        database.reset_mock()
+        observer.process = Mock()
+        with self.assertRaises(MODULE.VerificationError):
+            observer.acquire_claim_gate(7)
+        database.sql.assert_not_called()
+
+    def test_claim_snapshot_requires_one_preparing_attempt_and_no_review_work(self):
+        queued, claimed = self.queued(), self.claimed()
+        MODULE.assert_claim_committed(claimed, queued)
+        changes = [('request', 'requestId', 'replacement'), ('request', 'actor', 8), ('request', 'source', 'SCHEDULED'),
+            ('request', 'state', 'QUEUED'), ('request', 'attempts', 2), ('request', 'attempts', True),
+            ('ownership', 'requestedAt', 'later'), ('ownership', 'claim', None), ('ownership', 'claim', ''),
+            ('ownership', 'run', 0), ('ownership', 'run', True), ('root', 'commits', [MODULE.HELPERS.SHA_A]),
+            ('root', 'issues', 1), ('root', 'assignees', [7]), ('root', 'cursor', MODULE.HELPERS.SHA_A),
+            ('root', 'runs', [{'state': 'RUNNING', 'commits': 1}]), ('progress', 'runId', 12),
+            ('progress', 'stage', 'GIT_LOADING'), ('progress', 'saved', 1), ('progress', 'lastSavedAt', 'saved'),
+            ('progress', 'recordedAt', None)]
+        for location, key, value in changes:
+            changed = copy.deepcopy(claimed)
+            (changed if location == 'root' else changed[location])[key] = value
+            with self.subTest(location=location, key=key, value=value), self.assertRaises(MODULE.VerificationError):
+                MODULE.assert_claim_committed(changed, queued)
+
+    def test_claim_raw_metadata_is_atomic_and_has_no_commits_issues_or_terminal_state(self):
+        queued, rows = self.queued(), self.claim_rows()
+        MODULE.assert_claim_rows(rows, queued)
+        changes = [('project', 'last_reviewed_sha', MODULE.HELPERS.SHA_A), ('request', 'request_id', 'new'),
+            ('request', 'requested_by', 8), ('request', 'source', 'SCHEDULED'), ('request', 'requested_at', 'later'),
+            ('request', 'state', 'QUEUED'), ('request', 'attempt_count', 2), ('request', 'attempt_count', True),
+            ('request', 'claim_token', ''), ('request', 'run_id', 12), ('request', 'last_attempt_at', None),
+            ('request', 'available_at', None), ('request', 'finished_at', 'unexpected'), ('request', 'result_code', 'BATCH_COMPLETED'),
+            ('runs', 'project_id', 2), ('runs', 'status', 'FAILED'), ('runs', 'reviewed_commits', 1),
+            ('runs', 'started_at', 'different'), ('runs', 'progress_stage', 'REVIEWING'),
+            ('runs', 'progress_updated_at', 'different'), ('runs', 'last_saved_at', 'unexpected'),
+            ('runs', 'finished_at', 'unexpected'), ('runs', 'error_message', 'unexpected')]
+        for section, key, value in changes:
+            changed = copy.deepcopy(rows)
+            target = changed[section][0] if isinstance(changed[section], list) else changed[section]
+            target[key] = value
+            with self.subTest(section=section, key=key), self.assertRaises(MODULE.VerificationError):
+                MODULE.assert_claim_rows(changed, queued)
+        for section in ('commits', 'issues'):
+            for value in ([], [{}]):
+                changed = copy.deepcopy(rows)
+                changed[section] = value
+                with self.subTest(section=section, value=value), self.assertRaises(MODULE.VerificationError):
+                    MODULE.assert_claim_rows(changed, queued)
+
+    def test_claim_audits_require_exact_request_and_start_without_duplicate_or_review_actions(self):
+        queued, rows = self.queued(), self.claim_rows()
+        cases = []
+        for index in range(2):
+            changed = copy.deepcopy(rows)
+            changed['audits'].append(dict(changed['audits'][index]))
+            cases.append(changed)
+            changed = copy.deepcopy(rows)
+            changed['audits'].pop(index)
+            cases.append(changed)
+            for key, value in (('target_id', 999), ('actor_id', 8), ('created_at', 'wrong')):
+                changed = copy.deepcopy(rows)
+                changed['audits'][index][key] = value
+                cases.append(changed)
+        for action in ('ISSUES_ASSIGNED', 'REVIEW_SUCCEEDED', 'REVIEW_FAILED'):
+            changed = copy.deepcopy(rows)
+            changed['audits'].append({'id': 33, 'action': action})
+            cases.append(changed)
+        for index, changed in enumerate(cases):
+            with self.subTest(case=index), self.assertRaises(MODULE.VerificationError):
+                MODULE.assert_claim_rows(changed, queued)
+
+    def test_claim_recovery_snapshot_requires_a_new_claim_and_only_one_review_attempt(self):
+        claimed, recovered = self.claimed(), self.claim_recovered()
+        MODULE.assert_claim_recovered(recovered, claimed)
+        changes = [('request', 'requestId', 'new'), ('request', 'actor', 8), ('request', 'source', 'SCHEDULED'),
+            ('request', 'state', 'RUNNING'), ('request', 'attempts', 1), ('request', 'attempts', True),
+            ('ownership', 'requestedAt', 'later'), ('ownership', 'claim', 'first-claim'), ('ownership', 'run', 11),
+            ('root', 'commits', [MODULE.HELPERS.SHA_A]), ('root', 'issues', 1), ('root', 'assignees', [7, 8]),
+            ('root', 'cursor', None), ('root', 'runs', [{'state': 'SUCCEEDED', 'commits': 2}]),
+            ('progress', 'runId', 11), ('progress', 'stage', 'REVIEWING'), ('progress', 'saved', 0),
+            ('progress', 'lastSavedAt', None)]
+        for location, key, value in changes:
+            changed = copy.deepcopy(recovered)
+            (changed if location == 'root' else changed[location])[key] = value
+            with self.subTest(location=location, key=key), self.assertRaises(MODULE.VerificationError):
+                MODULE.assert_claim_recovered(changed, claimed)
+
+    def test_claim_recovery_rows_preserve_the_old_run_and_exact_once_review_audits(self):
+        queued, first, rows = self.queued(), self.claim_rows(), self.claim_recovered_rows()
+        MODULE.assert_claim_recovery_rows(rows, first, queued)
+        cases = []
+        for key, value in (('started_at', 'changed'), ('progress_stage', 'REVIEWING'), ('reviewed_commits', 1),
+                           ('last_saved_at', 'changed'), ('progress_updated_at', 'changed'), ('error_message', ''),
+                           ('finished_at', 'changed')):
+            changed = copy.deepcopy(rows)
+            changed['runs'][0][key] = value
+            cases.append(changed)
+        for section, index, key, value in (('runs', 1, 'status', 'FAILED'), ('runs', 1, 'reviewed_commits', 1),
+                ('runs', 1, 'started_at', 'different'), ('runs', 1, 'finished_at', 'different'),
+                ('commits', 0, 'commit_sha', MODULE.HELPERS.SHA_B), ('issues', 0, 'assignee_id', 8),
+                ('issues', 0, 'reviewed_commit_id', 999), ('audits', 0, 'created_at', 'changed')):
+            changed = copy.deepcopy(rows)
+            changed[section][index][key] = value
+            cases.append(changed)
+        for index in range(len(rows['audits'])):
+            changed = copy.deepcopy(rows)
+            changed['audits'].append(dict(changed['audits'][index]))
+            cases.append(changed)
+            changed = copy.deepcopy(rows)
+            changed['audits'].pop(index)
+            cases.append(changed)
+        changed = copy.deepcopy(rows)
+        changed['audits'].append({'id': 40, 'action': 'REVIEW_FAILED'})
+        cases.append(changed)
+        for section in ('runs', 'commits', 'issues'):
+            changed = copy.deepcopy(rows)
+            changed[section].append(dict(changed[section][0]))
+            cases.append(changed)
+        for index, changed in enumerate(cases):
+            with self.subTest(case=index), self.assertRaises(MODULE.VerificationError):
+                MODULE.assert_claim_recovery_rows(changed, first, queued)
+
+    def test_claim_row_reader_is_limited_to_the_owned_schema_and_project(self):
+        database = Mock(sql=Mock(return_value=json.dumps(self.claim_rows())))
+        self.assertEqual(self.claim_rows(), MODULE.stored_claim_rows(database, SCHEMA, 1))
+        query = database.sql.call_args.args[0]
+        for table in ('project', 'review_request', 'review_run', 'reviewed_commit', 'review_issue', 'audit_event'):
+            self.assertIn(SCHEMA + '.' + table, query)
+        self.assertNotIn('app_user', query)
+        for schema, project in (('public', 1), (SCHEMA, True), (SCHEMA, 0), (SCHEMA, -1), (SCHEMA, '1;DROP')):
+            database.reset_mock()
+            with self.subTest(schema=schema, project=project), self.assertRaises(MODULE.VerificationError):
+                MODULE.stored_claim_rows(database, schema, project)
             database.sql.assert_not_called()
 
     def test_cli_is_bounded_fresh_local_and_explicitly_plain_protocol(self):
@@ -442,6 +665,29 @@ class CommitAckDrillTest(unittest.TestCase):
             self.assertEqual(1, len(fixture.dropped))
             self.assertTrue(all(fixture.report['checks'][name] is True for name in MODULE.CLEANUP))
 
+    def test_explicit_claim_phase_dispatch_cannot_run_the_saved_result_or_completion_scenarios(self):
+        args = types.SimpleNamespace(**vars(self.args), phase='claim')
+        with self.run_fixture() as fixture, patch.object(MODULE, 'exercise_claim') as claim, \
+                patch.object(MODULE, 'exercise_final_completion') as final:
+            MODULE.run(args, fixture.report)
+            claim.assert_called_once()
+            fixture.exercise.assert_not_called()
+            final.assert_not_called()
+            self.assertTrue(all(fixture.report['checks'][name] is True for name in MODULE.CLEANUP))
+
+    def test_claim_gate_failures_preserve_the_original_error_and_release_the_observer_first(self):
+        args = types.SimpleNamespace(**vars(self.args), phase='claim')
+        for error in (KeyboardInterrupt(), MODULE.VerificationError('Synthetic gate or arm failure')):
+            with self.subTest(error=type(error).__name__), self.run_fixture() as fixture, \
+                    patch.object(MODULE, 'exercise_claim', side_effect=error):
+                with self.assertRaises(type(error)) as observed:
+                    MODULE.run(args, fixture.report)
+                self.assertIs(error, observed.exception)
+                self.assertEqual(['observer', 'war'], fixture.events)
+                self.assertEqual(1, len(fixture.dropped))
+                self.assertTrue(all(fixture.report['checks'][name] is True for name in MODULE.CLEANUP))
+                self.assertNotIn('synthetic-private', json.dumps(fixture.report))
+
     def test_owned_war_plain_protocol_is_explicit_and_inherited_configuration_is_not_used(self):
         database = types.SimpleNamespace(url='jdbc:postgresql://127.0.0.1:55440/reviewer_integration',
             user='reviewer_test', password='synthetic-private', sql=Mock(return_value='1'))
@@ -547,6 +793,52 @@ class CommitAckDrillTest(unittest.TestCase):
             if mode == 'success':
                 self.assertNotIn('savedRowsReusedWithoutAi', report['checks'])
                 self.assertNotIn('sameLiveWarRecovered', report['checks'])
+            args.report.unlink()
+
+    def test_claim_main_requires_zero_external_work_and_its_own_recovery_fault_and_cleanup_proof(self):
+        args = types.SimpleNamespace(**vars(self.args), phase='claim')
+        cases = ('success', *CLAIM_BEHAVIOR, *MODULE.CLEANUP, 'attempt-one', 'attempt-bool',
+                 'external-work', 'external-bool', 'external-text', 'missing-external-counter', 'wrong-phase',
+                 'truthy-ack', 'cleanup-failed', 'missing-idle-ack', 'client-open', 'private-error', 'sigterm')
+        for mode in cases:
+            installed, prior = [], Mock()
+            def scenario(_args, report):
+                if mode == 'private-error':
+                    raise RuntimeError('private synthetic claim SQL and password')
+                if mode == 'sigterm':
+                    installed[0][1](MODULE.signal.SIGTERM, None)
+                report['cleanupFailed'] = False
+                report['checks'].update(dict.fromkeys((*MODULE.CLEANUP, *CLAIM_BEHAVIOR), True))
+                report['attempts'] = 2
+                report['claimExternalRequestCount'] = 0
+                report['proxy'] = {'commitAcknowledgementsDropped': 1, 'readyForQueryIdleDropped': True, 'targetClientClosed': True}
+                if mode in report['checks']: report['checks'][mode] = False
+                elif mode == 'attempt-one': report['attempts'] = 1
+                elif mode == 'attempt-bool': report['attempts'] = True
+                elif mode == 'external-work': report['claimExternalRequestCount'] = 1
+                elif mode == 'external-bool': report['claimExternalRequestCount'] = False
+                elif mode == 'external-text': report['claimExternalRequestCount'] = '0'
+                elif mode == 'missing-external-counter': report.pop('claimExternalRequestCount')
+                elif mode == 'wrong-phase': report['phase'] = 'per-commit'
+                elif mode == 'truthy-ack': report['proxy']['commitAcknowledgementsDropped'] = True
+                elif mode == 'cleanup-failed': report['cleanupFailed'] = True
+                elif mode == 'missing-idle-ack': report['proxy']['readyForQueryIdleDropped'] = False
+                elif mode == 'client-open': report['proxy']['targetClientClosed'] = False
+            output = io.StringIO()
+            with self.subTest(mode=mode), patch.object(MODULE, 'arguments', return_value=args), \
+                    patch.object(MODULE, 'run', side_effect=scenario), patch.object(MODULE.signal, 'getsignal', return_value=prior), \
+                    patch.object(MODULE.signal, 'signal', side_effect=lambda *values: installed.append(values)), \
+                    redirect_stdout(output), redirect_stderr(output):
+                code = MODULE.main([])
+            report = json.loads(args.report.read_text(encoding='utf-8'))
+            self.assertEqual(0 if mode == 'success' else 130 if mode == 'sigterm' else 1, code)
+            self.assertEqual('PASS' if mode == 'success' else 'FAIL', report['result'])
+            self.assertEqual((MODULE.signal.SIGTERM, prior), installed[-1])
+            self.assertNotIn('private synthetic claim SQL and password', str(report) + output.getvalue())
+            if mode == 'success':
+                self.assertEqual('claim', report['phase'])
+                self.assertNotIn('savedRowsReusedWithoutAi', report['checks'])
+                self.assertNotIn('terminalSuccessUnchangedAfterClientFailure', report['checks'])
             args.report.unlink()
 
 
