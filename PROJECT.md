@@ -15,7 +15,7 @@
 - `source/src/main/webapp/WEB-INF/jsp/` JSP·공통 fragment. `source/src/test/` 자동 테스트.
 - `scripts/test-postgres.ps1`: Windows 격리 PostgreSQL 검증. `-BackupRestore -ReviewRestart`는 백업/복원과 실제 WAR 강제 중단 후 재기동, `-ReviewConcurrency`는 두 WAR의 잠금 경쟁과 다른 프로젝트 진행을 검증한다.
 - `scripts/test-postgres-linux.py`: 일반 Linux 사용자와 native 파일시스템의 전용 PostgreSQL17에서 전체 빌드·필수 DB 검증을 실행한다. `--backup-restore --review-restart --review-concurrency --review-database-recovery`로 백업과 세 복구 검증을 함께 실행한다.
-- 같은 도구의 `--review-network-recovery`는 살아 있는 DB 앞의 검증용 loopback 프록시로 앱 연결만65초 차단하고 동일 요청의 재개·저장 결과 보존을 검사한다. [범위와 재현](docs/DB-RECOVERY-VALIDATION.md)을 따른다.
+- 같은 도구의 `--review-network-recovery`는 살아 있는 DB 앞의 검증용 loopback 프록시로 앱 연결만65초 차단한다. 자식의 명시적 `--extended-outage`는 Linux600~1200초 차단과 소유 WAR 자원 관측을 별도로 수행하며 기존 부모의 기본900초 외부제한과 구분한다. [범위와 재현](docs/DB-RECOVERY-VALIDATION.md)을 따른다.
 - 같은 도구의 `--review-commit-ack`는 특정 커밋 저장 후 완료 응답을 차단하는 기본 시험이다. 자식 `verify-review-commit-ack.py --phase claim`은 리뷰 전 소유권 저장·사전 Git/AI호출0·원 요청 재개를, `--phase final-completion`은 최종 성공/커서/감사 보존을 별도로 검사한다. 호출자 예외의 Java 회귀와 [실제 통신 시험 범위](docs/DB-RECOVERY-VALIDATION.md)를 구분한다.
 - `--session-expiry`는 기본30분 세션 설정을 유지하고 실제1,810초 유휴·1,740초 대조군 인증·옛 양식 차단·재로그인 후 업무 보존과 정상 저장을 검사한다. 시간이 걸리는 선택 시험이며 [재현과 범위](docs/USER-EXPERIENCE.md)를 따른다.
 - 같은 Linux 도구의 `--review-upgrade`는 명시한 V12 WAR·체크섬을 받아 누적 리뷰 데이터의 V15 업데이트와 별도 DB의 V12 백업 복귀를 검증한다. [실행 조건과 범위](docs/UPGRADE-VALIDATION.md)를 따른다.

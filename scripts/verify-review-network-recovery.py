@@ -36,6 +36,131 @@ RECOVERY = module('network_db_helpers', 'verify-review-db-recovery.py')
 HELPERS, SHARED, LINUX = RATE.HELPERS, RATE.SHARED, RATE.LINUX
 VerificationError, require = HELPERS.VerificationError, HELPERS.require
 WORKSPACE = Path(__file__).absolute().parent.parent
+RESOURCE_INTERVAL_SECONDS = 10
+MAX_RESOURCE_GAP_SECONDS = 20
+MAX_RESOURCE_SAMPLES = 160
+EXTENDED_BEHAVIOR = ('liveDatabaseStayedAvailable', 'unchangedRequestClaimAndSavedA',
+    'noCommitBStoredDuringFault', 'workerFailedBeforeHealing', 'disconnectedReadiness503Liveness200StatusOnly',
+    'sameLiveWarRecovered', 'requestActorAndReceptionPreserved', 'replacementClaimIssued',
+    'savedAReusedUnfinishedBRetried', 'twoIssuesAndSafeCheckpoint', 'newAttemptProgressAndJspCorrect',
+    'readinessReturnedTo200', 'databaseProcessUnchanged')
+
+
+class OutageResourceMonitor:
+    """Observe the owned process/schema baseline and explicit long fault window."""
+    def __init__(self, war, database, schema, proxy):
+        require(sys.platform.startswith('linux') and HELPERS.SCHEMA_PATTERN.fullmatch(schema) is not None,
+                'Extended outage resource observation requires Linux and an owned schema')
+        self.war, self.database, self.schema, self.proxy = war, database, schema, proxy
+        # Reuse the owned-Popen reader, without the two-node schedule monitor's scope.
+        self.reader = module('outage_process_resource_helpers', 'verify-review-schedule.py').process_sample
+        self.ticks = os.sysconf('SC_CLK_TCK')
+        require(type(self.ticks) is int and self.ticks > 0, 'Linux process clock units are unavailable')
+        self.started, self.first, self.last, self.identity, self.cpu = time.monotonic(), None, None, None, None
+        self.evidence = {'enabled': True, 'complete': False, 'sampleIntervalSeconds': RESOURCE_INTERVAL_SECONDS,
+            'maximumAllowedGapSeconds': MAX_RESOURCE_GAP_SECONDS, 'samples': 0,
+            'firstSampleElapsedSeconds': None, 'lastSampleElapsedSeconds': None, 'observedSeconds': 0,
+            'maximumObservedGapSeconds': 0, 'heapLimitMiBPerWar': 384,
+            'process': {'peakRssBytes': 0, 'peakHwmBytes': 0, 'peakThreads': 0},
+            'database': {'peakOwnedConnections': 0, 'lastOwnedConnections': 0},
+            'proxy': {'peakActiveConnections': 0, 'lastActiveConnections': 0},
+            'scope': 'Immediately-before-fault baseline plus fault-period samples of the owned WAR and '
+                     'ApplicationName PG connections. HWM and CPU are cumulative since process startup; '
+                     'proxy peaks aggregate sampled active pairs, bounded to32. Recovery waits are not '
+                     'regularly sampled. No heap-used, leak, host-capacity or operational SLA conclusion.'}
+
+    def sample(self, force=False):
+        now = time.monotonic()
+        require(self.last is None or now >= self.last, 'The outage resource observation clock regressed')
+        if not force and self.last is not None and now - self.last < RESOURCE_INTERVAL_SECONDS:
+            return
+        require(self.evidence['samples'] < MAX_RESOURCE_SAMPLES, 'The outage resource observation budget was exceeded')
+        try:
+            current = self.reader(self.war.process, self.ticks)
+        except Exception:
+            raise VerificationError('Owned outage process resource observation is unavailable') from None
+        require(isinstance(current, dict), 'Invalid owned outage process resource observation')
+        identity, cpu = current.get('identity'), current.get('cpuSeconds')
+        require(isinstance(identity, tuple) and len(identity) == 2
+                and all(type(value) is int and value > 0 for value in identity)
+                and identity[0] == self.war.process.pid
+                and type(cpu) in (int, float) and 0 <= cpu < float('inf')
+                and all(type(current.get(key)) is int and current[key] > 0 for key in ('rssBytes', 'hwmBytes', 'threads'))
+                and current['hwmBytes'] >= current['rssBytes'], 'Invalid owned outage process resource observation')
+        require(self.identity is None or self.identity == identity, 'The owned outage process identity changed')
+        require(self.cpu is None or cpu >= self.cpu, 'The owned outage process CPU counter regressed')
+        connections, metrics = owned_sessions(self.database, self.schema), self.proxy.metrics()
+        active, peak = metrics.get('active'), metrics.get('peakActive')
+        require(type(connections) is int and connections >= 0
+                and type(active) is int and type(peak) is int and 0 <= active <= peak <= 32
+                and metrics.get('failed') is False and metrics.get('mode') in ('FORWARD', 'BLACKHOLE'),
+                'Invalid owned outage connection or proxy observation')
+        gap = 0 if self.last is None else now - self.last
+        require(0 <= gap <= MAX_RESOURCE_GAP_SECONDS, 'The outage resource observation interval exceeded its bound')
+        if self.first is None:
+            self.first = now
+            self.evidence['firstSampleElapsedSeconds'] = round(now - self.started, 3)
+            self.evidence['process']['cpuSecondsAtFirstSample'] = cpu
+        self.identity, self.cpu, self.last = identity, cpu, now
+        row = self.evidence
+        row.update(samples=row['samples'] + 1, lastSampleElapsedSeconds=round(now - self.started, 3),
+                   observedSeconds=round(now - self.first, 3),
+                   maximumObservedGapSeconds=max(row['maximumObservedGapSeconds'], round(gap, 3)))
+        row['process'].update(peakRssBytes=max(row['process']['peakRssBytes'], current['rssBytes']),
+            peakHwmBytes=max(row['process']['peakHwmBytes'], current['hwmBytes']),
+            peakThreads=max(row['process']['peakThreads'], current['threads']), cpuSecondsAtLastSample=cpu)
+        row['database'].update(peakOwnedConnections=max(row['database']['peakOwnedConnections'], connections),
+                               lastOwnedConnections=connections)
+        row['proxy'].update(peakActiveConnections=max(row['proxy']['peakActiveConnections'], active),
+                           lastActiveConnections=active)
+
+    def finish(self, minimum_seconds):
+        self.sample(force=True)
+        require(type(minimum_seconds) is int and 600 <= minimum_seconds <= 1200
+                and self.first is not None and self.last - self.first >= minimum_seconds
+                and self.evidence['samples'] >= minimum_seconds // MAX_RESOURCE_GAP_SECONDS,
+                'The extended outage resource observation is incomplete')
+        self.evidence['complete'] = True
+
+
+def assert_extended_evidence(args, report):
+    resources = report.get('resources', {})
+    require(isinstance(resources, dict) and isinstance(report.get('checks'), dict),
+            'Extended outage resource or behavior evidence is missing')
+    observed, failed, count = (report.get(key) for key in
+        ('blackholeSecondsObserved', 'workerFailureAfterSeconds', 'preservedStateObservations'))
+    require(report.get('extendedOutage') is True and type(report.get('blackholeSecondsRequested')) is int
+            and report['blackholeSecondsRequested'] == args.blackhole_seconds
+            and type(observed) in (int, float) and args.blackhole_seconds <= observed < args.timeout_seconds
+            and type(failed) in (int, float) and 0 <= failed < observed
+            and type(count) is int and count >= args.blackhole_seconds // 10
+            and all(report['checks'].get(key) is True for key in EXTENDED_BEHAVIOR)
+            and type(report.get('warStarts')) is int and report['warStarts'] == 1
+            and type(report.get('attempts')) is int and report['attempts'] == 2,
+            'Extended outage evidence is missing its actual fault, preservation or recovery')
+    require(resources.get('enabled') is True and resources.get('complete') is True
+            and resources.get('sampleIntervalSeconds') == RESOURCE_INTERVAL_SECONDS
+            and resources.get('maximumAllowedGapSeconds') == MAX_RESOURCE_GAP_SECONDS
+            and resources.get('heapLimitMiBPerWar') == 384
+            and type(resources.get('samples')) is int and args.blackhole_seconds // MAX_RESOURCE_GAP_SECONDS <= resources['samples'] <= MAX_RESOURCE_SAMPLES
+            and type(resources.get('observedSeconds')) in (int, float) and resources['observedSeconds'] >= args.blackhole_seconds
+            and all(type(resources.get(key)) in (int, float) for key in ('firstSampleElapsedSeconds', 'lastSampleElapsedSeconds'))
+            and 0 <= resources['firstSampleElapsedSeconds'] <= resources['lastSampleElapsedSeconds'] < float('inf')
+            and abs(resources['lastSampleElapsedSeconds'] - resources['firstSampleElapsedSeconds'] - resources['observedSeconds']) <= 0.002
+            and type(resources.get('maximumObservedGapSeconds')) in (int, float)
+            and 0 <= resources['maximumObservedGapSeconds'] <= MAX_RESOURCE_GAP_SECONDS,
+            'Extended outage resource evidence is incomplete or has unobserved gaps')
+    process, database, proxy = (resources.get(key, {}) for key in ('process', 'database', 'proxy'))
+    require(all(isinstance(row, dict) for row in (process, database, proxy))
+            and all(type(process.get(key)) is int and process[key] > 0 for key in ('peakRssBytes', 'peakHwmBytes', 'peakThreads'))
+            and process['peakHwmBytes'] >= process['peakRssBytes']
+            and all(type(process.get(key)) in (int, float) for key in ('cpuSecondsAtFirstSample', 'cpuSecondsAtLastSample'))
+            and 0 <= process['cpuSecondsAtFirstSample'] <= process['cpuSecondsAtLastSample'] < float('inf')
+            and all(type(database.get(key)) is int and database[key] >= 0 for key in ('peakOwnedConnections', 'lastOwnedConnections'))
+            and database['lastOwnedConnections'] <= database['peakOwnedConnections']
+            and all(type(proxy.get(key)) is int for key in ('peakActiveConnections', 'lastActiveConnections'))
+            and 0 <= proxy['lastActiveConnections'] <= proxy['peakActiveConnections'] <= 32,
+            'Extended outage process or connection resource evidence is invalid')
 
 
 def snapshot(database, schema, project):
@@ -49,6 +174,7 @@ def snapshot(database, schema, project):
 def assert_preserved(current, original):
     require(current['request'] == original['request'] and current['ownership'] == original['ownership']
             and current['commits'] == [HELPERS.SHA_A] and current['issues'] == 1
+            and current['assignees'] == original['assignees']
             and current['cursor'] is None and current['runs'] == [{'state': 'RUNNING', 'commits': 1}]
             and current['progress'] == original['progress'],
             'The disconnected request, claim, saved commit or progress changed unexpectedly')
@@ -97,6 +223,10 @@ def exercise(war, database, schema, fixture, fixture_url, proxy, args, report, d
     require(owned_sessions(database, schema) > 0, 'The owned WAR sessions could not be identified')
     probe(war.base, 'readiness', 200, 'UP')
     identity = server_identity(database)
+    monitor = OutageResourceMonitor(war, database, schema, proxy) if getattr(args, 'extended_outage', False) else None
+    if monitor is not None:
+        report['resources'] = monitor.evidence
+        monitor.sample(force=True)
     proxy.pause()
     started = time.monotonic()
     require(proxy.metrics()['mode'] == 'BLACKHOLE', 'Proxy did not confirm the disconnected mode')
@@ -113,14 +243,18 @@ def exercise(war, database, schema, fixture, fixture_url, proxy, args, report, d
         counts = fixture.observed()
         require(counts.get('ai_A.java') == counts.get('ai_B.java') == 1 and not fixture.errors,
                 'The disconnected attempt repeated AI or lost synthetic fixture validation')
+        if monitor is not None:
+            monitor.sample()
         observations += 1
         if failed_after is None and RECOVERY.worker_failed(war.logs / 'war-start-1.log', project):
             failed_after = round(time.monotonic() - started, 3)
         elapsed = time.monotonic() - started
         if elapsed >= args.blackhole_seconds:
             break
-        time.sleep(min(1, args.blackhole_seconds - elapsed))
+        time.sleep(min(5 if monitor is not None else 1, args.blackhole_seconds - elapsed))
     require(failed_after is not None, 'The worker did not report a database failure before the connection healed')
+    if monitor is not None:
+        monitor.finish(args.blackhole_seconds)
     report['blackholeSecondsObserved'] = round(time.monotonic() - started, 3)
     report['workerFailureAfterSeconds'] = failed_after
     report['preservedStateObservations'] = observations
@@ -187,14 +321,18 @@ def arguments(argv=None):
     parser.add_argument('--blackhole-seconds', type=int, default=65)
     parser.add_argument('--timeout-seconds', type=int, default=300)
     parser.add_argument('--startup-timeout-seconds', type=int, default=45)
+    parser.add_argument('--extended-outage', action='store_true',
+                        help='Explicit Linux600..1200-second fault with bounded owned resource observation')
     args = parser.parse_args(argv)
     for name in ('war', 'java', 'psql'):
         # Preserve a configured executable symlink: Debian psql dispatches by argv[0].
         value = LINUX.checked_path(getattr(args, name)) if name == 'war' else getattr(args, name).absolute()
         require(value.is_file(), 'An explicitly configured WAR or executable is missing')
         setattr(args, name, value)
-    require(args.war.suffix.lower() == '.war' and 1024 <= args.port <= 65535
-            and 45 <= args.blackhole_seconds <= 180 and args.blackhole_seconds + 90 <= args.timeout_seconds <= 600
+    bounded = (600 <= args.blackhole_seconds <= 1200 and args.blackhole_seconds + 120 <= args.timeout_seconds <= 1800
+               and sys.platform.startswith('linux')) if args.extended_outage else (
+               45 <= args.blackhole_seconds <= 180 and args.blackhole_seconds + 90 <= args.timeout_seconds <= 600)
+    require(args.war.suffix.lower() == '.war' and 1024 <= args.port <= 65535 and bounded
             and 15 <= args.startup_timeout_seconds <= 120, 'Invalid bounded connection-fault drill arguments')
     args.report = LINUX.absolute_path(args.report)
     require(WORKSPACE / '.local' in args.report.parents, 'Network drill evidence must stay in this checkout .local')
@@ -314,10 +452,14 @@ def main(argv=None):
         raise KeyboardInterrupt()
     try:
         args = arguments(argv)
+        report['extendedOutage'] = getattr(args, 'extended_outage', False)
+        report['blackholeSecondsRequested'] = args.blackhole_seconds
         previous = signal.getsignal(signal.SIGTERM)
         signal.signal(signal.SIGTERM, cancel)
         installed = True
         run(args, report)
+        if report['extendedOutage']:
+            assert_extended_evidence(args, report)
         require(report['cleanupFailed'] is False and all(report['checks'].get(key) is True
                 for key in ('ownedWarsStopped', 'ownedProxyStopped', 'ownedDatabaseSessionsGone',
                             'ownedSchemaRemoved', 'ownedWorkRemoved', 'originalTestTablesPreserved')),

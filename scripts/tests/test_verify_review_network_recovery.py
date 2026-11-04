@@ -59,6 +59,7 @@ class NetworkRecoveryDrillTest(unittest.TestCase):
             ('root', 'commits', []), ('root', 'commits', [MODULE.HELPERS.SHA_B]),
             ('root', 'commits', [MODULE.HELPERS.SHA_A, MODULE.HELPERS.SHA_B]),
             ('root', 'issues', 0), ('root', 'issues', 2), ('root', 'cursor', MODULE.HELPERS.SHA_A),
+            ('root', 'assignees', [8]), ('root', 'assignees', []),
             ('root', 'runs', [{'state': 'FAILED', 'commits': 1}]),
             ('root', 'runs', [{'state': 'RUNNING', 'commits': 0}]),
             ('root', 'runs', [{'state': 'RUNNING', 'commits': 1}, {'state': 'RUNNING', 'commits': 0}]),
@@ -101,6 +102,196 @@ class NetworkRecoveryDrillTest(unittest.TestCase):
         with patch.object(MODULE.LINUX, 'unused_port', side_effect=MODULE.LINUX.SafetyError('Port occupied')), \
                 self.assertRaises(MODULE.LINUX.SafetyError):
             MODULE.arguments(self.argv())
+
+    def test_extended_cli_is_explicit_linux_only_and_preserves_the_default_bounds(self):
+        with patch.object(MODULE.LINUX, 'unused_port'):
+            self.assertFalse(MODULE.arguments(self.argv()).extended_outage)
+        with patch.object(MODULE.sys, 'platform', 'linux'), patch.object(MODULE.LINUX, 'unused_port'):
+            for duration, budget in ((600, 720), (1200, 1320), (1200, 1800)):
+                args = MODULE.arguments(self.argv(blackhole_seconds=duration, timeout_seconds=budget) + ['--extended-outage'])
+                self.assertTrue(args.extended_outage)
+                self.assertEqual(duration, args.blackhole_seconds)
+        for duration, budget, platform in ((599, 900, 'linux'), (1201, 1500, 'linux'),
+                (600, 719, 'linux'), (1200, 1801, 'linux'), (1200, 1500, 'win32'), (65, 300, 'linux')):
+            with self.subTest(duration=duration, budget=budget, platform=platform), \
+                    patch.object(MODULE.sys, 'platform', platform), patch.object(MODULE.LINUX, 'unused_port') as port, \
+                    self.assertRaises(MODULE.VerificationError):
+                MODULE.arguments(self.argv(blackhole_seconds=duration, timeout_seconds=budget) + ['--extended-outage'])
+            port.assert_not_called()
+        with patch.object(MODULE.sys, 'platform', 'linux'), patch.object(MODULE.LINUX, 'unused_port') as port, \
+                self.assertRaises(MODULE.VerificationError):
+            MODULE.arguments(self.argv(blackhole_seconds=1200, timeout_seconds=1500))
+        port.assert_not_called()
+
+    @contextmanager
+    def resource_fixture(self):
+        clock = [100.0]
+        war = types.SimpleNamespace(process=types.SimpleNamespace(pid=987654321))
+        reader = Mock(return_value={'identity': (987654321, 456789123), 'rssBytes': 4096,
+            'hwmBytes': 8192, 'threads': 12, 'cpuSeconds': 1.0})
+        proxy = Mock(metrics=Mock(return_value={'active': 0, 'peakActive': 3, 'failed': False, 'mode': 'BLACKHOLE'}))
+        with patch.object(MODULE.sys, 'platform', 'linux'), \
+                patch.object(MODULE.os, 'sysconf', return_value=100, create=True), \
+                patch.object(MODULE, 'module', return_value=types.SimpleNamespace(process_sample=reader)) as loader, \
+                patch.object(MODULE.time, 'monotonic', side_effect=lambda: clock[0]), \
+                patch.object(MODULE, 'owned_sessions', return_value=0) as sessions:
+            monitor = MODULE.OutageResourceMonitor(war, Mock(), SCHEMA, proxy)
+            yield types.SimpleNamespace(clock=clock, war=war, reader=reader, proxy=proxy,
+                loader=loader, sessions=sessions, monitor=monitor)
+
+    def test_outage_resources_use_only_owned_reader_and_allow_zero_established_db_connections(self):
+        with self.resource_fixture() as fixture:
+            fixture.monitor.sample(force=True)
+            fixture.clock[0] = 105
+            fixture.monitor.sample()
+            self.assertEqual(1, fixture.reader.call_count)
+            fixture.clock[0] = 110
+            fixture.sessions.return_value = 2
+            fixture.proxy.metrics.return_value['active'] = 2
+            fixture.reader.return_value['cpuSeconds'] = 2.5
+            fixture.monitor.sample()
+            row = fixture.monitor.evidence
+            self.assertEqual(2, row['samples'])
+            self.assertEqual(10, row['observedSeconds'])
+            self.assertEqual({'peakOwnedConnections': 2, 'lastOwnedConnections': 2}, row['database'])
+            self.assertEqual({'peakActiveConnections': 2, 'lastActiveConnections': 2}, row['proxy'])
+            self.assertEqual(2.5, row['process']['cpuSecondsAtLastSample'])
+            fixture.reader.assert_called_with(fixture.war.process, 100)
+            fixture.loader.assert_called_once_with('outage_process_resource_helpers', 'verify-review-schedule.py')
+            self.assertNotIn('987654321', json.dumps(row))
+            self.assertNotIn('456789123', json.dumps(row))
+            self.assertFalse(row['complete'])
+
+    def test_resource_monitor_rejects_wrong_identity_cpu_regression_and_unavailable_process_data(self):
+        mutations = ({'identity': (987654322, 456789123)}, {'identity': (987654321, 456789124)},
+            {'cpuSeconds': .5}, {'cpuSeconds': True}, {'cpuSeconds': float('nan')},
+            {'cpuSeconds': float('inf')}, {'rssBytes': 0}, {'hwmBytes': 1024}, {'threads': True})
+        for changes in mutations:
+            with self.subTest(changes=changes), self.resource_fixture() as fixture:
+                fixture.monitor.sample(force=True)
+                fixture.clock[0] = 110
+                fixture.reader.return_value.update(changes)
+                with self.assertRaises(MODULE.VerificationError):
+                    fixture.monitor.sample()
+                self.assertEqual(1, fixture.monitor.evidence['samples'])
+                self.assertFalse(fixture.monitor.evidence['complete'])
+        with self.resource_fixture() as fixture:
+            fixture.reader.side_effect = RuntimeError('private process observation detail')
+            with self.assertRaisesRegex(MODULE.VerificationError, '^Owned outage process resource observation is unavailable$'):
+                fixture.monitor.sample()
+            self.assertEqual(0, fixture.monitor.evidence['samples'])
+
+    def test_resource_monitor_rejects_unbounded_connections_gaps_and_sample_counts(self):
+        for changes, connection in (({'active': 33, 'peakActive': 33}, 0), ({'active': 2, 'peakActive': 1}, 0),
+                ({'active': True}, 0), ({'failed': True}, 0), ({'mode': 'CLOSED'}, 0), ({}, -1), ({}, True)):
+            with self.subTest(changes=changes, connection=connection), self.resource_fixture() as fixture:
+                fixture.proxy.metrics.return_value.update(changes)
+                fixture.sessions.return_value = connection
+                with self.assertRaises(MODULE.VerificationError):
+                    fixture.monitor.sample()
+        with self.resource_fixture() as fixture:
+            fixture.monitor.sample()
+            fixture.clock[0] = 120.001
+            with self.assertRaises(MODULE.VerificationError):
+                fixture.monitor.sample()
+        with self.resource_fixture() as fixture:
+            fixture.monitor.evidence['samples'] = MODULE.MAX_RESOURCE_SAMPLES
+            with self.assertRaises(MODULE.VerificationError):
+                fixture.monitor.sample()
+            fixture.reader.assert_not_called()
+
+    def test_resource_monitor_rejects_clock_reversal_even_inside_the_sampling_interval(self):
+        with self.resource_fixture() as fixture:
+            fixture.monitor.sample()
+            fixture.clock[0] = 99.999
+            with self.assertRaisesRegex(MODULE.VerificationError, 'clock regressed'):
+                fixture.monitor.sample()
+            self.assertEqual(1, fixture.monitor.evidence['samples'])
+            self.assertEqual(1, fixture.reader.call_count)
+
+    def test_resource_monitor_requires_full_fault_coverage_and_keeps_failure_incomplete(self):
+        for duration, complete in ((590, False), (600, True)):
+            with self.subTest(duration=duration), self.resource_fixture() as fixture:
+                for elapsed in range(0, duration + 1, 10):
+                    fixture.clock[0] = 100 + elapsed
+                    fixture.monitor.sample()
+                if complete:
+                    fixture.monitor.finish(600)
+                    self.assertTrue(fixture.monitor.evidence['complete'])
+                    self.assertEqual(600, fixture.monitor.evidence['observedSeconds'])
+                else:
+                    with self.assertRaises(MODULE.VerificationError):
+                        fixture.monitor.finish(600)
+                    self.assertFalse(fixture.monitor.evidence['complete'])
+
+    def test_resource_monitor_rejects_nonlinux_or_unowned_schema_before_loading_reader(self):
+        for platform, schema in (('win32', SCHEMA), ('linux', 'public')):
+            with self.subTest(platform=platform, schema=schema), patch.object(MODULE.sys, 'platform', platform), \
+                    patch.object(MODULE, 'module') as loader, self.assertRaises(MODULE.VerificationError):
+                MODULE.OutageResourceMonitor(Mock(), Mock(), schema, Mock())
+            loader.assert_not_called()
+
+    @staticmethod
+    def extended_report():
+        return {'extendedOutage': True, 'blackholeSecondsRequested': 1200,
+            'blackholeSecondsObserved': 1200.5, 'workerFailureAfterSeconds': 30.5,
+            'preservedStateObservations': 240, 'warStarts': 1, 'attempts': 2,
+            'checks': dict.fromkeys((*CLEANUP, *MODULE.EXTENDED_BEHAVIOR), True),
+            'resources': {'enabled': True, 'complete': True, 'sampleIntervalSeconds': 10,
+                'maximumAllowedGapSeconds': 20, 'samples': 120, 'observedSeconds': 1200.1,
+                'firstSampleElapsedSeconds': 0, 'lastSampleElapsedSeconds': 1200.1,
+                'maximumObservedGapSeconds': 10.2, 'heapLimitMiBPerWar': 384,
+                'process': {'peakRssBytes': 4096, 'peakHwmBytes': 8192, 'peakThreads': 12,
+                    'cpuSecondsAtFirstSample': 1.0, 'cpuSecondsAtLastSample': 2.0},
+                'database': {'peakOwnedConnections': 3, 'lastOwnedConnections': 0},
+                'proxy': {'peakActiveConnections': 4, 'lastActiveConnections': 0}}}
+
+    def test_extended_evidence_requires_actual_duration_recovery_and_complete_resource_observation(self):
+        args = types.SimpleNamespace(blackhole_seconds=1200, timeout_seconds=1500)
+        valid = self.extended_report()
+        MODULE.assert_extended_evidence(args, valid)
+        mutations = [('root', 'extendedOutage', 1), ('root', 'blackholeSecondsRequested', True),
+            ('root', 'blackholeSecondsObserved', 1199.9), ('root', 'workerFailureAfterSeconds', None),
+            ('root', 'preservedStateObservations', 119), ('root', 'warStarts', 2), ('root', 'attempts', True),
+            ('resources', 'complete', 1), ('resources', 'enabled', False), ('resources', 'samples', 161),
+            ('resources', 'samples', 59), ('resources', 'observedSeconds', 1199.9),
+            ('resources', 'maximumObservedGapSeconds', 20.001), ('resources', 'lastSampleElapsedSeconds', 1400),
+            ('process', 'cpuSecondsAtLastSample', .5), ('process', 'peakRssBytes', 0),
+            ('process', 'peakThreads', True), ('database', 'lastOwnedConnections', -1),
+            ('database', 'peakOwnedConnections', True), ('proxy', 'peakActiveConnections', 33)]
+        for section, key, value in mutations:
+            changed = copy.deepcopy(valid)
+            target = changed if section == 'root' else changed['resources'] if section == 'resources' else changed['resources'][section]
+            target[key] = value
+            with self.subTest(section=section, key=key), self.assertRaises(MODULE.VerificationError):
+                MODULE.assert_extended_evidence(args, changed)
+        for key in MODULE.EXTENDED_BEHAVIOR:
+            changed = copy.deepcopy(valid)
+            changed['checks'][key] = False
+            with self.subTest(behavior=key), self.assertRaises(MODULE.VerificationError):
+                MODULE.assert_extended_evidence(args, changed)
+
+    def test_extended_main_does_not_accept_old_cleanup_only_or_short_resource_evidence(self):
+        args = types.SimpleNamespace(**(vars(self.args) | {'extended_outage': True,
+            'blackhole_seconds': 1200, 'timeout_seconds': 1500}))
+        for mode in ('success', 'cleanup-only', 'incomplete-resource', 'short-outage'):
+            def scenario(_args, report):
+                report['cleanupFailed'] = False
+                if mode == 'cleanup-only':
+                    report['checks'].update(dict.fromkeys(CLEANUP, True))
+                    return
+                report.update(self.extended_report())
+                if mode == 'incomplete-resource': report['resources']['complete'] = False
+                elif mode == 'short-outage': report['blackholeSecondsObserved'] = 65
+            output = io.StringIO()
+            with self.subTest(mode=mode), patch.object(MODULE, 'arguments', return_value=args), \
+                    patch.object(MODULE, 'run', side_effect=scenario), patch.object(MODULE.signal, 'getsignal'), \
+                    patch.object(MODULE.signal, 'signal'), redirect_stdout(output), redirect_stderr(output):
+                code = MODULE.main([])
+            report = json.loads(args.report.read_text(encoding='utf-8'))
+            self.assertEqual(0 if mode == 'success' else 1, code)
+            self.assertEqual('PASS' if mode == 'success' else 'FAIL', report['result'])
+            args.report.unlink()
 
     def test_cli_missing_paths_and_nonfiles_are_rejected_without_opening_ports(self):
         for name, value in (('war', self.workspace / 'missing.war'), ('java', self.workspace),
