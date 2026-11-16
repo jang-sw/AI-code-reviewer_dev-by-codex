@@ -53,7 +53,7 @@
 - [x] V12→V15 저장 업무·요청 보존, 호출 제한 초기 상태와14테이블 백업/복원·원본 보존; V12 새 DB 복귀 재검증 ([기록](UPGRADE-VALIDATION.md))
 - [x] V11→V12 데이터 보존, 독립 PG 연결의 동시 접수/이전 토큰/늦은 결과/DB 실패 원자성·조회 경계18건, 실제 WAR 강제 종료 후 요청·진척·이슈 재개 ([범위](QUEUE-VALIDATION.md))
 - [x] 로컬 격리 PostgreSQL 중지·재시작, 같은 WAR에서 동일 요청 복구·저장 결과 재사용·이슈 중복 방지·진행 카드·생존/준비 probe 회복 ([범위](DB-RECOVERY-VALIDATION.md)); 장기 단절·운영 복구 시간 보장은 별개
-- [x] 살아 있는PG의 앱 연결만기본65초와명시1200초양방향차단, 실제JDBC/Hikari실패·원요청/담당자/저장A보존·같은WAR새claim재개/B만재시도·이슈중복방지·생존/준비·public14/소유자원정리. 20분시험은121개자원표본/간격상한·소유5포트범위를별도확인 ([범위](DB-RECOVERY-VALIDATION.md)); kernel packet loss·몇시간단절/운영SLA·실제모델부하는별도
+- [x] 살아 있는PG의 앱 연결만기본65초·명시1200초와별도3600초양방향차단, 원요청/담당자/저장A보존·같은WAR새claim재개/B만재시도·이슈중복방지·생존/준비·public14/소유자원정리. 1시간시험은단조실측3600.037초·359자원표본/gap10.182초·소유Native5포트범위이며UTC메타간격차이는원인미확인으로구분 ([범위](DB-RECOVERY-VALIDATION.md)); kernel packet loss·몇시간/지속운영SLA·UTC정밀동기화·실제모델부하는별도
 - [x] 실제COMMIT 후호출자오류의claim/커밋별저장/최종성공3회귀와각각별도wire COMMIT응답유실시험. claim은사전Git/AI0·PREPARING0영속화후원요청attempt2/새claim복구·한번씩검토, 커밋저장은기존행/AI재사용, 최종완료는성공/attempt1/커서/감사와heal후12초행보존·소유자원/public14정리 ([범위](DB-RECOVERY-VALIDATION.md)); 운영TLS/장기SLA·외부과금정확히한번은별도
 - [x] V10 기존 리뷰/이슈 보존 migration, 수동 확인 저장·처리·다음 커밋 진행의 실제 PostgreSQL/HTTP 검증
 - [x] 실제 Tomcat HTTP/JSP 로그인·CSRF·소유권·비동기 수동 리뷰 저장

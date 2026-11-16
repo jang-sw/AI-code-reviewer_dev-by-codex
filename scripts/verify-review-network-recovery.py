@@ -39,6 +39,7 @@ WORKSPACE = Path(__file__).absolute().parent.parent
 RESOURCE_INTERVAL_SECONDS = 10
 MAX_RESOURCE_GAP_SECONDS = 20
 MAX_RESOURCE_SAMPLES = 160
+MAX_SOAK_RESOURCE_SAMPLES = 420
 EXTENDED_BEHAVIOR = ('liveDatabaseStayedAvailable', 'unchangedRequestClaimAndSavedA',
     'noCommitBStoredDuringFault', 'workerFailedBeforeHealing', 'disconnectedReadiness503Liveness200StatusOnly',
     'sameLiveWarRecovered', 'requestActorAndReceptionPreserved', 'replacementClaimIssued',
@@ -46,11 +47,17 @@ EXTENDED_BEHAVIOR = ('liveDatabaseStayedAvailable', 'unchangedRequestClaimAndSav
     'readinessReturnedTo200', 'databaseProcessUnchanged')
 
 
+def outage_profile(soak_outage=False):
+    require(type(soak_outage) is bool, 'The explicit outage observation mode must be boolean')
+    return (1800, 3600, MAX_SOAK_RESOURCE_SAMPLES, 4200) if soak_outage else (600, 1200, MAX_RESOURCE_SAMPLES, 1800)
+
+
 class OutageResourceMonitor:
     """Observe the owned process/schema baseline and explicit long fault window."""
-    def __init__(self, war, database, schema, proxy):
+    def __init__(self, war, database, schema, proxy, soak_outage=False):
         require(sys.platform.startswith('linux') and HELPERS.SCHEMA_PATTERN.fullmatch(schema) is not None,
                 'Extended outage resource observation requires Linux and an owned schema')
+        self.minimum_seconds, self.maximum_seconds, self.maximum_samples, _ = outage_profile(soak_outage)
         self.war, self.database, self.schema, self.proxy = war, database, schema, proxy
         # Reuse the owned-Popen reader, without the two-node schedule monitor's scope.
         self.reader = module('outage_process_resource_helpers', 'verify-review-schedule.py').process_sample
@@ -58,7 +65,7 @@ class OutageResourceMonitor:
         require(type(self.ticks) is int and self.ticks > 0, 'Linux process clock units are unavailable')
         self.started, self.first, self.last, self.identity, self.cpu = time.monotonic(), None, None, None, None
         self.evidence = {'enabled': True, 'complete': False, 'sampleIntervalSeconds': RESOURCE_INTERVAL_SECONDS,
-            'maximumAllowedGapSeconds': MAX_RESOURCE_GAP_SECONDS, 'samples': 0,
+            'maximumAllowedGapSeconds': MAX_RESOURCE_GAP_SECONDS, 'maximumSamples': self.maximum_samples, 'samples': 0,
             'firstSampleElapsedSeconds': None, 'lastSampleElapsedSeconds': None, 'observedSeconds': 0,
             'maximumObservedGapSeconds': 0, 'heapLimitMiBPerWar': 384,
             'process': {'peakRssBytes': 0, 'peakHwmBytes': 0, 'peakThreads': 0},
@@ -74,7 +81,7 @@ class OutageResourceMonitor:
         require(self.last is None or now >= self.last, 'The outage resource observation clock regressed')
         if not force and self.last is not None and now - self.last < RESOURCE_INTERVAL_SECONDS:
             return
-        require(self.evidence['samples'] < MAX_RESOURCE_SAMPLES, 'The outage resource observation budget was exceeded')
+        require(self.evidence['samples'] < self.maximum_samples, 'The outage resource observation budget was exceeded')
         try:
             current = self.reader(self.war.process, self.ticks)
         except Exception:
@@ -116,7 +123,7 @@ class OutageResourceMonitor:
 
     def finish(self, minimum_seconds):
         self.sample(force=True)
-        require(type(minimum_seconds) is int and 600 <= minimum_seconds <= 1200
+        require(type(minimum_seconds) is int and self.minimum_seconds <= minimum_seconds <= self.maximum_seconds
                 and self.first is not None and self.last - self.first >= minimum_seconds
                 and self.evidence['samples'] >= minimum_seconds // MAX_RESOURCE_GAP_SECONDS,
                 'The extended outage resource observation is incomplete')
@@ -124,6 +131,13 @@ class OutageResourceMonitor:
 
 
 def assert_extended_evidence(args, report):
+    soak_outage = getattr(args, 'soak_outage', False)
+    minimum_seconds, maximum_seconds, maximum_samples, maximum_timeout = outage_profile(soak_outage)
+    require(type(args.blackhole_seconds) is int and minimum_seconds <= args.blackhole_seconds <= maximum_seconds
+            and type(args.timeout_seconds) is int and args.blackhole_seconds + 120 <= args.timeout_seconds <= maximum_timeout
+            and report.get('soakOutage', False) is soak_outage
+            and report.get('outageMode', None if soak_outage else 'extended') == ('soak' if soak_outage else 'extended'),
+            'Explicit outage mode, duration or recovery budget differs from its evidence')
     resources = report.get('resources', {})
     require(isinstance(resources, dict) and isinstance(report.get('checks'), dict),
             'Extended outage resource or behavior evidence is missing')
@@ -142,7 +156,9 @@ def assert_extended_evidence(args, report):
             and resources.get('sampleIntervalSeconds') == RESOURCE_INTERVAL_SECONDS
             and resources.get('maximumAllowedGapSeconds') == MAX_RESOURCE_GAP_SECONDS
             and resources.get('heapLimitMiBPerWar') == 384
-            and type(resources.get('samples')) is int and args.blackhole_seconds // MAX_RESOURCE_GAP_SECONDS <= resources['samples'] <= MAX_RESOURCE_SAMPLES
+            and type(resources.get('maximumSamples', None if soak_outage else MAX_RESOURCE_SAMPLES)) is int
+            and resources.get('maximumSamples', MAX_RESOURCE_SAMPLES) == maximum_samples
+            and type(resources.get('samples')) is int and args.blackhole_seconds // MAX_RESOURCE_GAP_SECONDS <= resources['samples'] <= maximum_samples
             and type(resources.get('observedSeconds')) in (int, float) and resources['observedSeconds'] >= args.blackhole_seconds
             and all(type(resources.get(key)) in (int, float) for key in ('firstSampleElapsedSeconds', 'lastSampleElapsedSeconds'))
             and 0 <= resources['firstSampleElapsedSeconds'] <= resources['lastSampleElapsedSeconds'] < float('inf')
@@ -223,7 +239,8 @@ def exercise(war, database, schema, fixture, fixture_url, proxy, args, report, d
     require(owned_sessions(database, schema) > 0, 'The owned WAR sessions could not be identified')
     probe(war.base, 'readiness', 200, 'UP')
     identity = server_identity(database)
-    monitor = OutageResourceMonitor(war, database, schema, proxy) if getattr(args, 'extended_outage', False) else None
+    monitor = OutageResourceMonitor(war, database, schema, proxy, soak_outage=getattr(args, 'soak_outage', False)) \
+        if getattr(args, 'extended_outage', False) else None
     if monitor is not None:
         report['resources'] = monitor.evidence
         monitor.sample(force=True)
@@ -321,17 +338,25 @@ def arguments(argv=None):
     parser.add_argument('--blackhole-seconds', type=int, default=65)
     parser.add_argument('--timeout-seconds', type=int, default=300)
     parser.add_argument('--startup-timeout-seconds', type=int, default=45)
-    parser.add_argument('--extended-outage', action='store_true',
-                        help='Explicit Linux600..1200-second fault with bounded owned resource observation')
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument('--extended-outage', action='store_true',
+                       help='Explicit Linux 600..1200-second fault with at most 160 owned resource samples')
+    modes.add_argument('--soak-outage', action='store_true',
+                       help='Explicit Linux 1800..3600-second fault with at most 420 owned resource samples')
     args = parser.parse_args(argv)
     for name in ('war', 'java', 'psql'):
         # Preserve a configured executable symlink: Debian psql dispatches by argv[0].
         value = LINUX.checked_path(getattr(args, name)) if name == 'war' else getattr(args, name).absolute()
         require(value.is_file(), 'An explicitly configured WAR or executable is missing')
         setattr(args, name, value)
-    bounded = (600 <= args.blackhole_seconds <= 1200 and args.blackhole_seconds + 120 <= args.timeout_seconds <= 1800
-               and sys.platform.startswith('linux')) if args.extended_outage else (
-               45 <= args.blackhole_seconds <= 180 and args.blackhole_seconds + 90 <= args.timeout_seconds <= 600)
+    args.extended_outage = args.extended_outage or args.soak_outage
+    if args.extended_outage:
+        minimum_seconds, maximum_seconds, _, maximum_timeout = outage_profile(args.soak_outage)
+        bounded = (minimum_seconds <= args.blackhole_seconds <= maximum_seconds
+                   and args.blackhole_seconds + 120 <= args.timeout_seconds <= maximum_timeout
+                   and sys.platform.startswith('linux'))
+    else:
+        bounded = 45 <= args.blackhole_seconds <= 180 and args.blackhole_seconds + 90 <= args.timeout_seconds <= 600
     require(args.war.suffix.lower() == '.war' and 1024 <= args.port <= 65535 and bounded
             and 15 <= args.startup_timeout_seconds <= 120, 'Invalid bounded connection-fault drill arguments')
     args.report = LINUX.absolute_path(args.report)
@@ -453,6 +478,11 @@ def main(argv=None):
     try:
         args = arguments(argv)
         report['extendedOutage'] = getattr(args, 'extended_outage', False)
+        report['soakOutage'] = getattr(args, 'soak_outage', False)
+        require(type(report['extendedOutage']) is bool and type(report['soakOutage']) is bool
+                and (not report['soakOutage'] or report['extendedOutage']),
+                'The explicit outage flags are inconsistent or not boolean')
+        report['outageMode'] = 'soak' if report['soakOutage'] else 'extended' if report['extendedOutage'] else 'default'
         report['blackholeSecondsRequested'] = args.blackhole_seconds
         previous = signal.getsignal(signal.SIGTERM)
         signal.signal(signal.SIGTERM, cancel)

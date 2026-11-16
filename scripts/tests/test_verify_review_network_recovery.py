@@ -124,7 +124,7 @@ class NetworkRecoveryDrillTest(unittest.TestCase):
         port.assert_not_called()
 
     @contextmanager
-    def resource_fixture(self):
+    def resource_fixture(self, soak_outage=False):
         clock = [100.0]
         war = types.SimpleNamespace(process=types.SimpleNamespace(pid=987654321))
         reader = Mock(return_value={'identity': (987654321, 456789123), 'rssBytes': 4096,
@@ -135,7 +135,7 @@ class NetworkRecoveryDrillTest(unittest.TestCase):
                 patch.object(MODULE, 'module', return_value=types.SimpleNamespace(process_sample=reader)) as loader, \
                 patch.object(MODULE.time, 'monotonic', side_effect=lambda: clock[0]), \
                 patch.object(MODULE, 'owned_sessions', return_value=0) as sessions:
-            monitor = MODULE.OutageResourceMonitor(war, Mock(), SCHEMA, proxy)
+            monitor = MODULE.OutageResourceMonitor(war, Mock(), SCHEMA, proxy, soak_outage=soak_outage)
             yield types.SimpleNamespace(clock=clock, war=war, reader=reader, proxy=proxy,
                 loader=loader, sessions=sessions, monitor=monitor)
 
@@ -291,6 +291,192 @@ class NetworkRecoveryDrillTest(unittest.TestCase):
             report = json.loads(args.report.read_text(encoding='utf-8'))
             self.assertEqual(0 if mode == 'success' else 1, code)
             self.assertEqual('PASS' if mode == 'success' else 'FAIL', report['result'])
+            args.report.unlink()
+
+    def test_soak_cli_requires_explicit_linux_profile_and_bounded_time_before_port_checks(self):
+        for duration, budget in ((1800, 1920), (3600, 3720), (3600, 4200)):
+            with self.subTest(duration=duration, budget=budget), patch.object(MODULE.sys, 'platform', 'linux'), \
+                    patch.object(MODULE.LINUX, 'unused_port') as port:
+                args = MODULE.arguments(self.argv(blackhole_seconds=duration, timeout_seconds=budget) + ['--soak-outage'])
+            self.assertTrue(args.soak_outage)
+            self.assertTrue(args.extended_outage)
+            self.assertEqual(duration, args.blackhole_seconds)
+            port.assert_called_once_with(self.args.port)
+        for duration, budget, platform in ((1799, 2100, 'linux'), (3601, 4000, 'linux'),
+                (1800, 1919, 'linux'), (3600, 4201, 'linux'), (3600, 3900, 'win32'),
+                (1200, 1500, 'linux'), (65, 300, 'linux')):
+            with self.subTest(duration=duration, budget=budget, platform=platform), \
+                    patch.object(MODULE.sys, 'platform', platform), patch.object(MODULE.LINUX, 'unused_port') as port, \
+                    self.assertRaises(MODULE.VerificationError):
+                MODULE.arguments(self.argv(blackhole_seconds=duration, timeout_seconds=budget) + ['--soak-outage'])
+            port.assert_not_called()
+        for options in ([], ['--extended-outage']):
+            with self.subTest(options=options), patch.object(MODULE.sys, 'platform', 'linux'), \
+                    patch.object(MODULE.LINUX, 'unused_port') as port, self.assertRaises(MODULE.VerificationError):
+                MODULE.arguments(self.argv(blackhole_seconds=3600, timeout_seconds=3900) + options)
+            port.assert_not_called()
+        with patch.object(MODULE.LINUX, 'unused_port') as port, redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            MODULE.arguments(self.argv(blackhole_seconds=3600, timeout_seconds=3900) + ['--extended-outage', '--soak-outage'])
+        port.assert_not_called()
+
+    def test_soak_cli_preserves_existing_evidence_before_opening_any_port(self):
+        self.args.report.write_text('retained prior soak evidence', encoding='utf-8')
+        with patch.object(MODULE.sys, 'platform', 'linux'), patch.object(MODULE.LINUX, 'unused_port') as port, \
+                self.assertRaises(MODULE.VerificationError):
+            MODULE.arguments(self.argv(blackhole_seconds=3600, timeout_seconds=3900) + ['--soak-outage'])
+        port.assert_not_called()
+        self.assertEqual('retained prior soak evidence', self.args.report.read_text(encoding='utf-8'))
+
+    def test_soak_monitor_covers_the_actual_hour_with_explicit_sample_budget(self):
+        with self.resource_fixture(soak_outage=True) as fixture:
+            for elapsed in range(0, 3601, 10):
+                fixture.clock[0] = 100 + elapsed
+                fixture.monitor.sample()
+            self.assertFalse(fixture.monitor.evidence['complete'])
+            fixture.monitor.finish(3600)
+            row = fixture.monitor.evidence
+            self.assertTrue(row['complete'])
+            self.assertEqual(3600, row['observedSeconds'])
+            self.assertEqual(420, row['maximumSamples'])
+            self.assertEqual(362, row['samples'])
+            self.assertEqual(10, row['sampleIntervalSeconds'])
+            self.assertEqual(20, row['maximumAllowedGapSeconds'])
+            self.assertEqual({'peakOwnedConnections': 0, 'lastOwnedConnections': 0}, row['database'])
+
+    def test_soak_monitor_rejects_profile_crossing_exhaustion_and_short_observation(self):
+        for minimum in (1200, 1799, 3601, True):
+            with self.subTest(minimum=minimum), self.resource_fixture(soak_outage=True) as fixture:
+                fixture.monitor.sample()
+                with self.assertRaises(MODULE.VerificationError):
+                    fixture.monitor.finish(minimum)
+                self.assertFalse(fixture.monitor.evidence['complete'])
+        with self.resource_fixture(soak_outage=True) as fixture:
+            fixture.monitor.sample()
+            fixture.clock[0] = 110
+            with self.assertRaises(MODULE.VerificationError):
+                fixture.monitor.finish(3600)
+            self.assertFalse(fixture.monitor.evidence['complete'])
+        with self.resource_fixture(soak_outage=True) as fixture:
+            fixture.monitor.evidence['samples'] = 420
+            with self.assertRaises(MODULE.VerificationError):
+                fixture.monitor.sample()
+            fixture.reader.assert_not_called()
+        with self.resource_fixture() as fixture:
+            self.assertEqual(160, fixture.monitor.evidence['maximumSamples'])
+            with self.assertRaises(MODULE.VerificationError):
+                fixture.monitor.finish(1800)
+
+    def test_soak_monitor_still_rejects_missing_process_identity_and_unsafe_proxy_state(self):
+        for mutation in ('identity', 'clock', 'cpu', 'proxy'):
+            with self.subTest(mutation=mutation), self.resource_fixture(soak_outage=True) as fixture:
+                fixture.monitor.sample()
+                fixture.clock[0] = 110
+                if mutation == 'identity': fixture.reader.return_value['identity'] = (987654321, 456789124)
+                elif mutation == 'clock': fixture.clock[0] = 99
+                elif mutation == 'cpu': fixture.reader.return_value['cpuSeconds'] = .5
+                else: fixture.proxy.metrics.return_value['peakActive'] = 33
+                with self.assertRaises(MODULE.VerificationError):
+                    fixture.monitor.sample()
+                self.assertEqual(1, fixture.monitor.evidence['samples'])
+                self.assertFalse(fixture.monitor.evidence['complete'])
+
+    def test_soak_monitor_rejects_nonboolean_profile_before_loading_process_reader(self):
+        for value in (1, 'true', None):
+            with self.subTest(value=value), patch.object(MODULE.sys, 'platform', 'linux'), \
+                    patch.object(MODULE, 'module') as loader, self.assertRaises(MODULE.VerificationError):
+                MODULE.OutageResourceMonitor(Mock(), Mock(), SCHEMA, Mock(), soak_outage=value)
+            loader.assert_not_called()
+
+    @staticmethod
+    def soak_report():
+        report = NetworkRecoveryDrillTest.extended_report()
+        report.update(soakOutage=True, outageMode='soak', blackholeSecondsRequested=3600,
+            blackholeSecondsObserved=3600.5, preservedStateObservations=720)
+        report['resources'].update(maximumSamples=420, samples=361, observedSeconds=3600.1,
+                                   lastSampleElapsedSeconds=3600.1)
+        return report
+
+    def test_soak_evidence_requires_hour_duration_explicit_profile_complete_resources_and_all_behavior(self):
+        args = types.SimpleNamespace(blackhole_seconds=3600, timeout_seconds=3900, soak_outage=True, extended_outage=True)
+        MODULE.assert_extended_evidence(args, self.soak_report())
+        mutations = [('root', 'soakOutage', None), ('root', 'soakOutage', 1), ('root', 'soakOutage', False),
+            ('root', 'outageMode', None), ('root', 'outageMode', 'extended'),
+            ('root', 'blackholeSecondsObserved', 3599.9), ('root', 'preservedStateObservations', 359),
+            ('root', 'attempts', 3), ('root', 'warStarts', 2),
+            ('resources', 'maximumSamples', 160), ('resources', 'maximumSamples', None),
+            ('resources', 'maximumSamples', True), ('resources', 'samples', 421), ('resources', 'samples', 179),
+            ('resources', 'observedSeconds', 3599.9), ('resources', 'complete', False),
+            ('resources', 'maximumObservedGapSeconds', 20.001), ('resources', 'sampleIntervalSeconds', 30),
+            ('resources', 'lastSampleElapsedSeconds', 3900), ('process', 'cpuSecondsAtLastSample', .5),
+            ('database', 'lastOwnedConnections', -1), ('proxy', 'peakActiveConnections', 33)]
+        for section, key, value in mutations:
+            report = self.soak_report()
+            target = report if section == 'root' else report['resources'] if section == 'resources' else report['resources'][section]
+            target[key] = value
+            with self.subTest(section=section, key=key), self.assertRaises(MODULE.VerificationError):
+                MODULE.assert_extended_evidence(args, report)
+        for key in MODULE.EXTENDED_BEHAVIOR:
+            report = self.soak_report()
+            report['checks'][key] = False
+            with self.subTest(behavior=key), self.assertRaises(MODULE.VerificationError):
+                MODULE.assert_extended_evidence(args, report)
+
+    def test_evidence_cannot_select_soak_budget_without_matching_explicit_profile(self):
+        for values in ({'blackhole_seconds': 3600, 'timeout_seconds': 3900},
+                {'blackhole_seconds': 1200, 'timeout_seconds': 1500, 'soak_outage': True},
+                {'blackhole_seconds': 3600, 'timeout_seconds': 3719, 'soak_outage': True},
+                {'blackhole_seconds': 3600, 'timeout_seconds': 4201, 'soak_outage': True},
+                {'blackhole_seconds': 3600, 'timeout_seconds': 3900, 'soak_outage': 1}):
+            with self.subTest(values=values), self.assertRaises(MODULE.VerificationError):
+                MODULE.assert_extended_evidence(types.SimpleNamespace(**values), self.soak_report())
+        legacy_args = types.SimpleNamespace(blackhole_seconds=1200, timeout_seconds=1500)
+        MODULE.assert_extended_evidence(legacy_args, self.extended_report())
+        for key, value in (('soakOutage', True), ('soakOutage', 1), ('outageMode', 'soak')):
+            report = self.extended_report()
+            report[key] = value
+            with self.subTest(key=key), self.assertRaises(MODULE.VerificationError):
+                MODULE.assert_extended_evidence(legacy_args, report)
+        for value in (420, True, None):
+            report = self.extended_report()
+            report['resources']['maximumSamples'] = value
+            with self.subTest(maximumSamples=value), self.assertRaises(MODULE.VerificationError):
+                MODULE.assert_extended_evidence(legacy_args, report)
+
+    def test_soak_main_rejects_inconsistent_or_truthy_mode_flags_before_starting_the_drill(self):
+        for extended, soak in ((False, True), (True, 1), (1, False)):
+            args = types.SimpleNamespace(**(vars(self.args) | {'extended_outage': extended, 'soak_outage': soak,
+                'blackhole_seconds': 3600, 'timeout_seconds': 3900}))
+            with self.subTest(extended=extended, soak=soak), patch.object(MODULE, 'arguments', return_value=args), \
+                    patch.object(MODULE, 'run') as run, redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                self.assertEqual(1, MODULE.main([]))
+            run.assert_not_called()
+            self.assertEqual('FAIL', json.loads(args.report.read_text(encoding='utf-8'))['result'])
+            args.report.unlink()
+
+    def test_soak_main_does_not_accept_cleanup_only_short_or_incomplete_fault_evidence(self):
+        args = types.SimpleNamespace(**(vars(self.args) | {'extended_outage': True, 'soak_outage': True,
+            'blackhole_seconds': 3600, 'timeout_seconds': 3900}))
+        for mode in ('success', 'cleanup-only', 'short-outage', 'incomplete-resource', 'wrong-profile', 'missing-behavior'):
+            def scenario(_args, report):
+                report['cleanupFailed'] = False
+                if mode == 'cleanup-only':
+                    report['checks'].update(dict.fromkeys(CLEANUP, True))
+                    return
+                report.update(self.soak_report())
+                if mode == 'short-outage': report['blackholeSecondsObserved'] = 1200.5
+                elif mode == 'incomplete-resource': report['resources']['complete'] = False
+                elif mode == 'wrong-profile': report['outageMode'] = 'extended'
+                elif mode == 'missing-behavior': report['checks'][MODULE.EXTENDED_BEHAVIOR[0]] = False
+            output = io.StringIO()
+            with self.subTest(mode=mode), patch.object(MODULE, 'arguments', return_value=args), \
+                    patch.object(MODULE, 'run', side_effect=scenario), patch.object(MODULE.signal, 'getsignal'), \
+                    patch.object(MODULE.signal, 'signal'), redirect_stdout(output), redirect_stderr(output):
+                code = MODULE.main([])
+            report = json.loads(args.report.read_text(encoding='utf-8'))
+            self.assertEqual(0 if mode == 'success' else 1, code)
+            self.assertEqual('PASS' if mode == 'success' else 'FAIL', report['result'])
+            self.assertTrue(report['soakOutage'])
+            self.assertNotIn('synthetic-private-password', output.getvalue() + str(report))
             args.report.unlink()
 
     def test_cli_missing_paths_and_nonfiles_are_rejected_without_opening_ports(self):
