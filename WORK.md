@@ -4,8 +4,8 @@
 - 이번 회차: 2026-11-16 20:56 KST 시작, 최대22:56 KST까지 약2시간 범위로 진행한다.
 - 기록 기준: `main` / 시작 `e0fd0dfdb930a90d4c44d490504f4f08ab57c741`. 시작 작업 트리는 깨끗하고 로컬 origin/main과 같은 커밋이다. 기존 이력을 보존하며 직접 main 푸시/운영 배포 승인 없이 로컬 커밋만 진행한다.
 - 이번 완료 조건: 모델 선정·실제 모델 호출을 계속 보류하고 같은 앱/WAR로 명시적1시간 DB 연결 장애와 두 서버의 더 긴 예약 반복을 검증한다. 기존 기본/20분 시험 예산을 유지하고 별도 opt-in·표본/시간/취소·소유 자원 정리 계약을 먼저 확인한다. 합성 조건·유한 관측과 운영 SLA/실제 공급자 검증을 구분한다.
-- 이번 단계: 동결한4개 검증 스크립트의 집중58건/양OS Python456건과 실제1시간 DB 통신 차단·복구/소유 정리를 통과했다. 20회 예약 반복을 실행 중이다. 별도 취소 관측 도구 첫 실행은 OID 직렬화 타입 오류로 장애 관측 전 실패했고 정상 정리/원본 보존 뒤 별도 재검증을 준비 중이다. 앱235/같은WAR·구조·의존성과 모델 보류를 유지한다. 최종 정리/릴리스 완료는 아니다.
-- 인계 기준: 이전 `.local/session28-handoff-source.{tar,json}`/양OS `session28-handoff-sync.json`의321파일/source235/scripts48 바이트·권한과 양수mtime1700000000을 새 실행 전 대조한다. 이번 입력·최종 인계는 별도 session29 파일에 남기고 이전 실패/후보/시험 근거는 보존한다.
+- 이번 단계: 집중58건/양OS Python456건·실제1시간 장애/복구·20회 예약/총65성공과 취소 재검증을 통과했다. 1시간 단위는 `cc5c68e`로 로컬 커밋했다. 최초 취소 FAIL과 사전 점검 FAIL은 보존했고 Native/Windows 최종 조회도 통과했다. 앱235/같은WAR·구조·의존성과 모델 보류를 유지한다. 릴리스 완료는 아니다.
+- 인계 기준: 이번 실행 입력은 `.local/session29-runtime-source.{tar,json}`/양OS `session29-runtime-sync.json`, 최종 인계는 `.local/session29-handoff-source.{tar,json}`/양OS `session29-handoff-sync.json`이다. 재개 시 최종 manifest·sync PASS와321파일/source235/scripts48 바이트·권한/양수mtime1700000000을 실제 파일에 대조한다. 이전 실패/후보/시험 근거는 보존한다.
 - 확정 요구사항: `docs/REQUIREMENTS.md`. 내부 이슈함 우선, 최초 전체 이력, Java25/Spring/Maven/JSP/PostgreSQL 유지.
 - 재개 시 이 문서와 실제 Git 상태를 대조하고 아래 다음 작업부터 진행한다. 모든 릴리스 항목 검증 전 완료라고 보고하지 않는다.
 
@@ -57,14 +57,17 @@
 
 ### 회차29: 명시적1시간 장애와 확장 예약 반복
 
-- 기본65초/명시20분 장애·기본3~10회 예약과 기존 예산을 유지하면서 Linux 전용 추가 opt-in을 준비한다. 목표는3600초 차단·상태/자원 관측과 두 서버/세 합성 프로젝트20회 성공 후 중단·각1회 따라잡기다. 실제 시간과 정리 여유를 포함해 회차2시간 안에서 순차 실행하며 실제 모델/유료 API·운영 배포는 수행하지 않는다.
+- 기본65초/명시20분 장애·기본3~10회 예약과 기존 예산을 유지하면서 Linux 전용 추가 opt-in을 구현했다. 3600초 차단과 두 서버/세 합성 프로젝트20회 이상 성공 후 중단·각1회 따라잡기를 실제로 검증했다. 실제 모델/유료 API·운영 배포는0이며 새 Java/OSV 조회나 후보 재포장은 수행하지 않았다.
 - 새321파일/앱235/scripts48 runtime SHA `3b9c1d6895b497d2ee246242f19100f0f86a649eae19de3f72a10c074e43bac4`를 양OS 동기화했다. 앱235/같은WAR41da…·고정 양수mtime1700000000은 유지한다. WSL kernel6.18.58.1/Java25.0.4.1/PG17.11·메모리7,962,488KiB에서 새 환경baseline SHA `7908ede9fe134212a591f46d1b871e61cc0c8fdcdae72f166f39a4355d2a7024`와 기존3서비스inactive/disabled·Native5포트111·Windows5포트리스너0을 확인했다. 기존8080/사용자서비스를 제어하지 않았다.
 - 집중 network34/schedule24=58건과 전체Python456건이 실패/오류0이다. Windows451통과/5환경skip·76.515초/log SHA `0991ed78e0f9025943355b55ba555d97cc75361f66b63b605b70fe7284eb5794`, Linux446통과/10환경skip·19.180초/log SHA `ada0107f9e2a1a4e590a4f0cd3dd9610bc90ea562c105eda81a6482927176023`를 원본 `.local/session29-python-{windows,linux}.{json,log}`에 보존했고 Linux 원본은 양OS 동일하다. 전후 앱235/스크립트48 해시를 대조했다. Java/과거UI·현재OSV를 새 실행으로 세지 않는다.
 - `.local/session29-run.py` SHA `f619af0d3b5f7b82ea575d5f5d4c58975681b48e86c99b08fae3b98632c6173e`를 독립 전체 읽기/AST·추출취소handler 모의2건으로 검토했다. 직접 시작한 child의 pidfd·시작세대를 live 기록하고 SIGTERM/SIGINT 협조/정리 중 중복 신호 방어·child60초/부모최대80초 정리 예산을 분리한다. 끝나지 않은 child가 있으면 부모PG 제어를 보류하고 실패한다. 실제1시간 시험은12:09 UTC경 시작했고 결과는 아래 원본으로 기록한다. 회차28 이하 수치는 이전 근거이며 새 실행으로 세지 않는다.
 - 별도 읽기점검 첫 도구는 SQL의 시작 epoch 정수 반올림과 PID 파일 epoch의1초 차이로 실패했다. 원helper `00a83d…`/도구 `94829d`와 양OS `session29-progress-first-failure.json`을 보존했다. 본 시험/동결코드는 수정하지 않았다. 점검에 PID 파일의 정확한PID/epoch 대조를 추가하고 SQL epoch는 기존 부모와 같은±1초·PID 일치를 요구했다. 새점검 `da3f1b…`는288.631초 시점에 원요청RUNNING/attempt1·저장A1/이슈1·커서null/진척REVIEWING을 읽기확인했으며 최종 복구/정리 성공을 대신하지 않는다.
 - 취소 시험은 child의FAIL/종료130·불완전관측을 유지한 채 소유 자원 정리를 검증하는 별도 결과이며 정상 복구 성공과 섞지 않는다. ignored helper를 동결4스크립트/본 실행기와 분리하고 첫 실패와 후속 재검증 원본도 구분한다.
 - 실제1시간 원본 `.local/session29-outage-verification.json` SHA `07eb67dcee2250e5d837d57f42d96139f8359b4e2370257f1e6c3e1e656b8ece`/양OS child SHA `1a5c85cbd61496ce41cc09015518cdb450331bfc59e1ecaf73cd90cb8b6ce6d8`는PASS다. 단조 경과 parent3650.557/child3619.254초·실제차단3600.037초/worker30.178초·714상태대조·359표본/span3600.035/gap10.182를 확인했다. 관측RSS/HWM522,588,160B/스레드68/CPU32.64→42.33초·소유PG3→0·관측proxy3→1과최종active0/누적accepted370/peak4/error0/폐기30,828B를 구분한다. A상세/diff/합성AI각1·B각2/treeA/B각2, 원요청/담당자·새claim/attempt2/이슈2/커서B/JSP·19필수항목/public14/소유자원/PGlock/Native5포트전후111을 통과했다. 원본UTC메타간격3548.593초와단조경과는약101.964초다르며원인미확인이다. 판정은단조실측이며UTC정밀동기화나운영SLA를검증한것은아니다. 도구의SQL/OS시각수정0이다.
-- 별도 `.local/session29-cancel-verification.json` SHA `d7102503671e597bfdf5717b9579f3812a2bde2622facee844d628fef86b7f7f`는19.954초 FAIL이다. 장애사전조건을얻기전새observer가실패해정리용SIGTERM1회로childFAIL/KeyboardInterrupt/130·6정리/public14·부모PG/5포트111을확인했으나취소합격으로세지않는다. 읽기진단 `session29-cancel-oid-diagnosis.json`에서PG의OID JSON은문자열,명시bigint는숫자임을확인했다. 앱/동결4scripts/f619는수정하지않고원helper670…/첫원본을보존한별도cancel2를준비한다. 현재20회예약시험은13:15 UTC경시작했고그종료뒤재검증한다.
+- 별도 `.local/session29-cancel-verification.json` SHA `d7102503671e597bfdf5717b9579f3812a2bde2622facee844d628fef86b7f7f`는19.954초 FAIL이다. 장애사전조건 전 observer의OID JSON 타입 오류로 정리용SIGTERM1회/child130·6정리/public14·PG/5포트111을 확인했으나 취소 합격으로 세지 않는다. 명시bigint로 직렬화만 교정했다. 이후 a9e… helper의 preflight도 첫 live의 양OS recordedUtc 미세 차이로 FAIL/PG시작0였고 `session29-cancel2-preflight-failure.json`에 보존했다. 원 live는 Native SHA `a91a234c14ffc8094bb1dba2badc33a09c0c6c5b11700392e512eaa634c71324`/Windows `78892e60451311a2bccd048c037411ed0de3db3259ffd5e5542867a2cd644b9b` 각각을 유지했다. 차이키recordedUtc만 검증하고 새 live는 한 번 직렬화한다. 원본 덮어쓰기/앱·동결4scripts·f619 수정은0이다.
+- 실제20회 원본 `.local/session29-schedule-verification.json` SHA `1dec958fb3d718fe4af0a940dc6ea5293d51054b3579a04613c590e3a4fad0ac`/양OS child `3cebe18dc22484bc0594bea8ded73ccdacdda40217cac3cfd0172498854f3bb4`는PASS다. parent1434.812/child1413.074초, slow24.848초보류·중단전20/21/21회→양서버168.819초중단후21/22/22회/총65성공·저장커밋/이슈각3·프로젝트별상세/diff/합성AI각1회를 확인했다. 140표본/기동A3·B2세대·최고RSS/HWM A491,356,160B/B456,228,864B·소유DB연결최대6/schema991,232B다. 12필수항목/public14/PGlock/Native5포트전후111과동일앱/스크립트/WAR를확인했다. 예약관측에는maxgap20조건이없다. UTC간격1397.364초와단조경과차37.448초는원인미확인으로남긴다.
+- 수정된 `.local/session29-cancel2.py` SHA `d40b1ab2581540f5133525e80d1b826fe551bee19764baf3835ab32f2c11f1af`의 실제 취소 재검증은86.854초 PASS다. 원본 `session29-cancel2-verification.json` SHA `5ad74c8a08d5bc64eee52276234c381ea761db8dc0c88ea84e092e1a10aa13f7`/child `9eefb1550f90b6c639149c0c4cafa2b9865590af68317d7e4f1b9aafd1e4fef9`를 보존했다.65.486초에고정worker실패·준비503/생존200·저장A1/담당자/원요청/claim을2회대조한뒤정확pidfd로SIGTERM1회,child64.931초/FAIL·KeyboardInterrupt·130/관측6표본complete=false를유지했다. 6정리/public14/부모PG·5포트111/부모정리0.326초와첫FAIL원본각해시보존을확인했다.
+- 최종 Native 조회는 `session29-closure-native.json` SHA `1ec04ad9324bb9e5965cb701bef182dea147e3afda3a0c832d63ebd4d6451baf`로PASS다. 완료cancel2 digest를필수입력으로14근거·기록자식3세대/PGlock·소유5포트/기존3서비스·앱235/scripts48/WAR·옛후보를읽기대조했다. Windows조회 SHA `c1e90b9f158621b00b4c70e7be7a064f50d580011f7dce7223219c4c35676f25`도PASS이며선택5포트리스너전후0/접속성공0·근거의Windows사본을대조했다.10035는거절/시간초과구분없이리스너관측과함께사용한다. NativeFS재조회/전체host프로세스부재나UTC순서정밀도는주장하지않고서비스/프로세스제어·새stop요청0이다.
 
 ### 회차28: claim 응답 유실과 현재PC의 장애·반복 검증
 
@@ -434,7 +437,7 @@
 
 ## 다음 작업
 
-claim wire응답유실·기존20분장애/10회예약/이전후보에이어새명시1시간장애와양OS회귀를통과했다. 현재20회예약을실행중이며첫취소관측helper의OID형오류를별도수정/재검증한뒤정리한다. 몇시간/24시간지속운영·실제신규커밋부하나quota/SLA는이유한시험으로완료처리하지않는다. A02/A03 비밀번호변경/관리자초기화의실제수동인수(현재도구의자격정보변경은사용자직접인계), 실제외부연결·운영서버·원격CI·배포승인도남아있다. 배포직전새inventory/기대WAR해시와실제보안조회를다시확인하며모델선정은계속보류한다.
+1시간장애/복구·20회예약/중단뒤각1회따라잡기와실제취소재검증을통과했다. 다음우선순위는관측된UTC/단조경과차이원인확인과실제신규커밋유입부하·대형/비공개Git/API할당량이다. 몇시간/24시간지속운영·운영quota/SLA는이유한합성시험으로완료처리하지않는다. 전체UI인수·운영Linux보안/백업보존·원격CI/배포승인도남아있다. 배포직전새inventory/기대WAR해시와실제보안조회를다시확인하며모델선정은계속보류한다.
 
 0. AI 모델 선정/품질 평가는 사용자 요청대로 보류한다. A01/P01/P02/P03/R01/R03/I02와 C01 상단메뉴/오류/대표본문·홈역할범위의 명시범위는 통과했다. A02/A03 비밀번호 변경·관리자 초기화는HTTP13사례·기존PG/읽기전용근거와 실제수동인수를구분한다. C01에막연히남긴본문역순/역할조건은이번두대표묶음과기존행으로대조했으며 관련변경이나구체누락이없으면반복하지않는다. 이전30분만료·통과한이슈/계정/매핑/감사/운영/서버상태도동일하다. claim wire ACK차단은통과했고몇시간단절/운영장기부하는미검증이며이번20분시험과구분한다. 재개시배포판·서비스·현재소스/같은WAR를확인한다. native소스동기화는검증한바이트/mode와고정양수mtime을유지해야하며mtime0으로되돌려Maven리소스복사를생략하지않는다(`.local/session28-sync.py`). 일반403/불명통신실패는기존실패처리한다.
 1. 공개 GitHub/GitLab 바이너리·빈 파일 실서비스5건은 통과했다. 실제 대형/설치형/비공개 응답으로 호환 범위를 확대하며 전체 변경 경로를 증명할 수 없는 응답이나 API 장애는 계속 실패 처리한다.

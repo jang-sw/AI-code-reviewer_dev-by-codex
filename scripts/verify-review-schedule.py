@@ -43,7 +43,102 @@ REQUEST_PATTERN = re.compile(r'source=SCHEDULED; request=([a-f0-9]{8}-(?:[a-f0-9
 CHECKS = ('ownedWarsStopped', 'ownedSchemaRemoved', 'ownedWorkRemoved', 'originalTestTablesPreserved')
 RESOURCE_INTERVAL_SECONDS = 10
 MAX_RESOURCE_SAMPLES = 160
+MAX_SOAK_RESOURCE_SAMPLES = 192
 HEAP_LIMIT_MIB = 384
+SOAK_BEHAVIOR = ('scheduledSlowRequestPreservedAcrossDueAdvance', 'bothFastProjectsCompleteWhileSlowHeld',
+    'minimumRealCyclesPerProjectCompleted', 'twoMissedRealDueTimesCatchUpOncePerProject',
+    'scheduledAuditIdsUniqueAndOneRunPerRequestInterval', 'firstRunSavesOneThenUnchangedRunsSaveZero',
+    'exactlyThreeCommitsAndIssues', 'eachAiDetailDiffCalledOnce')
+
+
+def require_soak_arguments(args, *, require_linux=True):
+    require(type(require_linux) is bool and getattr(args, 'soak_schedule', False) is True
+            and getattr(args, 'observe_resources', False) is True and (not require_linux or sys.platform.startswith('linux'))
+            and type(args.cycles) is int and 11 <= args.cycles <= 20
+            and type(args.timeout_seconds) is int and args.cycles * 60 + 240 <= args.timeout_seconds <= 1560,
+            'Explicit Linux soak scheduling requires resource observation and its bounded real-cycle budget')
+
+
+def assert_soak_evidence(args, report):
+    """Validate completed opt-in evidence without observing or controlling any resource."""
+    require_soak_arguments(args, require_linux=False)
+    finite = lambda value: type(value) in (int, float) and 0 <= value < float('inf')
+    require(report.get('soakSchedule') is True and report.get('scheduleMode') == 'soak'
+            and report.get('testCron') == CRON and report.get('sqlTimeAcceleration') is False
+            and type(report.get('perWarConcurrency')) is int and report['perWarConcurrency'] == 1
+            and type(report.get('minimumCyclesPerProjectBeforeOutage')) is int
+            and report['minimumCyclesPerProjectBeforeOutage'] == args.cycles
+            and report.get('externalServicesUsed') is False and report.get('paidAiUsed') is False
+            and report.get('cleanupFailed') is False and type(report.get('originalTableCount')) is int
+            and report['originalTableCount'] == 14 and isinstance(report.get('checks'), dict)
+            and all(value is True for value in report['checks'].values())
+            and all(report['checks'].get(key) is True for key in (*CHECKS, *SOAK_BEHAVIOR))
+            and finite(report.get('bothWarsOfflineSeconds')) and OFFLINE_SECONDS <= report['bothWarsOfflineSeconds'] < args.timeout_seconds,
+            'Soak scheduling mode, real outage, behavior or owned cleanup evidence is incomplete')
+    before, after, projects, counts = (report.get(key) for key in
+        ('successfulRunsBeforeOutage', 'successfulRunsAfterCatchUp', 'projects', 'requestCounts'))
+    names = {'slow', 'fast1', 'fast2'}
+    require(all(isinstance(value, dict) for value in (before, after, projects, counts))
+            and set(before) == set(after) == set(projects) == names
+            and all(type(before[name]) is int and args.cycles <= before[name] < MAX_HISTORY - 1
+                    and type(after[name]) is int and after[name] == before[name] + 1 for name in names),
+            'Soak scheduling did not prove its real cycles and exactly one catch-up per project')
+    for name in names:
+        row = projects[name]
+        require(isinstance(row, dict) and all(type(row.get(key)) is int for key in
+                ('scheduledRequests', 'successfulRuns', 'firstSavedCommits', 'subsequentSavedCommits'))
+                and row['scheduledRequests'] == row['successfulRuns'] == after[name]
+                and row['firstSavedCommits'] == 1 and row['subsequentSavedCommits'] == 0
+                and all(type(counts.get(name + '.' + operation)) is int and counts[name + '.' + operation] == 1
+                        for operation in ('ai', 'detail', 'diff')),
+                'Soak scheduling histories or single synthetic review work differ')
+    starts, resources = report.get('warStarts'), report.get('resources')
+    require(isinstance(starts, list) and len(starts) == 2
+            and all(type(value) is int and 2 <= value <= 4 for value in starts) and sum(starts) <= 8
+            and isinstance(resources, dict) and resources.get('enabled') is True and resources.get('complete') is True
+            and resources.get('soakSchedule') is True and resources.get('maximumSamples') == MAX_SOAK_RESOURCE_SAMPLES
+            and type(resources.get('maximumSamples')) is int and resources.get('sampleIntervalSeconds') == RESOURCE_INTERVAL_SECONDS
+            and resources.get('heapLimitMiBPerWar') == HEAP_LIMIT_MIB and type(resources.get('samples')) is int
+            and args.cycles * 3 <= resources['samples'] <= MAX_SOAK_RESOURCE_SAMPLES,
+            'Soak scheduling resource observation or process start budget is incomplete')
+    generations = resources.get('processGenerations')
+    expected = {(node, index) for node, count in zip(('node-a', 'node-b'), starts) for index in range(1, count + 1)}
+    require(isinstance(generations, list) and len(generations) == sum(starts), 'Soak process generations are incomplete')
+    observed = set()
+    for row in generations:
+        require(isinstance(row, dict) and row.get('node') in ('node-a', 'node-b') and type(row.get('generation')) is int,
+                'Invalid soak process generation identity')
+        observed.add((row['node'], row['generation']))
+        require(type(row.get('sampleCount')) is int and 1 <= row['sampleCount'] <= resources['samples']
+                and all(finite(row.get(key)) for key in ('firstSampleElapsedSeconds', 'lastSampleElapsedSeconds',
+                    'cpuSecondsAtFirstSample', 'cpuSecondsAtLastSample'))
+                and row['firstSampleElapsedSeconds'] <= row['lastSampleElapsedSeconds']
+                and row['cpuSecondsAtFirstSample'] <= row['cpuSecondsAtLastSample']
+                and all(type(row.get(key)) is int and row[key] > 0 for key in ('peakRssBytes', 'peakHwmBytes', 'peakThreads', 'lastRssBytes'))
+                and row['peakHwmBytes'] >= row['peakRssBytes'] >= row['lastRssBytes'],
+                'Invalid soak process resource observations')
+    require(observed == expected, 'A started soak process generation has no resource observation')
+    database = resources.get('database')
+    require(isinstance(database, dict) and type(database.get('sampleCount')) is int
+            and database['sampleCount'] == resources['samples']
+            and finite(database.get('firstSampleElapsedSeconds')) and finite(database.get('lastSampleElapsedSeconds'))
+            and database['lastSampleElapsedSeconds'] < args.timeout_seconds
+            and database['lastSampleElapsedSeconds'] - database['firstSampleElapsedSeconds'] >= (args.cycles - 2) * 60,
+            'Soak database observation does not span the required real-minute repetition')
+    keys = {'connections', 'nodeAConnections', 'nodeBConnections', 'active', 'idle', 'idleInTransaction', 'schemaBytes'}
+    for label in ('peaks', 'last'):
+        row = database.get(label)
+        require(isinstance(row, dict) and set(row) == keys and all(type(row[key]) is int and row[key] >= 0 for key in keys),
+                'Invalid soak database resource observations')
+    require(all(database['last'][key] <= database['peaks'][key] for key in keys)
+            and all(database['peaks'][key] > 0 for key in ('nodeAConnections', 'nodeBConnections', 'schemaBytes'))
+            and all(database['peaks']['connections'] >= database['peaks'][key] for key in ('nodeAConnections', 'nodeBConnections'))
+            and database['last']['nodeAConnections'] + database['last']['nodeBConnections'] == database['last']['connections']
+            and sum(database['last'][key] for key in ('active', 'idle', 'idleInTransaction')) <= database['last']['connections'],
+            'Inconsistent soak database connection observations')
+    require(all(database['firstSampleElapsedSeconds'] <= row['firstSampleElapsedSeconds']
+                <= row['lastSampleElapsedSeconds'] <= database['lastSampleElapsedSeconds'] for row in generations),
+            'Soak process observations lie outside the database observation window')
 
 
 def application_name(schema, node):
@@ -91,8 +186,11 @@ def process_sample(process, ticks_per_second):
 
 class ResourceMonitor:
     """Ten-second aggregate observations, not a heap-usage or memory-leak verdict."""
-    def __init__(self, enabled, wars, database, schema):
+    def __init__(self, enabled, wars, database, schema, soak_schedule=False):
         require(type(enabled) is bool, 'Resource observation opt-in must be explicit')
+        require(type(soak_schedule) is bool and (not soak_schedule or enabled), 'Soak resource observation opt-in must be explicit')
+        self.soak_schedule = soak_schedule
+        self.maximum_samples = MAX_SOAK_RESOURCE_SAMPLES if soak_schedule else MAX_RESOURCE_SAMPLES
         self.enabled, self.wars, self.database, self.schema = enabled, wars, database, schema
         self.started, self.last, self.samples, self.complete = time.monotonic(), None, 0, False
         self.generations, self.database_samples = {}, None
@@ -108,7 +206,7 @@ class ResourceMonitor:
         now = time.monotonic()
         if not force and self.last is not None and now - self.last < RESOURCE_INTERVAL_SECONDS:
             return
-        require(self.samples < MAX_RESOURCE_SAMPLES, 'The resource observation budget was exceeded')
+        require(self.samples < self.maximum_samples, 'The resource observation budget was exceeded')
         elapsed = round(max(0, now - self.started), 3)
         running_nodes = []
         for index, war in enumerate(self.wars):
@@ -170,6 +268,7 @@ class ResourceMonitor:
     def summary(self):
         return {'enabled': self.enabled, 'complete': self.complete, 'sampleIntervalSeconds': RESOURCE_INTERVAL_SECONDS,
             'heapLimitMiBPerWar': HEAP_LIMIT_MIB, 'samples': self.samples,
+            'soakSchedule': self.soak_schedule, 'maximumSamples': self.maximum_samples,
             'scope': 'Owned WAR RSS/HWM/threads and cumulative CPU since each process start; sample first/last times bound coverage. DB counts only owned application names and schema relation bytes. No heap-used, leak, host-capacity or production-duration conclusion.',
             'processGenerations': [{key: value for key, value in row.items() if key != 'identity'}
                                    for _, row in sorted(self.generations.items())],
@@ -466,6 +565,7 @@ def arguments(argv=None):
     parser.add_argument('--timeout-seconds', type=int, default=780)
     parser.add_argument('--startup-timeout-seconds', type=int, default=45)
     parser.add_argument('--observe-resources', action='store_true', help='Require bounded Linux procfs and isolated DB resource observations')
+    parser.add_argument('--soak-schedule', action='store_true', help='Explicit Linux11..20 real cycles with required resource observation and at most192 samples')
     args = parser.parse_args(argv)
     for name in ('war', 'java', 'psql'):
         value = getattr(args, name).resolve(strict=True) if name == 'war' else getattr(args, name).absolute()
@@ -473,7 +573,9 @@ def arguments(argv=None):
         setattr(args, name, value)
     require(args.war.suffix.lower() == '.war' and args.port_a != args.port_b
             and all(1024 <= port <= 65535 for port in (args.port_a, args.port_b)), 'Distinct valid loopback WAR ports are required')
-    require(3 <= args.cycles <= 10 and args.cycles * 60 + 240 <= args.timeout_seconds <= 1200
+    if args.soak_schedule:
+        require_soak_arguments(args)
+    require((args.soak_schedule or 3 <= args.cycles <= 10 and args.cycles * 60 + 240 <= args.timeout_seconds <= 1200)
             and 15 <= args.startup_timeout_seconds <= 120, 'Invalid real-cycle count or bounded scheduling budget')
     require(not args.observe_resources or sys.platform.startswith('linux'), 'Resource observation requires Linux procfs')
     args.report = LINUX.absolute_path(args.report)
@@ -525,7 +627,8 @@ def run(args, report):
             options = types.SimpleNamespace(**vars(args), port=port, resource_node=('node-a', 'node-b')[index])
             wars.append(ScheduledWar(options, database, schema, origin, works[index], works[index].parent, deadline))
         wars[1].password = wars[0].password
-        monitor = ResourceMonitor(getattr(args, 'observe_resources', False), wars, database, schema)
+        monitor = ResourceMonitor(getattr(args, 'observe_resources', False), wars, database, schema,
+                                  soak_schedule=getattr(args, 'soak_schedule', False))
         exercise(wars, database, schema, fixture, origin, report, deadline, args.cycles, monitor)
         monitor.verify_complete()
     except BaseException as error:
@@ -590,11 +693,19 @@ def main(argv=None):
         raise KeyboardInterrupt()
     try:
         args = arguments(argv)
+        soak_schedule = getattr(args, 'soak_schedule', False)
+        require(type(soak_schedule) is bool, 'Soak scheduling opt-in must be explicit')
+        if soak_schedule:
+            require_soak_arguments(args)
+        report['soakSchedule'] = soak_schedule
+        report['scheduleMode'] = 'soak' if soak_schedule else 'standard'
         report['minimumCyclesPerProjectBeforeOutage'] = args.cycles
         prior = signal.getsignal(signal.SIGTERM)
         signal.signal(signal.SIGTERM, cancel)
         installed = True
         run(args, report)
+        if soak_schedule:
+            assert_soak_evidence(args, report)
         require(report['cleanupFailed'] is False and all(report['checks'].get(key) is True for key in CHECKS),
                 'Successful scheduling evidence requires confirmed cleanup and unchanged original tables')
         report['result'] = 'PASS'

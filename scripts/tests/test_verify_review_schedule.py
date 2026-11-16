@@ -142,14 +142,14 @@ class ScheduleDrillTest(unittest.TestCase):
             MODULE.process_sample(process, 100)
         reader.assert_not_called()
 
-    def monitor(self, enabled=True):
+    def monitor(self, enabled=True, soak_schedule=False):
         wars = [Mock(starts=1, process=Mock(pid=123)), Mock(starts=1, process=None)]
         database = Mock()
         database.sql.return_value = json.dumps({'connections': 2, 'nodeAConnections': 2, 'nodeBConnections': 0,
             'active': 1, 'idle': 1, 'idleInTransaction': 0, 'schemaBytes': 4096})
         with patch.object(MODULE.sys, 'platform', 'linux'), patch.object(MODULE.os, 'sysconf', return_value=100, create=True), \
                 patch.object(MODULE.time, 'monotonic', return_value=0):
-            monitor = MODULE.ResourceMonitor(enabled, wars, database, SCHEMA)
+            monitor = MODULE.ResourceMonitor(enabled, wars, database, SCHEMA, soak_schedule=soak_schedule)
         return monitor, wars, database
 
     def test_resource_monitor_bounds_frequency_tracks_generations_and_reports_only_aggregates(self):
@@ -393,6 +393,199 @@ class ScheduleDrillTest(unittest.TestCase):
             self.assertNotIn('fixture-private-response-and-password', str(report) + output.getvalue())
             self.assertEqual(installed[-1], (MODULE.signal.SIGTERM, prior))
             self.args.report.unlink()
+
+    def test_soak_cli_requires_explicit_linux_resource_observation_and_bounded_cycles(self):
+        for cycles, budget in ((11, 900), (20, 1440), (20, 1560)):
+            with self.subTest(cycles=cycles, budget=budget), patch.object(MODULE.sys, 'platform', 'linux'), \
+                    patch.object(MODULE.socket, 'socket') as socket:
+                args = MODULE.arguments(self.argv(cycles=cycles, timeout_seconds=budget) + ['--soak-schedule', '--observe-resources'])
+            self.assertTrue(args.soak_schedule)
+            self.assertTrue(args.observe_resources)
+            self.assertEqual(cycles, args.cycles)
+            self.assertEqual(2, socket.return_value.__enter__.return_value.bind.call_count)
+        for cycles, budget, platform, observe in ((10, 1200, 'linux', True), (21, 1560, 'linux', True),
+                (20, 1439, 'linux', True), (20, 1561, 'linux', True), (20, 1560, 'win32', True),
+                (20, 1560, 'linux', False)):
+            options = ['--soak-schedule'] + (['--observe-resources'] if observe else [])
+            with self.subTest(cycles=cycles, budget=budget, platform=platform, observe=observe), \
+                    patch.object(MODULE.sys, 'platform', platform), patch.object(MODULE.socket, 'socket') as socket, \
+                    self.assertRaises(MODULE.VerificationError):
+                MODULE.arguments(self.argv(cycles=cycles, timeout_seconds=budget) + options)
+            socket.assert_not_called()
+        with patch.object(MODULE.socket, 'socket') as socket, self.assertRaises(MODULE.VerificationError):
+            MODULE.arguments(self.argv(cycles=20, timeout_seconds=1560))
+        socket.assert_not_called()
+
+    def test_soak_cli_retains_existing_evidence_without_binding_ports(self):
+        self.args.report.write_text('retained soak report', encoding='utf-8')
+        with patch.object(MODULE.sys, 'platform', 'linux'), patch.object(MODULE.socket, 'socket') as socket, \
+                self.assertRaises(MODULE.VerificationError):
+            MODULE.arguments(self.argv(cycles=20, timeout_seconds=1560) + ['--soak-schedule', '--observe-resources'])
+        socket.assert_not_called()
+        self.assertEqual('retained soak report', self.args.report.read_text(encoding='utf-8'))
+
+    def test_soak_monitor_has_separate_typed_budget_and_does_not_expand_the_standard_budget(self):
+        standard, _, _ = self.monitor()
+        self.assertEqual(160, MODULE.MAX_RESOURCE_SAMPLES)
+        self.assertEqual(160, standard.summary()['maximumSamples'])
+        monitor, _, _ = self.monitor(soak_schedule=True)
+        self.assertTrue(monitor.summary()['soakSchedule'])
+        self.assertEqual(192, monitor.summary()['maximumSamples'])
+        monitor.samples = 192
+        with patch.object(MODULE, 'process_sample') as sample, self.assertRaises(MODULE.VerificationError):
+            monitor.sample(force=True)
+        sample.assert_not_called()
+        for value in (1, 'true', None):
+            with self.subTest(value=value), self.assertRaises(MODULE.VerificationError):
+                self.monitor(soak_schedule=value)
+        with self.assertRaises(MODULE.VerificationError):
+            self.monitor(enabled=False, soak_schedule=True)
+
+    @staticmethod
+    def soak_report():
+        names = ('slow', 'fast1', 'fast2')
+        generations = []
+        for node, count in (('node-a', 3), ('node-b', 2)):
+            for generation in range(1, count + 1):
+                generations.append({'node': node, 'generation': generation, 'sampleCount': 10,
+                    'firstSampleElapsedSeconds': 14, 'lastSampleElapsedSeconds': 1400,
+                    'cpuSecondsAtFirstSample': 1, 'cpuSecondsAtLastSample': 2,
+                    'peakRssBytes': 4096, 'peakHwmBytes': 8192, 'peakThreads': 64, 'lastRssBytes': 4096})
+        database = {'connections': 6, 'nodeAConnections': 3, 'nodeBConnections': 3,
+                    'active': 0, 'idle': 6, 'idleInTransaction': 0, 'schemaBytes': 933888}
+        return {'soakSchedule': True, 'scheduleMode': 'soak', 'testCron': MODULE.CRON, 'sqlTimeAcceleration': False, 'perWarConcurrency': 1,
+            'minimumCyclesPerProjectBeforeOutage': 20, 'externalServicesUsed': False, 'paidAiUsed': False,
+            'cleanupFailed': False, 'originalTableCount': 14, 'bothWarsOfflineSeconds': 158.5,
+            'checks': dict.fromkeys((*MODULE.CHECKS, *MODULE.SOAK_BEHAVIOR), True),
+            'successfulRunsBeforeOutage': dict.fromkeys(names, 20), 'successfulRunsAfterCatchUp': dict.fromkeys(names, 21),
+            'projects': {name: {'scheduledRequests': 21, 'successfulRuns': 21, 'firstSavedCommits': 1,
+                'subsequentSavedCommits': 0} for name in names},
+            'requestCounts': {name + '.' + operation: 1 for name in names for operation in ('ai', 'detail', 'diff')},
+            'warStarts': [3, 2], 'resources': {'enabled': True, 'complete': True, 'soakSchedule': True,
+                'maximumSamples': 192, 'sampleIntervalSeconds': 10, 'heapLimitMiBPerWar': 384, 'samples': 128,
+                'processGenerations': generations, 'database': {'sampleCount': 128,
+                    'firstSampleElapsedSeconds': 14, 'lastSampleElapsedSeconds': 1400,
+                    'peaks': dict(database), 'last': dict(database)}}}
+
+    def soak_args(self):
+        return types.SimpleNamespace(**(vars(self.args) | {'soak_schedule': True, 'observe_resources': True,
+                                                          'cycles': 20, 'timeout_seconds': 1560}))
+
+    def test_soak_evidence_requires_exact_profile_complete_real_cycles_and_one_catch_up(self):
+        args = self.soak_args()
+        with patch.object(MODULE.sys, 'platform', 'win32'):
+            MODULE.assert_soak_evidence(args, self.soak_report())  # Parsing evidence does not execute Linux resources.
+        with patch.object(MODULE.sys, 'platform', 'linux'):
+            MODULE.assert_soak_evidence(args, self.soak_report())
+            for key, value in (('soakSchedule', 1), ('scheduleMode', 'standard'), ('sqlTimeAcceleration', True),
+                    ('minimumCyclesPerProjectBeforeOutage', True), ('minimumCyclesPerProjectBeforeOutage', 19),
+                    ('bothWarsOfflineSeconds', 124.9), ('bothWarsOfflineSeconds', float('inf')),
+                    ('cleanupFailed', True), ('originalTableCount', 13), ('paidAiUsed', True),
+                    ('perWarConcurrency', True), ('perWarConcurrency', 2)):
+                report = self.soak_report(); report[key] = value
+                with self.subTest(key=key, value=value), self.assertRaises(MODULE.VerificationError):
+                    MODULE.assert_soak_evidence(args, report)
+            for key in (*MODULE.CHECKS, *MODULE.SOAK_BEHAVIOR):
+                report = self.soak_report(); report['checks'][key] = False
+                with self.subTest(check=key), self.assertRaises(MODULE.VerificationError):
+                    MODULE.assert_soak_evidence(args, report)
+            for key, value in (('successfulRunsBeforeOutage', 19), ('successfulRunsBeforeOutage', True),
+                    ('successfulRunsAfterCatchUp', 22), ('successfulRunsAfterCatchUp', 20)):
+                report = self.soak_report(); report[key]['slow'] = value
+                with self.subTest(key=key, value=value), self.assertRaises(MODULE.VerificationError):
+                    MODULE.assert_soak_evidence(args, report)
+            for key in ('successfulRunsBeforeOutage', 'successfulRunsAfterCatchUp', 'projects'):
+                report = self.soak_report(); del report[key]['fast2']
+                with self.subTest(missingProject=key), self.assertRaises(MODULE.VerificationError):
+                    MODULE.assert_soak_evidence(args, report)
+
+    def test_soak_evidence_rejects_repeated_review_work_and_inconsistent_histories(self):
+        with patch.object(MODULE.sys, 'platform', 'linux'):
+            for key, value in (('scheduledRequests', 22), ('successfulRuns', True),
+                    ('firstSavedCommits', 0), ('subsequentSavedCommits', 1)):
+                report = self.soak_report(); report['projects']['slow'][key] = value
+                with self.subTest(key=key), self.assertRaises(MODULE.VerificationError):
+                    MODULE.assert_soak_evidence(self.soak_args(), report)
+            for operation in ('ai', 'detail', 'diff'):
+                for value in (None, 2, True):
+                    report = self.soak_report(); report['requestCounts']['slow.' + operation] = value
+                    with self.subTest(operation=operation, value=value), self.assertRaises(MODULE.VerificationError):
+                        MODULE.assert_soak_evidence(self.soak_args(), report)
+
+    def test_soak_evidence_requires_every_owned_generation_and_bounded_valid_process_samples(self):
+        with patch.object(MODULE.sys, 'platform', 'linux'):
+            for key, value in (('enabled', False), ('complete', False), ('maximumSamples', 160),
+                    ('maximumSamples', True), ('samples', 59), ('samples', 193), ('samples', True),
+                    ('sampleIntervalSeconds', 30), ('heapLimitMiBPerWar', 512), ('soakSchedule', False)):
+                report = self.soak_report(); report['resources'][key] = value
+                with self.subTest(key=key), self.assertRaises(MODULE.VerificationError):
+                    MODULE.assert_soak_evidence(self.soak_args(), report)
+            for starts in ([3, True], [3], [5, 4], [3, 3]):
+                report = self.soak_report(); report['warStarts'] = starts
+                with self.subTest(starts=starts), self.assertRaises(MODULE.VerificationError):
+                    MODULE.assert_soak_evidence(self.soak_args(), report)
+            for key, value in (('generation', True), ('generation', 4), ('sampleCount', 0), ('sampleCount', True),
+                    ('firstSampleElapsedSeconds', float('nan')), ('firstSampleElapsedSeconds', 0),
+                    ('lastSampleElapsedSeconds', 0), ('lastSampleElapsedSeconds', 1401),
+                    ('cpuSecondsAtLastSample', .5), ('peakRssBytes', 0), ('peakHwmBytes', 1024),
+                    ('peakThreads', True), ('lastRssBytes', 8192)):
+                report = self.soak_report(); report['resources']['processGenerations'][0][key] = value
+                with self.subTest(key=key), self.assertRaises(MODULE.VerificationError):
+                    MODULE.assert_soak_evidence(self.soak_args(), report)
+            report = self.soak_report(); report['resources']['processGenerations'][1] = dict(report['resources']['processGenerations'][0])
+            with self.assertRaises(MODULE.VerificationError): MODULE.assert_soak_evidence(self.soak_args(), report)
+
+    def test_soak_evidence_requires_actual_database_observation_span_and_counter_consistency(self):
+        with patch.object(MODULE.sys, 'platform', 'linux'):
+            for key, value in (('sampleCount', 127), ('sampleCount', True),
+                    ('lastSampleElapsedSeconds', 1093.9), ('lastSampleElapsedSeconds', 1560),
+                    ('firstSampleElapsedSeconds', float('inf'))):
+                report = self.soak_report(); report['resources']['database'][key] = value
+                with self.subTest(key=key), self.assertRaises(MODULE.VerificationError):
+                    MODULE.assert_soak_evidence(self.soak_args(), report)
+            for key in ('nodeAConnections', 'nodeBConnections', 'schemaBytes'):
+                report = self.soak_report()
+                for label in ('peaks', 'last'):
+                    report['resources']['database'][label][key] = 0
+                    if key != 'schemaBytes':
+                        report['resources']['database'][label].update(connections=3, idle=3)
+                with self.subTest(unobservedDatabasePeak=key), self.assertRaises(MODULE.VerificationError):
+                    MODULE.assert_soak_evidence(self.soak_args(), report)
+            for key, value in (('connections', 5), ('nodeAConnections', 4), ('idle', 7), ('schemaBytes', -1), ('active', True)):
+                report = self.soak_report(); report['resources']['database']['last'][key] = value
+                with self.subTest(key=key), self.assertRaises(MODULE.VerificationError):
+                    MODULE.assert_soak_evidence(self.soak_args(), report)
+
+    def test_soak_main_rejects_invalid_opt_in_before_start_and_incomplete_success_after_run(self):
+        args = self.soak_args()
+        with patch.object(MODULE.sys, 'platform', 'win32'), patch.object(MODULE, 'arguments', return_value=args), \
+                patch.object(MODULE, 'run') as run, redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(1, MODULE.main([]))
+        run.assert_not_called(); args.report.unlink()
+        for field, value in (('soak_schedule', 1), ('observe_resources', False), ('cycles', 10), ('timeout_seconds', 1439)):
+            args = self.soak_args(); setattr(args, field, value)
+            with self.subTest(field=field), patch.object(MODULE.sys, 'platform', 'linux'), \
+                    patch.object(MODULE, 'arguments', return_value=args), patch.object(MODULE, 'run') as run, \
+                    redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                self.assertEqual(1, MODULE.main([]))
+            run.assert_not_called(); args.report.unlink()
+        for mode in ('success', 'cleanup-only', 'incomplete-resource', 'missing-behavior', 'short-span'):
+            def scenario(_args, report):
+                report['cleanupFailed'] = False
+                if mode == 'cleanup-only': report['checks'].update(dict.fromkeys(MODULE.CHECKS, True)); return
+                report.update(self.soak_report())
+                if mode == 'incomplete-resource': report['resources']['complete'] = False
+                elif mode == 'missing-behavior': del report['checks'][MODULE.SOAK_BEHAVIOR[0]]
+                elif mode == 'short-span': report['resources']['database']['lastSampleElapsedSeconds'] = 1093.9
+            args = self.soak_args()
+            with self.subTest(mode=mode), patch.object(MODULE.sys, 'platform', 'linux'), \
+                    patch.object(MODULE, 'arguments', return_value=args), patch.object(MODULE, 'run', side_effect=scenario), \
+                    patch.object(MODULE.signal, 'getsignal'), patch.object(MODULE.signal, 'signal'), \
+                    redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                self.assertEqual(0 if mode == 'success' else 1, MODULE.main([]))
+            report = json.loads(args.report.read_text(encoding='utf-8'))
+            self.assertEqual('PASS' if mode == 'success' else 'FAIL', report['result'])
+            args.report.unlink()
 
 
 if __name__ == '__main__':
